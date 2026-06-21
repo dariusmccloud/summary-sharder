@@ -6,11 +6,12 @@ import { loadWorldInfo } from '../../../../../world-info.js';
 import { log } from '../logger.js';
 
 /**
- * Section definitions matching the extraction prompt section headers
+ * Narrative section definitions matching the extraction prompt section headers.
+ *
  * name = canonical name used in [BRACKET] format and for display
  * altNames = legacy names for backward compatibility with old emoji-header prompts
  */
-export const SHARDER_SECTIONS = [
+const NARRATIVE_CONTENT_SECTIONS = [
     { emoji: '🎨', name: 'TONE', key: 'tone' },
     { emoji: '👤', name: 'CHARACTERS', key: 'characterNotes', altNames: ['CHARACTER NOTES'] },
     { emoji: '🌍', name: 'WORLD', key: 'worldState', altNames: ['WORLD STATE'] },
@@ -28,6 +29,48 @@ export const SHARDER_SECTIONS = [
     { emoji: '⚓', name: 'ANCHORS', key: 'anchors' },
     { emoji: '📍', name: 'CURRENT', key: 'currentState', altNames: ['CURRENT STATE'], isLast: true }
 ];
+
+/**
+ * Sections that should NOT be split into bullet items (freeform content).
+ */
+const NARRATIVE_FREEFORM_SECTION_KEYS = ['tone', 'currentState', 'worldState', 'scenes', 'voice'];
+
+/**
+ * Registry for the current narrative sharder profile. PR 1A keeps narrative
+ * as the only active profile while moving callers behind this boundary.
+ */
+export const NARRATIVE_SHARDER_REGISTRY = Object.freeze({
+    profile: 'narrative',
+    displayName: 'Narrative Memory',
+    contentSections: NARRATIVE_CONTENT_SECTIONS,
+    freeformSectionKeys: NARRATIVE_FREEFORM_SECTION_KEYS,
+});
+
+/**
+ * Backward-compatible exports for existing narrative callers.
+ */
+export const SHARDER_SECTIONS = NARRATIVE_SHARDER_REGISTRY.contentSections;
+export const FREEFORM_SECTIONS = NARRATIVE_SHARDER_REGISTRY.freeformSectionKeys;
+
+/**
+ * Resolve a sharder registry. Only narrative is active in PR 1A.
+ * @param {string|Object|null} profileOrRegistry
+ * @returns {Object}
+ */
+export function getSharderSectionRegistry(profileOrRegistry = 'narrative') {
+    if (profileOrRegistry && typeof profileOrRegistry === 'object' && Array.isArray(profileOrRegistry.contentSections)) {
+        return profileOrRegistry;
+    }
+    return NARRATIVE_SHARDER_REGISTRY;
+}
+
+export function getSharderContentSections(registryOrProfile = 'narrative') {
+    return getSharderSectionRegistry(registryOrProfile).contentSections;
+}
+
+export function getSharderFreeformSectionKeys(registryOrProfile = 'narrative') {
+    return getSharderSectionRegistry(registryOrProfile).freeformSectionKeys;
+}
 
 /**
  * Event weight definitions for the weight selector UI
@@ -53,16 +96,17 @@ const EMOJI_BY_VALUE = new Map(EVENT_WEIGHTS.map(w => [w.value, w.emoji]));
  * @param {string} response - Raw LLM response
  * @returns {string} Normalized response
  */
-export function normalizeExtractionResponse(response) {
+export function normalizeExtractionResponse(response, registryOrProfile = 'narrative') {
     if (!response) return response;
 
+    const contentSections = getSharderContentSections(registryOrProfile);
     let normalized = response;
 
     // Strip ===END=== terminator if present
     normalized = normalized.replace(/\n*===END===\s*$/i, '');
 
     // Normalize [BRACKET] format headers: [TONE] → ### 🎨 TONE
-    SHARDER_SECTIONS.forEach(section => {
+    contentSections.forEach(section => {
         // Match [SECTION_NAME] on its own line
         const bracketPattern = new RegExp(
             `^\\[${section.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]\\s*$`, 'gim'
@@ -84,7 +128,7 @@ export function normalizeExtractionResponse(response) {
     normalized = normalized.replace(/^\[KEY\]\s*$/gim, '### 🔑 KEY');
 
     // Normalize emoji-header format variations: "## 📍 TIMELINE" or "📍 Timeline" → ### 📍 TIMELINE
-    SHARDER_SECTIONS.forEach(section => {
+    contentSections.forEach(section => {
         const headerVariants = new RegExp(
             `^(#{1,4})\\s*${section.emoji}\\s*${section.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*')}\\s*(?:\\([^)]*\\))?\\s*$`,
             'gim'
@@ -136,7 +180,7 @@ export function validateExtractionQuality(sections, context = {}) {
     };
 
     // Count populated sections
-    SHARDER_SECTIONS.forEach(section => {
+    getSharderContentSections(context.sectionRegistry).forEach(section => {
         const items = sections[section.key] || [];
         if (items.length > 0 && items.some(i => i.selected)) {
             stats.sectionsPopulated++;
@@ -431,21 +475,20 @@ export function getWeightEmoji(value) {
 }
 
 /**
- * Sections that should NOT be split into bullet items (freeform content)
- */
-export const FREEFORM_SECTIONS = ['tone', 'currentState', 'worldState', 'scenes', 'voice'];
-
-/**
  * Parse extraction response into structured sections
  * @param {string} response - Raw LLM response with emoji headers
+ * @param {Object} options
  * @returns {Object} Parsed sections with items
  */
-export function parseExtractionResponse(response) {
+export function parseExtractionResponse(response, options = {}) {
+    const registry = getSharderSectionRegistry(options.sectionRegistry || options.profile);
+    const contentSections = registry.contentSections;
+    const freeformSectionKeys = registry.freeformSectionKeys;
     const sections = {};
-    const normalizedResponse = normalizeExtractionResponse(response);
+    const normalizedResponse = normalizeExtractionResponse(response, registry);
 
     // Initialize all sections
-    SHARDER_SECTIONS.forEach(section => {
+    contentSections.forEach(section => {
         sections[section.key] = [];
     });
 
@@ -457,9 +500,9 @@ export function parseExtractionResponse(response) {
     }
 
     // Parse each section
-    for (let i = 0; i < SHARDER_SECTIONS.length; i++) {
-        const section = SHARDER_SECTIONS[i];
-        const nextSection = SHARDER_SECTIONS[i + 1];
+    for (let i = 0; i < contentSections.length; i++) {
+        const section = contentSections[i];
+        const nextSection = contentSections[i + 1];
 
         // Build section-specific regex (matches normalized ### emoji NAME format)
         const startPattern = `###\\s*${section.emoji}\\s*${section.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`;
@@ -475,7 +518,7 @@ export function parseExtractionResponse(response) {
             const content = match[1].trim();
             if (content && !isEmptyContent(content)) {
                 // Handle freeform sections differently
-                if (FREEFORM_SECTIONS.includes(section.key)) {
+                if (freeformSectionKeys.includes(section.key)) {
                     sections[section.key] = [{
                         id: `${section.key}-0`,
                         content: content,
@@ -614,6 +657,7 @@ function parseSectionItems(content, sectionKey) {
  * @returns {string} Formatted extraction text
  */
 export function reconstructExtraction(sections, metadata = {}) {
+    const contentSections = getSharderContentSections(metadata.sectionRegistry || metadata.profile);
     const lines = [];
 
     // Header
@@ -628,7 +672,7 @@ export function reconstructExtraction(sections, metadata = {}) {
     lines.push('');
 
     // Each section
-    SHARDER_SECTIONS.forEach(section => {
+    contentSections.forEach(section => {
         const displayName = section.key === 'currentState' ? 'CURRENT (as of end of extract)' : section.name;
         lines.push(`### ${section.emoji} ${displayName}`);
 

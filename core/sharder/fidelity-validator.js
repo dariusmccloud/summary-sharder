@@ -2,9 +2,7 @@
  * Deterministic fidelity validator for sharder output.
  */
 
-import { SHARDER_SECTIONS, parseSceneCodes } from '../summarization/sharder-pipeline.js';
-
-const REQUIRED_SECTION_KEYS = SHARDER_SECTIONS.map((s) => s.key);
+import { getSharderContentSections, parseSceneCodes } from '../summarization/sharder-pipeline.js';
 
 /**
  * @typedef {{ level: 'error'|'warning'|'info', code: string, message: string }} Diagnostic
@@ -42,6 +40,7 @@ function resolveInheritedPrefixes(context) {
  */
 export function validateSinglePassOutput(sections, context = {}) {
     const diagnostics = [];
+    const requiredSectionKeys = getSharderContentSections(context.sectionRegistry || context.profile).map((s) => s.key);
 
     if (!sections || typeof sections !== 'object') {
         diagnostics.push({
@@ -63,7 +62,7 @@ export function validateSinglePassOutput(sections, context = {}) {
     let selectedItems = 0;
     let sceneCodes = 0;
 
-    REQUIRED_SECTION_KEYS.forEach((key) => {
+    requiredSectionKeys.forEach((key) => {
         const items = sections[key];
         if (!Array.isArray(items)) {
             diagnostics.push({

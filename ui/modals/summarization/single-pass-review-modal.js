@@ -8,7 +8,8 @@ import { escapeHtml } from '../../common/ui-utils.js';
 import { archiveToWarm } from '../../../core/rag/archive.js';
 import { log } from '../../../core/logger.js';
 import {
-    SHARDER_SECTIONS,
+    getSharderContentSections,
+    getSharderSectionRegistry,
     parseExtractionResponse,
     reconstructExtraction,
     parseSceneCodes,
@@ -17,6 +18,11 @@ import {
 
 function sectionTitle(section) {
     return section.key === 'currentState' ? 'CURRENT (as of end of extract)' : section.name;
+}
+
+function reviewSections(stateOrRegistry = null) {
+    const registry = stateOrRegistry?.sectionRegistry || stateOrRegistry;
+    return getSharderContentSections(registry);
 }
 
 function normalizeSceneCodes(sceneCodes) {
@@ -87,9 +93,9 @@ function splitSceneContentToItems(content) {
     return chunks.filter(Boolean);
 }
 
-function normalizeSectionItems(sections) {
+function normalizeSectionItems(sections, registry = null) {
     const normalized = {};
-    SHARDER_SECTIONS.forEach((section) => {
+    reviewSections(registry).forEach((section) => {
         const raw = Array.isArray(sections?.[section.key]) ? sections[section.key] : [];
 
         const expanded = section.key === 'scenes'
@@ -122,7 +128,7 @@ function sectionCount(items) {
 
 function rebuildOutput(state) {
     const sections = {};
-    SHARDER_SECTIONS.forEach((section) => {
+    reviewSections(state).forEach((section) => {
         sections[section.key] = (state.editableSections[section.key] || [])
             .map(item => ({
                 content: item.content,
@@ -131,7 +137,10 @@ function rebuildOutput(state) {
             }));
     });
 
-    return reconstructExtraction(sections, state.metadata || {});
+    return reconstructExtraction(sections, {
+        ...(state.metadata || {}),
+        sectionRegistry: state.sectionRegistry,
+    });
 }
 
 function applyRescues(output, rescuedItems) {
@@ -226,7 +235,7 @@ function sectionRows(state, sectionKey, items) {
 }
 
 function sectionsHtml(state) {
-    return SHARDER_SECTIONS.map((section) => {
+    return reviewSections(state).map((section) => {
         const items = state.editableSections[section.key] || [];
         const { selected, total } = sectionCount(items);
         return `
@@ -262,8 +271,8 @@ function ensurePruningReport(state) {
     }
 }
 
-function getPruneMetaForSectionKey(sectionKey) {
-    const section = SHARDER_SECTIONS.find((s) => s.key === sectionKey);
+function getPruneMetaForSectionKey(sectionKey, state = null) {
+    const section = reviewSections(state).find((s) => s.key === sectionKey);
     return {
         key: sectionKey,
         name: section?.name || String(sectionKey || 'UNKNOWN').toUpperCase(),
@@ -493,7 +502,7 @@ function wireRescueButton(state, btn) {
 function addPrunedItemToReportAndUI(state, sectionKey, itemContent, sceneCodes = []) {
     ensurePruningReport(state);
 
-    const meta = getPruneMetaForSectionKey(sectionKey);
+    const meta = getPruneMetaForSectionKey(sectionKey, state);
     const report = state.pruningReport;
     const metaName = String(meta?.name ?? 'UNKNOWN').trim() || 'UNKNOWN';
     const metaEmoji = String(meta?.emoji ?? '\u{1F4CB}').trim() || '📋';
@@ -917,7 +926,7 @@ function setupSectionHandlers(state, regenFn) {
             if (items.length === 0) return;
 
             // Get section name for confirmation message
-            const sectionMeta = SHARDER_SECTIONS.find(s => s.key === sectionKey);
+            const sectionMeta = reviewSections(state).find(s => s.key === sectionKey);
             const sectionName = sectionMeta ? sectionTitle(sectionMeta) : sectionKey;
 
             // Show confirmation dialog
@@ -1135,7 +1144,7 @@ function setupGlobalSelectionHandlers(state) {
     const selectAllBtn = document.getElementById('ss-sp-select-all-global');
     if (selectAllBtn) {
         selectAllBtn.addEventListener('click', () => {
-            SHARDER_SECTIONS.forEach((section) => {
+            reviewSections(state).forEach((section) => {
                 const items = state.editableSections[section.key] || [];
                 items.forEach(item => { item.selected = true; });
 
@@ -1155,7 +1164,7 @@ function setupGlobalSelectionHandlers(state) {
     const deselectAllBtn = document.getElementById('ss-sp-deselect-all-global');
     if (deselectAllBtn) {
         deselectAllBtn.addEventListener('click', () => {
-            SHARDER_SECTIONS.forEach((section) => {
+            reviewSections(state).forEach((section) => {
                 const items = state.editableSections[section.key] || [];
                 items.forEach(item => { item.selected = false; });
 
@@ -1188,7 +1197,10 @@ async function setupRegenerateHandler(state, regenFn) {
 
             // Update state
             state.diagnostics = newResult.diagnostics || [];
-            state.editableSections = normalizeSectionItems(newResult.sections || parseExtractionResponse(newResult.reconstructed || ''));
+            state.editableSections = normalizeSectionItems(
+                newResult.sections || parseExtractionResponse(newResult.reconstructed || '', { sectionRegistry: state.sectionRegistry }),
+                state.sectionRegistry
+            );
             state.pruningReport = newResult.llmPruningReport || { totalPruned: 0, sections: [] };
             state.outputOverride = null;
             state.rescuedItems = [];
@@ -1248,12 +1260,14 @@ function setupArchiveOptionHandlers(state) {
  * @returns {Promise<{confirmed:boolean, finalOutput:string, archiveOptions:Object, archivedItems:Array}>}
  */
 export async function openSharderReviewModal(pipelineResult, settings, regenFn = null) {
-    const parsed = parseExtractionResponse(pipelineResult.reconstructed || '');
+    const sectionRegistry = getSharderSectionRegistry(pipelineResult.metadata?.sectionRegistry || 'narrative');
+    const parsed = parseExtractionResponse(pipelineResult.reconstructed || '', { sectionRegistry });
 
     const state = {
+        sectionRegistry,
         diagnostics: pipelineResult.diagnostics || [],
         metadata: pipelineResult.metadata || {},
-        editableSections: normalizeSectionItems(pipelineResult.sections || parsed),
+        editableSections: normalizeSectionItems(pipelineResult.sections || parsed, sectionRegistry),
         finalOutput: pipelineResult.reconstructed || '',
         reconstructedOutput: pipelineResult.reconstructed || '',
         rescuedItems: [],

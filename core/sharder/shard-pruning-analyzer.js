@@ -7,7 +7,7 @@
  */
 
 import {
-    SHARDER_SECTIONS,
+    getSharderContentSections,
     parseExtractionResponse,
     isConsolidatedShard,
 } from '../summarization/sharder-pipeline.js';
@@ -41,7 +41,7 @@ const CONSOLIDATION_TO_EXTRACTION_KEY = {
 
 /** Section display metadata keyed by extraction key */
 const SECTION_META = {};
-for (const s of SHARDER_SECTIONS) {
+for (const s of getSharderContentSections()) {
     SECTION_META[s.key] = { key: s.key, name: s.name, emoji: s.emoji };
 }
 
@@ -103,7 +103,7 @@ function normalizeKey(sectionKey, isConsolidation) {
  * @param {Array<{content:string, type:string, identifier:string}>} selectedShards
  *   Raw shard data — `content` is the full text, `type` is 'extraction' or 'consolidation'.
  * @param {Object} outputSections
- *   Parsed sections from the sharder pipeline (extraction format, keyed by SHARDER_SECTIONS keys).
+ *   Parsed sections from the sharder pipeline (extraction format, keyed by narrative registry section keys).
  * @returns {{totalPruned:number, sections:Array, sectionOverview:Array}}
  */
 export function analyzeSinglePassPruning(selectedShards, outputSections) {
