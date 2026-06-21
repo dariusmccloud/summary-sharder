@@ -4,73 +4,22 @@
 
 import { loadWorldInfo } from '../../../../../world-info.js';
 import { log } from '../logger.js';
-
-/**
- * Narrative section definitions matching the extraction prompt section headers.
- *
- * name = canonical name used in [BRACKET] format and for display
- * altNames = legacy names for backward compatibility with old emoji-header prompts
- */
-const NARRATIVE_CONTENT_SECTIONS = [
-    { emoji: '🎨', name: 'TONE', key: 'tone' },
-    { emoji: '👤', name: 'CHARACTERS', key: 'characterNotes', altNames: ['CHARACTER NOTES'] },
-    { emoji: '🌍', name: 'WORLD', key: 'worldState', altNames: ['WORLD STATE'] },
-    { emoji: '📍', name: 'TIMELINE', key: 'sceneBreaks', altNames: ['SCENE BREAKS'] },
-    { emoji: '⚖️', name: 'EVENTS', key: 'events' },
-    { emoji: '🔞', name: 'NSFW', key: 'nsfwContent', altNames: ['NSFW CONTENT'] },
-    { emoji: '💬', name: 'DIALOGUE', key: 'keyDialogue', altNames: ['KEY DIALOGUE'] },
-    { emoji: '🗣️', name: 'VOICE', key: 'voice' },
-    { emoji: '🎭', name: 'STATES', key: 'characterStates', altNames: ['CHARACTER STATES'] },
-    { emoji: '🔗', name: 'RELATIONSHIPS', key: 'relationshipShifts', altNames: ['RELATIONSHIP SHIFTS'] },
-    { emoji: '🌱', name: 'DEVELOPMENTS', key: 'developments' },
-    { emoji: '🎣', name: 'CALLBACKS', key: 'callbacks' },
-    { emoji: '🧵', name: 'THREADS', key: 'looseThreads', altNames: ['LOOSE THREADS'] },
-    { emoji: '🎬', name: 'SCENES', key: 'scenes' },
-    { emoji: '⚓', name: 'ANCHORS', key: 'anchors' },
-    { emoji: '📍', name: 'CURRENT', key: 'currentState', altNames: ['CURRENT STATE'], isLast: true }
-];
-
-/**
- * Sections that should NOT be split into bullet items (freeform content).
- */
-const NARRATIVE_FREEFORM_SECTION_KEYS = ['tone', 'currentState', 'worldState', 'scenes', 'voice'];
-
-/**
- * Registry for the current narrative sharder profile. PR 1A keeps narrative
- * as the only active profile while moving callers behind this boundary.
- */
-export const NARRATIVE_SHARDER_REGISTRY = Object.freeze({
-    profile: 'narrative',
-    displayName: 'Narrative Memory',
-    contentSections: NARRATIVE_CONTENT_SECTIONS,
-    freeformSectionKeys: NARRATIVE_FREEFORM_SECTION_KEYS,
-});
-
-/**
- * Backward-compatible exports for existing narrative callers.
- */
-export const SHARDER_SECTIONS = NARRATIVE_SHARDER_REGISTRY.contentSections;
-export const FREEFORM_SECTIONS = NARRATIVE_SHARDER_REGISTRY.freeformSectionKeys;
-
-/**
- * Resolve a sharder registry. Only narrative is active in PR 1A.
- * @param {string|Object|null} profileOrRegistry
- * @returns {Object}
- */
-export function getSharderSectionRegistry(profileOrRegistry = 'narrative') {
-    if (profileOrRegistry && typeof profileOrRegistry === 'object' && Array.isArray(profileOrRegistry.contentSections)) {
-        return profileOrRegistry;
-    }
-    return NARRATIVE_SHARDER_REGISTRY;
-}
-
-export function getSharderContentSections(registryOrProfile = 'narrative') {
-    return getSharderSectionRegistry(registryOrProfile).contentSections;
-}
-
-export function getSharderFreeformSectionKeys(registryOrProfile = 'narrative') {
-    return getSharderSectionRegistry(registryOrProfile).freeformSectionKeys;
-}
+import {
+    getSharderContentSections,
+    getSharderSectionRegistry,
+} from './sharder-section-registry.js';
+export {
+    FREEFORM_SECTIONS,
+    NARRATIVE_DISPLAY_NAME,
+    NARRATIVE_PROFILE,
+    NARRATIVE_SHARDER_REGISTRY,
+    SHARDER_METADATA_SECTIONS,
+    SHARDER_SECTIONS,
+    getSharderContentSections,
+    getSharderFreeformSectionKeys,
+    getSharderMetadataSections,
+    getSharderSectionRegistry,
+} from './sharder-section-registry.js';
 
 /**
  * Event weight definitions for the weight selector UI
