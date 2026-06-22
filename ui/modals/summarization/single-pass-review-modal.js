@@ -359,7 +359,7 @@ function diagnosticsHtml(diagnostics) {
     }
 
     return diagnostics.map((d) => `
-        <div class="ss-sp-diag ss-level-${escapeHtml(d.level)}">
+        <div class="ss-sp-diag ss-level-${escapeHtml(d.level)}" data-diag-level="${escapeHtml(d.level || 'info')}" data-diag-code="${escapeHtml(d.code || 'UNSPECIFIED')}">
             <div class="ss-sp-diag-head">
                 <span class="ss-sp-diag-level">${escapeHtml((d.level || 'info').toUpperCase())}</span>
                 <span class="ss-sp-diag-code">${escapeHtml(d.code || 'UNSPECIFIED')}</span>
@@ -624,7 +624,7 @@ function buildModalHtml(state) {
     const infos = state.diagnostics.filter((d) => d.level === 'info').length;
 
     return `
-        <div class="ss-single-pass-review-modal">
+        <div class="ss-single-pass-review-modal" tabindex="0" aria-label="Sharder Review">
             <div class="ss-sp-header">
                 <h3>Sharder Review</h3>
                 <p>Review section content before saving. Error-level diagnostics block save.</p>
@@ -937,6 +937,39 @@ function setupAccordionHandlers() {
     document.querySelectorAll('.ss-pruning-group-header').forEach((header) => {
         attachPruningGroupHeaderHandler(header);
     });
+}
+
+function expandAccordion(sectionName) {
+    const accordion = document.querySelector(`.ss-review-accordion[data-section="${CSS.escape(sectionName)}"]`);
+    const content = accordion?.querySelector('.ss-accordion-content');
+    const icon = accordion?.querySelector('.ss-accordion-toggle i');
+    if (!accordion || !content || !icon) return null;
+
+    accordion.classList.add('expanded');
+    content.style.display = 'block';
+    icon.className = 'fa-solid fa-chevron-down';
+    return accordion;
+}
+
+function revealFirstBlockingDiagnostic() {
+    const accordion = expandAccordion('sp-diagnostics');
+    const firstError = accordion?.querySelector('.ss-sp-diag[data-diag-level="error"]');
+    if (!firstError) return;
+
+    firstError.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+        inline: 'nearest',
+    });
+}
+
+function handleBlockedSave(state, message = 'Save blocked due to error-level diagnostics') {
+    updateOutputEditor(state);
+    revealFirstBlockingDiagnostic();
+
+    if (typeof toastr !== 'undefined') {
+        toastr.warning(message);
+    }
 }
 
 function setupOutputOverrideHandlers(state) {
@@ -1702,12 +1735,9 @@ export async function openSharderReviewModal(pipelineResult, settings, regenFn =
                 }
 
                 const saveDiagnostics = getCurrentSaveDiagnostics(state);
-                updateOutputEditor(state);
 
                 if (hasBlockingReviewErrors(saveDiagnostics)) {
-                    if (typeof toastr !== 'undefined') {
-                        toastr.warning('Save blocked due to error-level diagnostics');
-                    }
+                    handleBlockedSave(state);
                     return false;
                 }
 
@@ -1733,7 +1763,7 @@ export async function openSharderReviewModal(pipelineResult, settings, regenFn =
     if (result === POPUP_RESULT.AFFIRMATIVE) {
         const saveDiagnostics = getCurrentSaveDiagnostics(state);
         if (hasBlockingReviewErrors(saveDiagnostics)) {
-            toastr.warning('Save blocked due to error-level diagnostics');
+            handleBlockedSave(state);
             return {
                 confirmed: false,
                 finalOutput: '',

@@ -258,6 +258,8 @@ export const SUMMARIZE_CSS = `
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     font-size: 12px;
     resize: vertical;
+    max-width: 100%;
+    box-sizing: border-box;
 }
 
 /* Editable consolidated-output sections */
@@ -400,6 +402,34 @@ export const SUMMARIZE_CSS = `
     margin-bottom: 15px;
 }
 
+.popup:has(.ss-single-pass-review-modal) {
+    display: flex !important;
+    flex-direction: column;
+    max-height: min(92vh, calc(100vh - 24px));
+}
+
+.popup:has(.ss-single-pass-review-modal) .popup-content {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.popup:has(.ss-single-pass-review-modal) .popup-controls {
+    flex: 0 0 auto;
+}
+
+.ss-single-pass-review-modal {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 15px;
+    overscroll-behavior: contain;
+}
+
 /* Review Accordion */
 .ss-review-accordion {
     margin-bottom: 10px;
@@ -470,6 +500,35 @@ export const SUMMARIZE_CSS = `
     border-top: 1px solid var(--ss-border);
     max-height: 300px;
     overflow-y: auto;
+    overflow-x: hidden;
+}
+
+.ss-sp-header,
+.ss-sp-summary,
+.ss-sp-sections-area,
+.ss-sp-panel,
+.ss-sp-blocking-note,
+.ss-archive-section,
+.ss-sp-diagnostics {
+    min-width: 0;
+}
+
+.ss-sp-global-controls,
+.ss-output-header,
+.ss-output-actions,
+.ss-archive-options {
+    flex-wrap: wrap;
+}
+
+.ss-sp-diag {
+    scroll-margin-top: 12px;
+    overflow-wrap: anywhere;
+}
+
+.ss-sp-output-editor {
+    min-height: 200px;
+    max-width: 100%;
+    box-sizing: border-box;
 }
 
 /* Warning Badges */
