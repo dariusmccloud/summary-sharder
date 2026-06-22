@@ -5,11 +5,22 @@
 import { loadWorldInfo } from '../../../../../world-info.js';
 import { log } from '../logger.js';
 import {
+    ARCHITECTURAL_PROFILE,
     NARRATIVE_PROFILE,
     getSharderContentSections,
     getSharderSectionRegistry,
 } from './sharder-section-registry.js';
+import {
+    parseArchitecturalExtractionResponse,
+    reconstructArchitecturalExtraction,
+} from './architectural-sharder-format.js';
 export {
+    ARCHITECTURAL_DISPLAY_NAME,
+    ARCHITECTURAL_PROFILE,
+    ARCHITECTURAL_PROFILE_MARKER,
+    ARCHITECTURAL_SCHEMA_MARKER,
+    ARCHITECTURAL_SCHEMA_VERSION,
+    ARCHITECTURAL_SHARDER_REGISTRY,
     FREEFORM_SECTIONS,
     NARRATIVE_DISPLAY_NAME,
     NARRATIVE_PROFILE,
@@ -20,6 +31,7 @@ export {
     getSharderFreeformSectionKeys,
     getSharderMetadataSections,
     getSharderSectionRegistry,
+    normalizeSharderProfile,
 } from './sharder-section-registry.js';
 
 /**
@@ -432,6 +444,10 @@ export function getWeightEmoji(value) {
  */
 export function parseExtractionResponse(response, options = {}) {
     const registry = getSharderSectionRegistry(options.sectionRegistry || options.profile || NARRATIVE_PROFILE);
+    if (registry.profile === ARCHITECTURAL_PROFILE) {
+        return parseArchitecturalExtractionResponse(response, registry);
+    }
+
     const contentSections = registry.contentSections;
     const freeformSectionKeys = registry.freeformSectionKeys;
     const sections = {};
@@ -492,6 +508,7 @@ export function parseExtractionResponse(response, options = {}) {
 
     return sections;
 }
+
 /**
  * Check if content is effectively empty
  */
@@ -607,7 +624,12 @@ function parseSectionItems(content, sectionKey) {
  * @returns {string} Formatted extraction text
  */
 export function reconstructExtraction(sections, metadata = {}) {
-    const contentSections = getSharderContentSections(metadata.sectionRegistry || metadata.profile || NARRATIVE_PROFILE);
+    const registry = getSharderSectionRegistry(metadata.sectionRegistry || metadata.profile || NARRATIVE_PROFILE);
+    if (registry.profile === ARCHITECTURAL_PROFILE) {
+        return reconstructArchitecturalExtraction(sections, registry);
+    }
+
+    const contentSections = registry.contentSections;
     const lines = [];
 
     // Header

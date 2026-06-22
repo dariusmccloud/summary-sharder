@@ -3,6 +3,13 @@
  */
 
 import { saveSettings } from '../settings.js';
+import {
+    ARCHITECTURAL_PROFILE,
+    NARRATIVE_PROFILE,
+    normalizeSharderProfile,
+} from './sharder-section-registry.js';
+import { DEFAULT_ARCHITECTURAL_SHARDER_PROMPT } from './architectural-sharder-prompt.js';
+export { DEFAULT_ARCHITECTURAL_SHARDER_PROMPT } from './architectural-sharder-prompt.js';
 
 /**
  * Default Casing Extraction Prompt
@@ -386,9 +393,18 @@ Before outputting, verify: (a) every entry traces to explicit source text, (b) s
 /**
  * Get sharder prompts with fallback to defaults
  */
-export function getSharderPrompts(settings) {
+export function getSharderPrompts(settings, profileOverride = null) {
+    const profile = normalizeSharderProfile(profileOverride || settings?.sharderProfile);
+    if (profile === ARCHITECTURAL_PROFILE) {
+        return {
+            prompt: settings.architecturalSharderPrompts?.prompt || DEFAULT_ARCHITECTURAL_SHARDER_PROMPT,
+            profile,
+        };
+    }
+
     return {
         prompt: settings.sharderPrompts?.prompt || DEFAULT_SHARDER_PROMPT,
+        profile: NARRATIVE_PROFILE,
     };
 }
 
@@ -396,21 +412,32 @@ export function getSharderPrompts(settings) {
  * Ensure sharder prompts exist in settings
  */
 export function ensureSharderPrompts(settings) {
+    let changed = false;
     if (!settings.sharderPrompts) {
         settings.sharderPrompts = {
             prompt: DEFAULT_SHARDER_PROMPT,
         };
-        saveSettings(settings);
+        changed = true;
     } else {
         // Fill in any missing prompts with defaults
-        let changed = false;
         if (!settings.sharderPrompts.prompt) {
             settings.sharderPrompts.prompt = DEFAULT_SHARDER_PROMPT;
             changed = true;
         }
-        if (changed) {
-            saveSettings(settings);
-        }
+    }
+
+    if (!settings.architecturalSharderPrompts) {
+        settings.architecturalSharderPrompts = {
+            prompt: DEFAULT_ARCHITECTURAL_SHARDER_PROMPT,
+        };
+        changed = true;
+    } else if (!settings.architecturalSharderPrompts.prompt) {
+        settings.architecturalSharderPrompts.prompt = DEFAULT_ARCHITECTURAL_SHARDER_PROMPT;
+        changed = true;
+    }
+
+    if (changed) {
+        saveSettings(settings);
     }
 }
 

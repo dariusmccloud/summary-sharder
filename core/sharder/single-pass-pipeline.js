@@ -4,8 +4,10 @@
 
 import { getSharderPrompts } from '../summarization/prompts.js';
 import {
+    ARCHITECTURAL_PROFILE,
     NARRATIVE_PROFILE,
     getSharderSectionRegistry,
+    normalizeSharderProfile,
     parseExtractionResponse,
     reconstructExtraction,
     parseSceneCodes,
@@ -112,8 +114,9 @@ function buildSharderUserPrompt(chatText, context) {
  * @returns {Promise<{raw:string,reconstructed:string,sections:Object,diagnostics:Array,severity:string,stats:Object,metadata:Object,extractedKeywords:string[]}>}
  */
 export async function runSharderPipeline(chatText, settings, context) {
-    const sectionRegistry = getSharderSectionRegistry(context?.sectionRegistry || context?.profile || NARRATIVE_PROFILE);
-    const prompts = getSharderPrompts(settings);
+    const requestedProfile = normalizeSharderProfile(context?.profile || settings?.sharderProfile || NARRATIVE_PROFILE);
+    const sectionRegistry = getSharderSectionRegistry(context?.sectionRegistry || requestedProfile || NARRATIVE_PROFILE);
+    const prompts = getSharderPrompts(settings, sectionRegistry.profile);
     const systemPrompt = prompts.prompt;
 
     const existingShards = (Array.isArray(context?.existingShards) ? context.existingShards : [])
@@ -150,8 +153,12 @@ export async function runSharderPipeline(chatText, settings, context) {
     } = sanitizeSinglePassSections(parsed, { ...context, inheritedPrefixes });
 
     const structure = validateSinglePassOutput(sanitizedSections, { ...context, inheritedPrefixes, sectionRegistry });
-    const evidence = checkSinglePassEvidence(sanitizedSections, chatText);
-    const relationships = checkRelationshipCoherence(sanitizedSections);
+    const evidence = sectionRegistry.profile === ARCHITECTURAL_PROFILE
+        ? { diagnostics: [], stats: { checked: 0, lowEvidence: 0 } }
+        : checkSinglePassEvidence(sanitizedSections, chatText);
+    const relationships = sectionRegistry.profile === ARCHITECTURAL_PROFILE
+        ? { diagnostics: [], stats: { relationships: 0, outOfBounds: 0 } }
+        : checkRelationshipCoherence(sanitizedSections);
 
     const diagnostics = [
         ...structure.diagnostics,
@@ -175,6 +182,7 @@ export async function runSharderPipeline(chatText, settings, context) {
         userNotesEdited: false,
         headerType: 'shard',
         sectionRegistry,
+        profile: sectionRegistry.profile,
     });
 
     return {
@@ -198,6 +206,11 @@ export async function runSharderPipeline(chatText, settings, context) {
             existingShardCount: existingShards.length,
             headerType: 'shard',
             sectionRegistry,
+            profile: sectionRegistry.profile,
+            schemaVersion: sectionRegistry.schemaVersion,
+            ...(sectionRegistry.profile === ARCHITECTURAL_PROFILE ? {
+                shardProfile: ARCHITECTURAL_PROFILE,
+            } : {}),
         }
     };
 }

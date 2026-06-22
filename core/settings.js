@@ -15,6 +15,7 @@ import {
 import { isDebugEnabled, log } from './logger.js';
 import { migrateToCollectionBindings } from './rag/collection-bindings.js';
 import { getShardCollectionId, getStandardCollectionId } from './rag/collection-manager.js';
+import { NARRATIVE_PROFILE, normalizeSharderProfile } from './summarization/sharder-section-registry.js';
 
 let settingsSaveTraceCount = 0;
 
@@ -109,9 +110,13 @@ export function getDefaultSettings() {
 
         // Sharder Mode settings
         sharderMode: false,               // Toggle for sharder workflows
+        sharderProfile: NARRATIVE_PROFILE, // 'narrative' | 'architectural'
         autoIncludeShards: false,         // Auto-include all saved shards without showing selection modal
         sharderPrompts: {
             prompt: '',                   // Sharder prompt (loaded from prompts.js default)
+        },
+        architecturalSharderPrompts: {
+            prompt: '',                   // Architectural sharder prompt (loaded from prompts.js default)
         },
 
         // Summary Review settings (for advancedUserControl workflow)
@@ -613,6 +618,12 @@ export function migrateSettings(settings) {
 
     if (Object.prototype.hasOwnProperty.call(settings, 'sharderPipelineMode')) {
         delete settings.sharderPipelineMode;
+        migrated = true;
+    }
+
+    const normalizedSharderProfile = normalizeSharderProfile(settings.sharderProfile);
+    if (settings.sharderProfile !== normalizedSharderProfile) {
+        settings.sharderProfile = normalizedSharderProfile;
         migrated = true;
     }
 

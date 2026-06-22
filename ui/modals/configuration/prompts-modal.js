@@ -10,6 +10,7 @@ import {
     importPrompts,
     DEFAULT_PROMPT,
     DEFAULT_SHARDER_PROMPT,
+    DEFAULT_ARCHITECTURAL_SHARDER_PROMPT,
     DEFAULT_CASING_PROMPT,
     getCasingPrompt,
     resetCasingPrompt,
@@ -19,6 +20,12 @@ import {
 import { getActivePromptLabel, isSharderMode } from '../../common/active-mode-state.js';
 import { Popup, POPUP_RESULT, POPUP_TYPE } from '../../../../../../popup.js';
 import { showSsConfirm, showSsInput } from '../../common/modal-base.js';
+import {
+    ARCHITECTURAL_DISPLAY_NAME,
+    ARCHITECTURAL_PROFILE,
+    NARRATIVE_DISPLAY_NAME,
+    normalizeSharderProfile,
+} from '../../../core/summarization/sharder-section-registry.js';
 
 /**
  * Attach Copy/Paste/Clear/Reset action buttons to a prompt textarea.
@@ -236,11 +243,23 @@ function renderSummaryPromptsTab(settings, container) {
 function renderSharderPromptsTab(settings, container) {
     ensureSharderPrompts(settings);
     const sharderPrompts = getSharderPrompts(settings);
+    const activeProfile = normalizeSharderProfile(sharderPrompts.profile);
+    const isArchitectural = activeProfile === ARCHITECTURAL_PROFILE;
+    const activeDisplayName = isArchitectural ? ARCHITECTURAL_DISPLAY_NAME : NARRATIVE_DISPLAY_NAME;
+    const defaultPrompt = isArchitectural ? DEFAULT_ARCHITECTURAL_SHARDER_PROMPT : DEFAULT_SHARDER_PROMPT;
+    const getPromptStore = () => {
+        if (isArchitectural) {
+            if (!settings.architecturalSharderPrompts) settings.architecturalSharderPrompts = {};
+            return settings.architecturalSharderPrompts;
+        }
+        if (!settings.sharderPrompts) settings.sharderPrompts = {};
+        return settings.sharderPrompts;
+    };
 
     container.innerHTML = `
         <div class="ss-sharder-prompts-tab">
             <div class="ss-block ss-prompts-block">
-                <label>Sharder Prompt:</label>
+                <label>Sharder Prompt: ${activeDisplayName}</label>
                 <textarea id="ss-modal-single-pass-prompt" class="text_pole ss-prompts-editor"></textarea>
             </div>
 
@@ -260,7 +279,7 @@ function renderSharderPromptsTab(settings, container) {
     createTextareaActions(singlePassTextarea, async () => {
         const confirm = await showSsConfirm('Reset Sharder Prompt', 'Discard changes to this prompt?');
         if (confirm === POPUP_RESULT.AFFIRMATIVE) {
-            settings.sharderPrompts = { prompt: initialSharderContent };
+            getPromptStore().prompt = initialSharderContent;
             singlePassTextarea.value = initialSharderContent;
             saveSettings(settings);
             toastr.success('Sharder prompt reset to last saved version');
@@ -269,8 +288,7 @@ function renderSharderPromptsTab(settings, container) {
 
     // Event: Sharder prompt change
     singlePassTextarea.addEventListener('input', (e) => {
-        if (!settings.sharderPrompts) settings.sharderPrompts = {};
-        settings.sharderPrompts.prompt = e.target.value;
+        getPromptStore().prompt = e.target.value;
         saveSettings(settings);
     });
 
@@ -278,10 +296,8 @@ function renderSharderPromptsTab(settings, container) {
     container.querySelector('#ss-modal-reset-sharder').addEventListener('click', async () => {
         const confirm = await showSsConfirm('Reset Sharder Prompt', 'Reset the sharder prompt to its default?');
         if (confirm === POPUP_RESULT.AFFIRMATIVE) {
-            settings.sharderPrompts = {
-                prompt: DEFAULT_SHARDER_PROMPT
-            };
-            singlePassTextarea.value = DEFAULT_SHARDER_PROMPT;
+            getPromptStore().prompt = defaultPrompt;
+            singlePassTextarea.value = defaultPrompt;
             saveSettings(settings);
             toastr.success('Sharder prompts reset to defaults');
         }

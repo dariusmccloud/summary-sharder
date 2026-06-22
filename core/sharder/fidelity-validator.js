@@ -2,7 +2,13 @@
  * Deterministic fidelity validator for sharder output.
  */
 
-import { getSharderContentSections, parseSceneCodes } from '../summarization/sharder-pipeline.js';
+import {
+    ARCHITECTURAL_PROFILE,
+    getSharderContentSections,
+    getSharderSectionRegistry,
+    parseSceneCodes,
+} from '../summarization/sharder-pipeline.js';
+import { validateArchitecturalShellSections } from '../summarization/architectural-sharder-shell.js';
 
 /**
  * @typedef {{ level: 'error'|'warning'|'info', code: string, message: string }} Diagnostic
@@ -40,7 +46,8 @@ function resolveInheritedPrefixes(context) {
  */
 export function validateSinglePassOutput(sections, context = {}) {
     const diagnostics = [];
-    const requiredSectionKeys = getSharderContentSections(context.sectionRegistry || context.profile).map((s) => s.key);
+    const registry = getSharderSectionRegistry(context.sectionRegistry || context.profile);
+    const requiredSectionKeys = getSharderContentSections(registry).map((s) => s.key);
 
     if (!sections || typeof sections !== 'object') {
         diagnostics.push({
@@ -105,6 +112,10 @@ export function validateSinglePassOutput(sections, context = {}) {
             }
         });
     });
+
+    if (registry.profile === ARCHITECTURAL_PROFILE) {
+        diagnostics.push(...validateArchitecturalShellSections(sections));
+    }
 
     if (sectionsPresent < 3) {
         diagnostics.push({

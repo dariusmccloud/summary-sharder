@@ -25,6 +25,13 @@ import { openDebugExportModal } from './modals/configuration/debug-export-modal.
 import { updateApiStatusDisplays } from './common/api-status-state.js';
 import { log } from '../core/logger.js';
 import {
+    ARCHITECTURAL_DISPLAY_NAME,
+    ARCHITECTURAL_PROFILE,
+    NARRATIVE_DISPLAY_NAME,
+    NARRATIVE_PROFILE,
+    normalizeSharderProfile,
+} from '../core/summarization/sharder-section-registry.js';
+import {
     createSegmentedToggle,
     createTagInput,
     createRangeSliderPair,
@@ -380,6 +387,10 @@ export function renderSettingsUI(settings, callbacks) {
                         <div class="ss-accordion-content ss-hidden">
                             <div class="ss-control-group">
                                 <div id="ss-sharder-controls" class="ss-block ss-sharder-controls ss-hidden">                                                                      
+                                    <div class="ss-inline-row">
+                                        <label for="ss-sharder-profile">Sharder Profile:</label>
+                                        <div id="ss-sharder-profile-mount"></div>
+                                    </div>
                                     <label class="checkbox_label">
                                         <input id="ss-single-pass-auto-include-shards" type="checkbox" />
                                         <span>Auto-include all existing shards ${infoHintHtml('ss-auto-include-shards-hint', 'Skips the shard selection modal and includes all shard sections by default.')}</span>
@@ -590,6 +601,16 @@ export function renderSettingsUI(settings, callbacks) {
         summaryReview.mode || 'always',
     );
 
+    const sharderProfileToggle = mountSegmentedToggle(
+        'ss-sharder-profile-mount',
+        'ss-sharder-profile',
+        [
+            { value: NARRATIVE_PROFILE, label: NARRATIVE_DISPLAY_NAME },
+            { value: ARCHITECTURAL_PROFILE, label: ARCHITECTURAL_DISPLAY_NAME },
+        ],
+        normalizeSharderProfile(settings.sharderProfile),
+    );
+
     const lengthPairHost = document.getElementById('ss-length-percent-host');
     const lengthPair = createRangeSliderPair({
         id: 'ss-length-percent',
@@ -749,6 +770,12 @@ export function renderSettingsUI(settings, callbacks) {
     singlePassAutoIncludeEl?.addEventListener('change', (e) => {
         settings.autoIncludeShards = e.target.checked;
         saveSettings(settings);
+    });
+
+    sharderProfileToggle?.addEventListener('change', (e) => {
+        settings.sharderProfile = normalizeSharderProfile(e.target.value);
+        saveSettings(settings);
+        updateActivePromptDisplay(settings);
     });
 
     summaryReviewToggle?.addEventListener('change', (e) => {
