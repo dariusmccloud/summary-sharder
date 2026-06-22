@@ -2,7 +2,14 @@
  * Deterministic fidelity validator for sharder output.
  */
 
-import { getSharderContentSections, parseSceneCodes } from '../summarization/sharder-pipeline.js';
+import {
+    ARCHITECTURAL_PROFILE,
+    ARCHITECTURAL_PROFILE_MARKER,
+    ARCHITECTURAL_SCHEMA_MARKER,
+    getSharderContentSections,
+    getSharderSectionRegistry,
+    parseSceneCodes,
+} from '../summarization/sharder-pipeline.js';
 
 /**
  * @typedef {{ level: 'error'|'warning'|'info', code: string, message: string }} Diagnostic
@@ -40,7 +47,8 @@ function resolveInheritedPrefixes(context) {
  */
 export function validateSinglePassOutput(sections, context = {}) {
     const diagnostics = [];
-    const requiredSectionKeys = getSharderContentSections(context.sectionRegistry || context.profile).map((s) => s.key);
+    const registry = getSharderSectionRegistry(context.sectionRegistry || context.profile);
+    const requiredSectionKeys = getSharderContentSections(registry).map((s) => s.key);
 
     if (!sections || typeof sections !== 'object') {
         diagnostics.push({
@@ -106,6 +114,10 @@ export function validateSinglePassOutput(sections, context = {}) {
         });
     });
 
+    if (registry.profile === ARCHITECTURAL_PROFILE) {
+        validateArchitecturalShell(sections, diagnostics);
+    }
+
     if (sectionsPresent < 3) {
         diagnostics.push({
             level: 'warning',
@@ -138,6 +150,40 @@ export function validateSinglePassOutput(sections, context = {}) {
             sceneCodes
         }
     };
+}
+
+function validateArchitecturalShell(sections, diagnostics) {
+    const keyLines = Array.isArray(sections?._metadata?.keyLines) ? sections._metadata.keyLines : [];
+    const keyPresent = sections?._metadata?.architectural?.keyPresent === true;
+    const profileLines = keyLines.filter((line) => /^Profile\s*:/i.test(line));
+    const schemaLines = keyLines.filter((line) => /^Schema\s*:/i.test(line));
+    const currentItems = Array.isArray(sections?.current) ? sections.current : [];
+    const selectedCurrent = currentItems.filter((item) => item?.selected !== false);
+    const terminatorCount = sections?._metadata?.architectural?.terminatorCount ?? 0;
+    const unknownHeaders = sections?._metadata?.architectural?.unknownSectionHeaders || [];
+
+    if (!keyPresent) {
+        diagnostics.push({ level: 'warning', code: 'ARCH_KEY_RECOVERED', message: 'Architectural KEY metadata was missing; canonical output will emit a protected KEY block.' });
+    }
+    if (profileLines.length !== 1 || !/^Profile\s*:\s*architectural-memory\s*$/i.test(profileLines[0] || '')) {
+        diagnostics.push({ level: 'warning', code: 'ARCH_KEY_PROFILE_RECOVERED', message: `Architectural KEY profile marker was missing or invalid; canonical output will emit Profile: ${ARCHITECTURAL_PROFILE_MARKER}.` });
+    }
+    if (schemaLines.length !== 1 || !/^Schema\s*:\s*architectural-memory\/v1\s*$/i.test(schemaLines[0] || '')) {
+        diagnostics.push({ level: 'warning', code: 'ARCH_KEY_SCHEMA_RECOVERED', message: `Architectural KEY schema marker was missing or invalid; canonical output will emit Schema: ${ARCHITECTURAL_SCHEMA_MARKER}.` });
+    }
+    if (!currentItems.length) {
+        diagnostics.push({ level: 'error', code: 'ARCH_CURRENT_MISSING', message: 'Architectural CURRENT section is missing.' });
+    } else if (selectedCurrent.length === 0) {
+        diagnostics.push({ level: 'error', code: 'ARCH_CURRENT_EMPTY', message: 'Architectural CURRENT requires one selected entry.' });
+    } else if (selectedCurrent.length > 1) {
+        diagnostics.push({ level: 'error', code: 'ARCH_CURRENT_MULTIPLE', message: 'Architectural CURRENT must contain exactly one selected entry.' });
+    }
+    if (terminatorCount !== 1) {
+        diagnostics.push({ level: 'warning', code: 'ARCH_TERMINATOR_RECOVERED', message: 'Architectural terminator was missing or duplicated; canonical output will emit exactly one ===END===.' });
+    }
+    unknownHeaders.forEach((header) => {
+        diagnostics.push({ level: 'warning', code: 'ARCH_UNKNOWN_SECTION_IGNORED', message: `Ignored unsupported Architectural section header: [${header}]` });
+    });
 }
 
 /**

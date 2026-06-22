@@ -8,6 +8,7 @@ import { escapeHtml } from '../../common/ui-utils.js';
 import { archiveToWarm } from '../../../core/rag/archive.js';
 import { log } from '../../../core/logger.js';
 import {
+    ARCHITECTURAL_PROFILE,
     NARRATIVE_PROFILE,
     getSharderContentSections,
     getSharderSectionRegistry,
@@ -19,6 +20,39 @@ import {
 
 function sectionTitle(section) {
     return section.key === 'currentState' ? 'CURRENT (as of end of extract)' : section.name;
+}
+
+function isArchitecturalState(state) {
+    return state?.sectionRegistry?.profile === ARCHITECTURAL_PROFILE;
+}
+
+function isArchitecturalCurrentSection(state, sectionKey) {
+    return isArchitecturalState(state) && sectionKey === 'current';
+}
+
+function getSelectedItems(items) {
+    return (Array.isArray(items) ? items : []).filter((item) => item?.selected !== false);
+}
+
+function getArchitecturalCurrentError(state) {
+    if (!isArchitecturalState(state)) return null;
+    const currentItems = state.editableSections?.current || [];
+    const selectedCurrent = getSelectedItems(currentItems);
+    if (selectedCurrent.length === 0) {
+        return {
+            level: 'error',
+            code: 'ARCH_CURRENT_EMPTY',
+            message: 'Architectural CURRENT requires one selected entry.',
+        };
+    }
+    if (selectedCurrent.length > 1) {
+        return {
+            level: 'error',
+            code: 'ARCH_CURRENT_MULTIPLE',
+            message: 'Architectural CURRENT must contain exactly one selected entry.',
+        };
+    }
+    return null;
 }
 
 function reviewSections(stateOrRegistry = null) {
@@ -193,6 +227,7 @@ function sectionRows(state, sectionKey, items) {
 
     return items.map((item) => {
         const isSelected = item.selected !== false;
+        const isProtectedCurrent = isArchitecturalCurrentSection(state, sectionKey) && items.length <= 1;
         const codes = (item.sceneCodes || [])
             .map((c) => {
                 if (typeof c === 'string') return c;
@@ -218,7 +253,7 @@ function sectionRows(state, sectionKey, items) {
                     </div>
                     <div class="ss-cr-item-meta">
                         <div class="ss-cr-scene-codes">${codes || '<span class="ss-hint">No scene tags</span>'}</div>
-                        <button class="ss-cr-item-prune menu_button" data-section-key="${escapeHtml(sectionKey)}" data-item-id="${escapeHtml(item.id)}">Prune</button>
+                        <button class="ss-cr-item-prune menu_button" data-section-key="${escapeHtml(sectionKey)}" data-item-id="${escapeHtml(item.id)}" ${isProtectedCurrent ? 'disabled title="Architectural CURRENT must keep one row"' : ''}>Prune</button>
                         <button class="ss-cr-item-archive menu_button ${item.archived ? 'ss-cr-item-archived' : ''}"
                                 data-section-key="${escapeHtml(sectionKey)}"
                                 data-item-id="${escapeHtml(item.id)}"
@@ -239,6 +274,7 @@ function sectionsHtml(state) {
     return reviewSections(state).map((section) => {
         const items = state.editableSections[section.key] || [];
         const { selected, total } = sectionCount(items);
+        const isProtectedCurrent = isArchitecturalCurrentSection(state, section.key);
         return `
             <div class="ss-review-accordion" data-section="sp-${escapeHtml(section.key)}">
                 <div class="ss-accordion-header">
@@ -249,9 +285,9 @@ function sectionsHtml(state) {
                 </div>
                 <div class="ss-accordion-content" style="display:none;">
                     <div class="ss-sp-section-actions" style="margin-bottom:8px;">
-                        <button class="menu_button ss-sp-exclude-all" data-section-key="${escapeHtml(section.key)}">Prune All</button>
+                        <button class="menu_button ss-sp-exclude-all" data-section-key="${escapeHtml(section.key)}" ${isProtectedCurrent ? 'disabled title="Architectural CURRENT must keep one row"' : ''}>Prune All</button>
                         <button class="menu_button ss-sp-select-all" data-section-key="${escapeHtml(section.key)}">Select All</button>
-                        <button class="menu_button ss-sp-deselect-all" data-section-key="${escapeHtml(section.key)}">Deselect All</button>
+                        <button class="menu_button ss-sp-deselect-all" data-section-key="${escapeHtml(section.key)}" ${isProtectedCurrent ? 'disabled title="Architectural CURRENT must keep one row"' : ''}>Deselect All</button>
                     </div>
                     <div class="ss-cr-items" data-section-key="${escapeHtml(section.key)}">
                         ${sectionRows(state, section.key, items)}
@@ -719,6 +755,18 @@ function setupSectionHandlers(state, regenFn) {
             const item = (state.editableSections[sectionKey] || []).find(i => i.id === itemId);
             if (!item) return;
 
+            if (!e.target.checked && isArchitecturalCurrentSection(state, sectionKey)) {
+                const selectedCount = getSelectedItems(state.editableSections[sectionKey]).length;
+                if (selectedCount <= 1) {
+                    e.target.checked = true;
+                    item.selected = true;
+                    if (typeof toastr !== 'undefined') {
+                        toastr.warning('Architectural CURRENT must keep one selected row');
+                    }
+                    return;
+                }
+            }
+
             item.selected = e.target.checked;
             const row = document.querySelector(`.ss-cr-item-row[data-section-key="${CSS.escape(sectionKey)}"][data-item-id="${CSS.escape(itemId)}"]`);
             if (row) {
@@ -774,6 +822,12 @@ function setupSectionHandlers(state, regenFn) {
     document.querySelectorAll('.ss-sp-deselect-all').forEach((btn) => {
         btn.addEventListener('click', (e) => {
             const sectionKey = e.currentTarget.dataset.sectionKey;
+            if (isArchitecturalCurrentSection(state, sectionKey)) {
+                if (typeof toastr !== 'undefined') {
+                    toastr.warning('Architectural CURRENT must keep one selected row');
+                }
+                return;
+            }
             const items = state.editableSections[sectionKey] || [];
             items.forEach(item => { item.selected = false; });
 
@@ -851,6 +905,17 @@ function setupSectionHandlers(state, regenFn) {
                 const cb = newRow.querySelector('.ss-sp-item-checkbox');
                 if (cb) {
                     cb.addEventListener('change', (ev) => {
+                        if (!ev.target.checked && isArchitecturalCurrentSection(state, sectionKey)) {
+                            const selectedCount = getSelectedItems(items).length;
+                            if (selectedCount <= 1) {
+                                ev.target.checked = true;
+                                newItem.selected = true;
+                                if (typeof toastr !== 'undefined') {
+                                    toastr.warning('Architectural CURRENT must keep one selected row');
+                                }
+                                return;
+                            }
+                        }
                         newItem.selected = ev.target.checked;
                         newRow.classList.toggle('is-selected', newItem.selected);
                         newRow.classList.toggle('is-unselected', !newItem.selected);
@@ -862,6 +927,12 @@ function setupSectionHandlers(state, regenFn) {
                 const pruneBtn = newRow.querySelector('.ss-cr-item-prune');
                 if (pruneBtn) {
                     pruneBtn.addEventListener('click', () => {
+                        if (isArchitecturalCurrentSection(state, sectionKey) && items.length <= 1) {
+                            if (typeof toastr !== 'undefined') {
+                                toastr.warning('Architectural CURRENT must keep one row');
+                            }
+                            return;
+                        }
                         const idx = items.findIndex(i => i.id === newItem.id);
                         if (idx >= 0) {
                             addPrunedItemToReportAndUI(state, sectionKey, newItem.content || '', newItem.sceneCodes || []);
@@ -923,6 +994,12 @@ function setupSectionHandlers(state, regenFn) {
     document.querySelectorAll('.ss-sp-exclude-all').forEach((btn) => {
         btn.addEventListener('click', async (e) => {
             const sectionKey = e.currentTarget.dataset.sectionKey;
+            if (isArchitecturalCurrentSection(state, sectionKey)) {
+                if (typeof toastr !== 'undefined') {
+                    toastr.warning('Architectural CURRENT must keep one row');
+                }
+                return;
+            }
             const items = state.editableSections[sectionKey] || [];
             if (items.length === 0) return;
 
@@ -978,6 +1055,13 @@ function setupSectionHandlers(state, regenFn) {
             if (index < 0) return;
 
             const item = items[index];
+            if (isArchitecturalCurrentSection(state, sectionKey)
+                && (items.length <= 1 || (item?.selected !== false && getSelectedItems(items).length <= 1))) {
+                if (typeof toastr !== 'undefined') {
+                    toastr.warning('Architectural CURRENT must keep one selected row');
+                }
+                return;
+            }
             addPrunedItemToReportAndUI(state, sectionKey, item?.content || '', item?.sceneCodes || []);
             items.splice(index, 1);
 
@@ -1166,6 +1250,9 @@ function setupGlobalSelectionHandlers(state) {
     if (deselectAllBtn) {
         deselectAllBtn.addEventListener('click', () => {
             reviewSections(state).forEach((section) => {
+                if (isArchitecturalCurrentSection(state, section.key)) {
+                    return;
+                }
                 const items = state.editableSections[section.key] || [];
                 items.forEach(item => { item.selected = false; });
 
@@ -1325,7 +1412,13 @@ export async function openSharderReviewModal(pipelineResult, settings, regenFn =
 
     const result = await showPromise;
     if (result === POPUP_RESULT.AFFIRMATIVE) {
-        const hasErrors = state.diagnostics.some((d) => d.level === 'error');
+        const currentErrorCodes = new Set(['ARCH_CURRENT_MISSING', 'ARCH_CURRENT_EMPTY', 'ARCH_CURRENT_MULTIPLE']);
+        const saveDiagnostics = state.diagnostics.filter((d) => !currentErrorCodes.has(d.code));
+        const currentError = getArchitecturalCurrentError(state);
+        if (currentError) {
+            saveDiagnostics.push(currentError);
+        }
+        const hasErrors = saveDiagnostics.some((d) => d.level === 'error');
         if (hasErrors) {
             toastr.warning('Save blocked due to error-level diagnostics');
             return {

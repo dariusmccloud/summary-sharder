@@ -2,6 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+    ARCHITECTURAL_DISPLAY_NAME,
+    ARCHITECTURAL_PROFILE,
+    ARCHITECTURAL_PROFILE_MARKER,
+    ARCHITECTURAL_SCHEMA_MARKER,
+    ARCHITECTURAL_SCHEMA_VERSION,
+    ARCHITECTURAL_SHARDER_REGISTRY,
     FREEFORM_SECTIONS,
     NARRATIVE_DISPLAY_NAME,
     NARRATIVE_PROFILE,
@@ -34,6 +40,16 @@ const EXPECTED_CONTENT_SECTIONS = [
 ];
 
 const EXPECTED_FREEFORM_SECTION_KEYS = ['tone', 'currentState', 'worldState', 'scenes', 'voice'];
+
+const EXPECTED_ARCHITECTURAL_CONTENT_SECTIONS = [
+    { emoji: '', name: 'TIMELINE', key: 'timeline' },
+    { emoji: '', name: 'DECISIONS', key: 'decisions' },
+    { emoji: '', name: 'EVENTS', key: 'events' },
+    { emoji: '', name: 'DEVELOPMENTS', key: 'developments' },
+    { emoji: '', name: 'DIALOGUE', key: 'dialogue' },
+    { emoji: '', name: 'THREADS', key: 'threads' },
+    { emoji: '', name: 'CURRENT', key: 'current', isLast: true },
+];
 
 test('narrative content sections retain exact original order', () => {
     assert.deepEqual(
@@ -146,4 +162,40 @@ test('malformed content-section registries fail predictably', () => {
         () => getSharderSectionRegistry({ profile: 'bad', contentSections: [{ name: 'BAD', emoji: 'B' }] }),
         /non-empty key/,
     );
+});
+
+test('architectural profile resolves to seven content sections and KEY metadata', () => {
+    const registry = getSharderSectionRegistry(ARCHITECTURAL_PROFILE);
+
+    assert.equal(registry.profile, ARCHITECTURAL_PROFILE);
+    assert.equal(registry.displayName, ARCHITECTURAL_DISPLAY_NAME);
+    assert.equal(registry.schemaVersion, ARCHITECTURAL_SCHEMA_VERSION);
+    assert.equal(registry.profileMarker, ARCHITECTURAL_PROFILE_MARKER);
+    assert.equal(registry.schemaMarker, ARCHITECTURAL_SCHEMA_MARKER);
+    assert.equal(registry.renderFormat, 'bracket');
+    assert.equal(registry.terminator, '===END===');
+    assert.deepEqual(registry.contentSections, EXPECTED_ARCHITECTURAL_CONTENT_SECTIONS);
+    assert.deepEqual(registry.metadataSections, [{
+        emoji: '',
+        name: 'KEY',
+        key: 'key',
+        selectable: false,
+        prunable: false,
+        mandatory: true,
+    }]);
+    assert.deepEqual(registry.freeformSectionKeys, []);
+});
+
+test('architectural compatibility data is immutable and accessor-safe', () => {
+    assert.equal(Object.isFrozen(ARCHITECTURAL_SHARDER_REGISTRY), true);
+    assert.equal(Object.isFrozen(ARCHITECTURAL_SHARDER_REGISTRY.contentSections), true);
+    assert.equal(Object.isFrozen(ARCHITECTURAL_SHARDER_REGISTRY.contentSections[0]), true);
+
+    const registry = getSharderSectionRegistry(ARCHITECTURAL_PROFILE);
+    registry.contentSections[0].key = 'mutated';
+    registry.metadataSections[0].selectable = true;
+
+    assert.equal(ARCHITECTURAL_SHARDER_REGISTRY.contentSections[0].key, 'timeline');
+    assert.equal(ARCHITECTURAL_SHARDER_REGISTRY.metadataSections[0].selectable, false);
+    assert.equal(getSharderSectionRegistry(ARCHITECTURAL_PROFILE).contentSections[0].key, 'timeline');
 });

@@ -19,6 +19,7 @@ import {
 } from './abort-controller.js';
 import { startUiOperation, endUiOperation } from './api-ui-helpers.js';
 import { log } from '../logger.js';
+import { ARCHITECTURAL_PROFILE, normalizeSharderProfile } from '../summarization/sharder-section-registry.js';
 
 let isSharderRunning = false;
 
@@ -70,7 +71,8 @@ async function runPipelineWithAnalysis(chatText, settings, startIndex, endIndex,
     const coverageReport = analyzeMessageCoverage(chatText, result.sections, { startIndex, endIndex });
 
     let shardReport = null;
-    if ((selectedShards || []).length > 0) {
+    if ((selectedShards || []).length > 0
+        && normalizeSharderProfile(settings?.sharderProfile) !== ARCHITECTURAL_PROFILE) {
         const { analyzeSinglePassPruning } = await import('../sharder/shard-pruning-analyzer.js');
         shardReport = analyzeSinglePassPruning(selectedShards, result.sections);
     }

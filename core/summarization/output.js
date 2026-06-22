@@ -27,6 +27,7 @@ import {
 } from '../rag/vector-client.js';
 import { archiveToWarm, archiveToCold } from '../rag/archive.js';
 import { throwIfAborted } from '../api/abort-controller.js';
+import { ARCHITECTURAL_PROFILE } from './sharder-section-registry.js';
 
 // World info metadata key
 const METADATA_KEY = 'world_info';
@@ -87,19 +88,26 @@ export async function handleSummaryResult(
         if (settings?.sharderMode === true) {
             // Sharder mode: section-aware or standard shard vectorization
             if (settings?.rag?.enabled && settings?.rag?.autoVectorizeNewSummaries !== false) {
-                try {
-                    const mode = resolveShardChunkingMode(settings?.rag);
-                    if (mode === 'section') {
-                        await vectorizeShardSectionAware(summary, startIndex, endIndex, settings, extractedKeywords);
-                    } else {
-                        await vectorizeShard(summary, startIndex, endIndex, settings, extractedKeywords);
+                if (settings?.sharderProfile === ARCHITECTURAL_PROFILE) {
+                    ragLog.info('Architectural Memory RAG vectorization skipped; architectural RAG support is deferred.');
+                    if (typeof toastr !== 'undefined') {
+                        toastr.info('Architectural Memory saved. Architectural RAG support is deferred, so vectorization was skipped.');
                     }
-                } catch (error) {
-                    const backend = String(settings?.rag?.backend || '').toLowerCase();
-                    if (backend === 'qdrant' && isQdrantDimensionMismatchError(error) && typeof toastr !== 'undefined') {
-                        toastr.error(getQdrantDimensionMismatchToastMessage());
+                } else {
+                    try {
+                        const mode = resolveShardChunkingMode(settings?.rag);
+                        if (mode === 'section') {
+                            await vectorizeShardSectionAware(summary, startIndex, endIndex, settings, extractedKeywords);
+                        } else {
+                            await vectorizeShard(summary, startIndex, endIndex, settings, extractedKeywords);
+                        }
+                    } catch (error) {
+                        const backend = String(settings?.rag?.backend || '').toLowerCase();
+                        if (backend === 'qdrant' && isQdrantDimensionMismatchError(error) && typeof toastr !== 'undefined') {
+                            toastr.error(getQdrantDimensionMismatchToastMessage());
+                        }
+                        ragLog.warn('Failed to vectorize shard after summary save:', error?.message || error);
                     }
-                    ragLog.warn('Failed to vectorize shard after summary save:', error?.message || error);
                 }
             }
         } else {
