@@ -20,6 +20,7 @@ import { sanitizeSinglePassSections } from './canonical-sanitizer.js';
 import { validateSinglePassOutput, getSinglePassSeverity } from './fidelity-validator.js';
 import { checkSinglePassEvidence } from './evidence-checker.js';
 import { checkRelationshipCoherence } from './relationship-guard.js';
+import { buildArchitecturalBaselineFromShards } from '../summarization/architectural-structured-validator.js';
 
 /**
  * @param {Object} settings
@@ -129,6 +130,9 @@ export async function runSharderPipeline(chatText, settings, context) {
             return true;
         });
     const userPrompt = buildSharderUserPrompt(chatText, context);
+    const architecturalBaseline = sectionRegistry.profile === ARCHITECTURAL_PROFILE
+        ? buildArchitecturalBaselineFromShards(existingShards)
+        : { decisions: {}, diagnostics: [] };
 
     const inheritedPrefixes = new Set();
     for (const shard of existingShards) {
@@ -152,7 +156,12 @@ export async function runSharderPipeline(chatText, settings, context) {
         fixedCodes,
     } = sanitizeSinglePassSections(parsed, { ...context, inheritedPrefixes });
 
-    const structure = validateSinglePassOutput(sanitizedSections, { ...context, inheritedPrefixes, sectionRegistry });
+    const structure = validateSinglePassOutput(sanitizedSections, {
+        ...context,
+        inheritedPrefixes,
+        sectionRegistry,
+        baselineDecisions: architecturalBaseline.decisions,
+    });
     const evidence = sectionRegistry.profile === ARCHITECTURAL_PROFILE
         ? { diagnostics: [], stats: { checked: 0, lowEvidence: 0 } }
         : checkSinglePassEvidence(sanitizedSections, chatText);
@@ -162,6 +171,7 @@ export async function runSharderPipeline(chatText, settings, context) {
 
     const diagnostics = [
         ...structure.diagnostics,
+        ...architecturalBaseline.diagnostics,
         ...evidence.diagnostics,
         ...relationships.diagnostics,
     ];
@@ -210,6 +220,7 @@ export async function runSharderPipeline(chatText, settings, context) {
             schemaVersion: sectionRegistry.schemaVersion,
             ...(sectionRegistry.profile === ARCHITECTURAL_PROFILE ? {
                 shardProfile: ARCHITECTURAL_PROFILE,
+                baselineDecisions: architecturalBaseline.decisions,
             } : {}),
         }
     };

@@ -10,7 +10,12 @@ import { log } from '../../../core/logger.js';
 import {
     buildArchitecturalKeyLines,
     isWarmArchiveEligible,
+    validateArchitecturalShellSections,
 } from '../../../core/summarization/architectural-sharder-shell.js';
+import {
+    ARCHITECTURAL_SECTION_CAPS,
+    validateArchitecturalStructuredSections,
+} from '../../../core/summarization/architectural-structured-validator.js';
 import {
     ARCHITECTURAL_PROFILE,
     NARRATIVE_PROFILE,
@@ -58,6 +63,15 @@ function getArchitecturalCurrentError(state) {
     }
     return null;
 }
+
+const ARCHITECTURAL_IMMUTABLE_DIAGNOSTIC_CODES = new Set([
+    'ARCH_KEY_RECOVERED',
+    'ARCH_KEY_PROFILE_RECOVERED',
+    'ARCH_KEY_SCHEMA_RECOVERED',
+    'ARCH_TERMINATOR_RECOVERED',
+    'ARCH_UNKNOWN_SECTION_IGNORED',
+    'ARCH_BASELINE_DECISION_IGNORED',
+]);
 
 function reviewSections(stateOrRegistry = null) {
     const registry = stateOrRegistry?.sectionRegistry || stateOrRegistry;
@@ -177,6 +191,97 @@ function sectionCount(items) {
     return { selected, total: items.length };
 }
 
+function buildLocationLabel(diagnostic) {
+    if (!diagnostic) return '';
+    if (diagnostic.recordId && diagnostic.sectionKey === 'decisions') {
+        return `${String(diagnostic.sectionKey || '').toUpperCase()} ID:${diagnostic.recordId}`;
+    }
+    if (diagnostic.sectionKey && Number.isInteger(diagnostic.itemIndex)) {
+        return `${String(diagnostic.sectionKey || '').toUpperCase()} item ${diagnostic.itemIndex + 1}`;
+    }
+    if (diagnostic.sectionKey) {
+        return String(diagnostic.sectionKey || '').toUpperCase();
+    }
+    return '';
+}
+
+function diagnosticSignature(diagnostic) {
+    return [
+        diagnostic?.level || '',
+        diagnostic?.code || '',
+        diagnostic?.message || '',
+        diagnostic?.sectionKey || '',
+        Number.isInteger(diagnostic?.itemIndex) ? diagnostic.itemIndex : '',
+        diagnostic?.recordId || '',
+        diagnostic?.field || '',
+    ].join('|');
+}
+
+function mergeDiagnostics(sourceDiagnostics, dynamicDiagnostics) {
+    const merged = [];
+    const seen = new Set();
+
+    [...(sourceDiagnostics || []), ...(dynamicDiagnostics || [])].forEach((diagnostic) => {
+        const signature = diagnosticSignature(diagnostic);
+        if (seen.has(signature)) return;
+        seen.add(signature);
+        merged.push(diagnostic);
+    });
+
+    return merged;
+}
+
+function getRowDiagnostics(state, sectionKey, itemIndex) {
+    return (state.diagnostics || []).filter((diagnostic) =>
+        diagnostic?.sectionKey === sectionKey && diagnostic?.itemIndex === itemIndex
+    );
+}
+
+function buildDynamicArchitecturalSections(state) {
+    const sections = {};
+    reviewSections(state).forEach((section) => {
+        sections[section.key] = (state.editableSections?.[section.key] || []).map((item) => ({
+            content: item.content,
+            selected: item.selected !== false,
+            weight: item.weight,
+            sceneCodes: item.sceneCodes,
+        }));
+    });
+
+    sections._metadata = {
+        ...(sections._metadata || {}),
+        keyLines: [...(state.keyLines || [])],
+        architectural: {
+            keyPresent: true,
+            terminatorCount: 1,
+            unknownSectionHeaders: [],
+        },
+    };
+
+    return sections;
+}
+
+function computeArchitecturalDynamicDiagnostics(state) {
+    const sections = buildDynamicArchitecturalSections(state);
+    const shellDiagnostics = validateArchitecturalShellSections(sections)
+        .filter((diagnostic) =>
+            !ARCHITECTURAL_IMMUTABLE_DIAGNOSTIC_CODES.has(diagnostic.code)
+            && !['ARCH_CURRENT_MISSING', 'ARCH_CURRENT_EMPTY', 'ARCH_CURRENT_MULTIPLE'].includes(diagnostic.code)
+        );
+    const structuredDiagnostics = validateArchitecturalStructuredSections(sections, {
+        baselineDecisions: state.metadata?.baselineDecisions || {},
+        profile: ARCHITECTURAL_PROFILE,
+    });
+
+    return mergeDiagnostics(shellDiagnostics, structuredDiagnostics);
+}
+
+function refreshArchitecturalDiagnostics(state) {
+    if (!isArchitecturalState(state)) return;
+    state.dynamicDiagnostics = computeArchitecturalDynamicDiagnostics(state);
+    state.diagnostics = mergeDiagnostics(state.sourceDiagnostics, state.dynamicDiagnostics);
+}
+
 function rebuildOutput(state) {
     const sections = {};
     reviewSections(state).forEach((section) => {
@@ -246,6 +351,7 @@ function diagnosticsHtml(diagnostics) {
                 <span class="ss-sp-diag-level">${escapeHtml((d.level || 'info').toUpperCase())}</span>
                 <span class="ss-sp-diag-code">${escapeHtml(d.code || 'UNSPECIFIED')}</span>
             </div>
+            ${buildLocationLabel(d) ? `<div class="ss-sp-diag-loc">${escapeHtml(buildLocationLabel(d))}</div>` : ''}
             <div class="ss-sp-diag-msg">${escapeHtml(d.message || '')}</div>
         </div>
     `).join('');
@@ -260,6 +366,46 @@ function weightSelectorHtml(item) {
     return `<div class="ss-sharder-weight-selector" data-item-id="${escapeHtml(item.id)}">${buttons}</div>`;
 }
 
+function rowDiagnosticsHtml(state, sectionKey, itemIndex) {
+    const diagnostics = getRowDiagnostics(state, sectionKey, itemIndex);
+    if (!diagnostics.length) return '';
+
+    return `
+        <div class="ss-sp-inline-diagnostics">
+            ${diagnostics.map((diagnostic) => `
+                <div class="ss-sp-inline-diag ss-level-${escapeHtml(diagnostic.level)}">
+                    <span class="ss-sp-inline-code">${escapeHtml(diagnostic.code || 'UNSPECIFIED')}</span>
+                    <span class="ss-sp-inline-msg">${escapeHtml(diagnostic.message || '')}</span>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+function updateInlineDiagnostics(state) {
+    if (!isArchitecturalState(state)) return;
+
+    reviewSections(state).forEach((section) => {
+        const items = state.editableSections?.[section.key] || [];
+        items.forEach((item, itemIndex) => {
+            const row = document.querySelector(`.ss-cr-item-row[data-section-key="${CSS.escape(section.key)}"][data-item-id="${CSS.escape(item.id)}"]`);
+            if (!row) return;
+
+            const existing = row.querySelector('.ss-sp-inline-diagnostics');
+            const html = rowDiagnosticsHtml(state, section.key, itemIndex);
+            if (html) {
+                if (existing) {
+                    existing.outerHTML = html;
+                } else {
+                    row.insertAdjacentHTML('beforeend', html);
+                }
+            } else if (existing) {
+                existing.remove();
+            }
+        });
+    });
+}
+
 function sectionRows(state, sectionKey, items) {
     if (!items.length) {
         return '<p class="ss-empty">No items in this section.</p>';
@@ -267,7 +413,7 @@ function sectionRows(state, sectionKey, items) {
 
     const warmArchiveUnavailableMessage = getWarmArchiveUnavailableMessage(state);
 
-    return items.map((item) => {
+    return items.map((item, itemIndex) => {
         const isSelected = item.selected !== false;
         const isProtectedCurrent = isArchitecturalCurrentSection(state, sectionKey) && items.length <= 1;
         const codes = (item.sceneCodes || [])
@@ -307,6 +453,7 @@ function sectionRows(state, sectionKey, items) {
                 </div>
                 <textarea class="ss-cr-item-editor text_pole" rows="2" data-section-key="${escapeHtml(sectionKey)}" data-item-id="${escapeHtml(item.id)}">${escapeHtml(item.content || '')}</textarea>
                 ${weightHtml}
+                ${rowDiagnosticsHtml(state, sectionKey, itemIndex)}
             </div>
         `;
     }).join('');
@@ -318,13 +465,18 @@ function sectionsHtml(state) {
         const { selected, total } = sectionCount(items);
         const isProtectedCurrent = isArchitecturalCurrentSection(state, section.key);
         const addItemDisabled = isProtectedCurrent;
+        const cap = isArchitecturalState(state) ? ARCHITECTURAL_SECTION_CAPS[section.key] : null;
+        const countText = isArchitecturalState(state) && Number.isInteger(cap)
+            ? `(${selected} selected / cap ${cap})`
+            : `(${selected}/${total})`;
+        const overCap = isArchitecturalState(state) && Number.isInteger(cap) && selected > cap;
         return `
-            <div class="ss-review-accordion" data-section="sp-${escapeHtml(section.key)}">
+            <div class="ss-review-accordion ${overCap ? 'ss-over-cap' : ''}" data-section="sp-${escapeHtml(section.key)}">
                 <div class="ss-accordion-header">
                     <span class="ss-accordion-toggle"><i class="fa-solid fa-chevron-right"></i></span>
                     <span class="ss-accordion-emoji">${section.emoji}</span>
                     <span class="ss-accordion-title">${escapeHtml(sectionTitle(section))}</span>
-                    <span class="ss-accordion-count" data-ss-count-key="${escapeHtml(section.key)}">(${selected}/${total})</span>
+                    <span class="ss-accordion-count" data-ss-count-key="${escapeHtml(section.key)}">${escapeHtml(countText)}</span>
                 </div>
                 <div class="ss-accordion-content" style="display:none;">
                     <div class="ss-sp-section-actions" style="margin-bottom:8px;">
@@ -543,11 +695,25 @@ function buildModalHtml(state) {
 function updateSectionCount(state, sectionKey) {
     const items = state.editableSections[sectionKey] || [];
     const { selected, total } = sectionCount(items);
+    const cap = isArchitecturalState(state) ? ARCHITECTURAL_SECTION_CAPS[sectionKey] : null;
     const el = document.querySelector(`[data-ss-count-key="${CSS.escape(sectionKey)}"]`);
-    if (el) el.textContent = `(${selected}/${total})`;
+    if (el) {
+        el.textContent = isArchitecturalState(state) && Number.isInteger(cap)
+            ? `(${selected} selected / cap ${cap})`
+            : `(${selected}/${total})`;
+    }
+
+    const accordion = document.querySelector(`.ss-review-accordion[data-section="sp-${CSS.escape(sectionKey)}"]`);
+    if (accordion && isArchitecturalState(state) && Number.isInteger(cap)) {
+        accordion.classList.toggle('ss-over-cap', selected > cap);
+    }
 }
 
 function updateOutputEditor(state) {
+    if (isArchitecturalState(state)) {
+        refreshArchitecturalDiagnostics(state);
+    }
+
     state.reconstructedOutput = rebuildOutput(state);
     const editor = document.getElementById('ss-sp-output-editor');
     if (editor) {
@@ -556,6 +722,35 @@ function updateOutputEditor(state) {
             : state.reconstructedOutput;
     }
     state.finalOutput = editor?.value || state.reconstructedOutput;
+
+    const errors = state.diagnostics.filter((d) => d.level === 'error').length;
+    const warnings = state.diagnostics.filter((d) => d.level === 'warning').length;
+    const infos = state.diagnostics.filter((d) => d.level === 'info').length;
+    const summary = document.querySelector('.ss-sp-summary');
+    if (summary) {
+        summary.innerHTML = `
+            <span class="ss-sp-pill ss-level-error">Errors: ${errors}</span>
+            <span class="ss-sp-pill ss-level-warning">Warnings: ${warnings}</span>
+            <span class="ss-sp-pill ss-level-info">Info: ${infos}</span>
+        `;
+    }
+
+    const blockingNote = document.getElementById('ss-sp-blocking-note');
+    if (blockingNote) {
+        blockingNote.style.display = errors > 0 ? 'block' : 'none';
+    }
+
+    const diagArea = document.querySelector('.ss-sp-diagnostics');
+    if (diagArea) {
+        diagArea.innerHTML = diagnosticsHtml(state.diagnostics);
+    }
+
+    const diagCount = document.querySelector('.ss-review-accordion[data-section="sp-diagnostics"] .ss-accordion-count');
+    if (diagCount) {
+        diagCount.textContent = `(${state.diagnostics.length})`;
+    }
+
+    updateInlineDiagnostics(state);
 }
 
 function updatePruningHeaderCount(state) {
@@ -1362,6 +1557,9 @@ async function setupRegenerateHandler(state, regenFn) {
 
             // Update state
             state.diagnostics = newResult.diagnostics || [];
+            state.sourceDiagnostics = isArchitecturalState(state)
+                ? (newResult.diagnostics || []).filter((diagnostic) => ARCHITECTURAL_IMMUTABLE_DIAGNOSTIC_CODES.has(diagnostic.code))
+                : (newResult.diagnostics || []);
             state.editableSections = normalizeSectionItems(
                 regeneratedSections,
                 state.sectionRegistry
@@ -1434,6 +1632,8 @@ export async function openSharderReviewModal(pipelineResult, settings, regenFn =
     const state = {
         sectionRegistry,
         diagnostics: pipelineResult.diagnostics || [],
+        sourceDiagnostics: [],
+        dynamicDiagnostics: [],
         metadata: pipelineResult.metadata || {},
         editableSections: normalizeSectionItems(pipelineResult.sections || parsed, sectionRegistry),
         keyLines: getReviewKeyLines(pipelineResult.sections || parsed),
@@ -1454,6 +1654,15 @@ export async function openSharderReviewModal(pipelineResult, settings, regenFn =
             archiveCold: false,
         },
     };
+
+    if (isArchitecturalState(state)) {
+        state.sourceDiagnostics = (pipelineResult.diagnostics || []).filter((diagnostic) =>
+            ARCHITECTURAL_IMMUTABLE_DIAGNOSTIC_CODES.has(diagnostic.code)
+        );
+        refreshArchitecturalDiagnostics(state);
+    } else {
+        state.sourceDiagnostics = pipelineResult.diagnostics || [];
+    }
 
     // Ensure metadata defaults for header stability
     if (!Number.isFinite(state.metadata.startIndex) || !Number.isFinite(state.metadata.endIndex)) {
@@ -1492,12 +1701,12 @@ export async function openSharderReviewModal(pipelineResult, settings, regenFn =
 
     const result = await showPromise;
     if (result === POPUP_RESULT.AFFIRMATIVE) {
-        const currentErrorCodes = new Set(['ARCH_CURRENT_MISSING', 'ARCH_CURRENT_EMPTY', 'ARCH_CURRENT_MULTIPLE']);
-        const saveDiagnostics = state.diagnostics.filter((d) => !currentErrorCodes.has(d.code));
-        const currentError = getArchitecturalCurrentError(state);
-        if (currentError) {
-            saveDiagnostics.push(currentError);
+        if (isArchitecturalState(state)) {
+            refreshArchitecturalDiagnostics(state);
         }
+        const saveDiagnostics = isArchitecturalState(state)
+            ? mergeDiagnostics(state.sourceDiagnostics, state.dynamicDiagnostics)
+            : state.diagnostics;
         const hasErrors = saveDiagnostics.some((d) => d.level === 'error');
         if (hasErrors) {
             toastr.warning('Save blocked due to error-level diagnostics');

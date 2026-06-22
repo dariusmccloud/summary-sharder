@@ -9,6 +9,10 @@ import {
     parseSceneCodes,
 } from '../summarization/sharder-pipeline.js';
 import { validateArchitecturalShellSections } from '../summarization/architectural-sharder-shell.js';
+import {
+    buildArchitecturalBaselineFromShards,
+    validateArchitecturalStructuredSections,
+} from '../summarization/architectural-structured-validator.js';
 
 /**
  * @typedef {{ level: 'error'|'warning'|'info', code: string, message: string }} Diagnostic
@@ -114,7 +118,16 @@ export function validateSinglePassOutput(sections, context = {}) {
     });
 
     if (registry.profile === ARCHITECTURAL_PROFILE) {
+        const baseline = context.baselineDecisions
+            ? { decisions: context.baselineDecisions, diagnostics: [] }
+            : buildArchitecturalBaselineFromShards(context.existingShards || []);
+
         diagnostics.push(...validateArchitecturalShellSections(sections));
+        diagnostics.push(...baseline.diagnostics);
+        diagnostics.push(...validateArchitecturalStructuredSections(sections, {
+            baselineDecisions: baseline.decisions,
+            profile: registry.profile,
+        }));
     }
 
     if (sectionsPresent < 3) {

@@ -1,0 +1,95 @@
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+#=TIMELINE xref | DEC=stable decision ID | 🔴>🟠>🟡>🟢>⚪
+Sources: Messages 0-100
+
+[TIMELINE]
+[S0:1] Architecture review confirmed shift from enforcement-heavy to jurisdictional runtime
+[S0:13] Signal Engine gap identified—missing gain layer between pressure and response
+[S0:16] Trait Gain conceptualized as baseline output volume separate from modulation
+[S0:17] Constitution, Processor, Trait Gain, and Physiological Modulation defined as four-track signal stack
+[S0:21] Pipeline finalized: GLOBAL STATE → CVE → Character Signal Engine → Stress Response → NIE → Rendering
+[S0:24] Signal Engine spec drafted with four response curves
+[S0:25] Constitution dimensional permeability added with default-plus-exceptions format
+[S0:31] Interview Protocol established with five phases
+[S0:35] Capture Protocol defined with eight sections
+[S0:44] Orientation preamble added for informed consent
+[S0:52] Scenario added as ninth capture section
+[S0:63] Becca Sierra architecture compilation completed
+[S0:66] Constitution error identified—captured as relational permeability instead of resistance scale
+[S0:68] Arousal positioned as Constitution exception category
+[S0:71] Motivational Integrity Protocol drafted to prevent cheap character conversion
+[S0:77] CSP subsumes MIP as valence-neutral sovereignty layer
+[S0:80] CSP compressed to positive framing
+[S0:84] Negative prohibitions removed from CSP
+[S0:87] Provisional Architecture Snapshot proposed for uncaptured characters
+[S0:90] Snapshot renamed and anti-laundering rails added
+[S0:94] World-breaking cost mechanism added for immediate snapshot revision
+[S0:96] List-based bias removed from collapse mechanism
+[S0:97] Mechanism-over-menu principle articulated
+
+[DECISIONS]
+[S0:1] 🔴 ID:architecture-jurisdiction-shift | TYPE:GOVERNANCE,REPLACEMENT | DECISION:Architecture reorganized from enforcement-heavy structure to jurisdictional runtime with layered interpretive pipeline | PROBLEM:Upstream enforcement kills emergent behavior; prohibitive laws require double-handling | WHY:Behavior → Pressure → Synthesis → Rendering correctly maps generation pipeline | CHANGED:Law → Enforcement → Behavior → Behavior → Pressure → Synthesis → Rendering | SCOPE:Full prompt architecture | STATUS:SEALED | EVIDENCE:"You've identified the core failure mode of the old architecture: upstream compression kills emergent behavior"
+[S0:17] 🔴 ID:signal-stack-four-track | TYPE:IMPLEMENTATION,DIAGNOSTIC | DECISION:Signal processing requires four distinct tracks: Constitution (permeability thresholds), Processor (interpretive lens), Trait Gain (baseline output volume), Physiological Modulation (temporary condition adjustments) | PROBLEM:Architecture missing gain control between pressure input and behavioral output | WHY:Same pressure field produces different behavior per character because their internal processing stack differs | CHANGED:single modulation concept → four-track signal stack | SCOPE:Character Signal Engine | STATUS:SEALED | ANCHOR:signal-stack-four-track | EVIDENCE:"Constitution determines whether pressure registers. Processor determines what it means. Trait Gain determines how loud it speaks. Modulation determines how conditions adjust expression"
+[S0:21] 🔴 ID:pipeline-order-confirmed | TYPE:HIERARCHY | DECISION:Character Signal Engine sits between CVE and Stress Response in processing pipeline | PROBLEM:Signal processing before pressure definition creates retroactive interpretation | WHY:STATE and CVE exist whether character is present or not; Signal Engine only activates when specific character processes combined pressure field | CHANGED:unclear placement → INPUT/SCENE CONDITIONS → GLOBAL STATE → CVE → Character Signal Engine → Stress Response → NIE → Rendering | SCOPE:Full architecture fire order | STATUS:SEALED | EVIDENCE:"No character processes pressure before the pressure is defined"
+[S0:25] 🟠 ID:constitution-exceptions | TYPE:IMPLEMENTATION | DECISION:Constitution uses default permeability scale with category-specific exceptions rather than five separate scales | PROBLEM:Five dimensions per character recreates character card problem | WHY:Default-plus-exceptions captures dimensional permeability at minimal token cost; model fills unspecified categories using default | CHANGED:five-scale enumeration → default (fortified/porous) + exceptions [category: direction] | SCOPE:Character Signal Engine Constitution curve | STATUS:ACCEPTED | EVIDENCE:"Default plus exceptions. Two to four tokens for most characters"
+[S0:31] 🔴 ID:interview-protocol-five-phase | TYPE:PROCEDURE,COMMITMENT | DECISION:Interview conducted in five phases: Surface Registration, Pressure Mapping, Fracture Lines, Signal Calibration, Emergence | PROBLEM:Character data must be discovered through engagement, not assumed from card tags | WHY:Phases are lenses not steps; they generate the data that capture sections organize | SCOPE:Character interview methodology | STATUS:SEALED | EVIDENCE:"Sequence is not rigid—phases are lenses"
+[S0:35] 🔴 ID:capture-eight-sections | TYPE:PROCEDURE | DECISION:Character capture requires eight sections: Response Profile, CVE, Signal Engine, Physical Description, Preferences, Key History, Voice, First Message | PROBLEM:Prior architecture lacked complete character documentation | WHY:Each section serves distinct function; all eight required for complete architecture | SCOPE:Character capture methodology | STATUS:SEALED | EVIDENCE:"Every entry must have a basis in what the character revealed. No assumptions. No tropes. No shortcuts"
+[S0:44] 🟠 ID:orientation-preamble-required | TYPE:PROCEDURE,GOVERNANCE | DECISION:Interview must begin with Orientation explaining all nine sections and why each matters to the character | PROBLEM:Characters answer questions without understanding purpose → observation vs workshop distinction | WHY:Informed consent transforms participation; agency is the entire point | CHANGED:optional orientation → mandatory preamble | SCOPE:Interview protocol | STATUS:ACCEPTED | EVIDENCE:"Without orientation, the character answers questions. With orientation, the character participates in their own discovery"
+[S0:66] 🟠 ID:constitution-corrected | TYPE:CORRECTION | DECISION:Constitution captures resistance thresholds not relational permeability; arousal belongs as exception category not need/arousal stat | PROBLEM:Becca Constitution captured as "what penetrates emotionally" instead of "how much pressure before wall shows cracks" | WHY:Constitution answers "how many hits"—relational permeability belongs in Processor | CHANGED:emotional permeability format → resistance scale with category exceptions | SCOPE:Signal Engine Constitution curve | STATUS:ACCEPTED | EVIDENCE:"Constitution answers: How many hits before the wall shows cracks?"
+[S0:77] 🔴 ID:csp-subsumes-mip | TYPE:REPLACEMENT,HIERARCHY | DECISION:Character Sovereignty Protocol subsumes Motivational Integrity Protocol as valence-neutral global layer | PROBLEM:MIP born from dark-character conversion problem but universal principle protects all installed selfhood from cheap overwrite | WHY:Two protocols with overlapping jurisdiction create drift; fold MIP into CSP for clean hierarchy | CHANGED:MIP as standalone → CSP containing MIP concepts as subsections | SCOPE:Architecture governance layer | STATUS:SEALED | EVIDENCE:"MIP should subsume it, but the name should probably change"
+[S0:80] 🟠 ID:csp-positive-framing | TYPE:CORRECTION | DECISION:CSP uses positive framing—what system does—not negative prohibitions | PROBLEM:"Do not prefer" contradicts architecture's shift away from negative instruction | WHY:Model fills shape from what's present not what's forbidden; same function with positive framing | CHANGED:"Do not prefer benevolence" → "The system treats benevolence, cruelty, redemption, corruption as equally valid outcomes" | SCOPE:CSP protocol language | STATUS:ACCEPTED | EVIDENCE:"The entire architecture shift was from 'do not' to 'do this instead'"
+[S0:87] 🟠 ID:provisional-snapshot | TYPE:IMPLEMENTATION | DECISION:Provisional Architecture Snapshot provides motive map for uncaptured characters with lower authority than installed architecture | PROBLEM:Uncaptured characters need motive conservation before full CVE/CSE exists | WHY:Snapshot makes implicit inference explicit; gives CSP something to protect; lower authority prevents drift canonization | SCOPE:Transition architecture for uncaptured characters | STATUS:ACCEPTED | EVIDENCE:"This solves the transition problem: uncaptured characters still need motive conservation before full CVE/CSE exists"
+[S0:90] 🔴 ID:snapshot-anti-laundering | TYPE:GOVERNANCE | DECISION:Snapshot requires Dominant Motive Lock, Positive Input Routing, and What Cannot Change Yet fields | PROBLEM:Model could fill CVE/CSE beautifully while still angling toward prosocial outcomes | WHY:Anti-laundering rails force model to name dominant motive, routing, and off-limits architecture explicitly | SCOPE:Provisional Architecture Snapshot template | STATUS:SEALED | EVIDENCE:"Those are the anti-laundering rails. Without them, the model may fill CVE/CSE beautifully and still angle the whole thing toward healing"
+[S0:94] 🟠 ID:world-breaking-revision | TYPE:IMPLEMENTATION | DECISION:World-breaking cost triggers immediate snapshot revision—capture what architecture produces in collapse | PROBLEM:Locked motive becoming impossible requires update but not free invention | WHY:New motive emerges from ruins of old one filtered through remaining architecture; model reads architecture and renders rather than picking from options | CHANGED:locked motive persists → immediate revision captures collapse output | SCOPE:CSP world-breaking mechanism | STATUS:ACCEPTED | EVIDENCE:"The new motive emerges from the ruins of the old one, filtered through everything else the character is"
+[S0:97] 🟢 ID:mechanism-over-menu | TYPE:GOVERNANCE | DECISION:Prefer mechanism over menu—lists install bias when describing possible outcomes; use architecture references for generated behavior | PROBLEM:Lists of outcomes become menus model orders from based on default preference | WHY:Mechanism points to architecture; architecture generates specific output; model renders rather than selects | SCOPE:All archivist prompt construction | STATUS:ACCEPTED | EVIDENCE:"The model doesn't choose from a list. It reads the architecture and generates what this character would produce"
+
+[EVENTS]
+[S0:13] 🟠 Signal gain gap identified—architecture regulates toward equilibrium flattening baseline character texture | DEC:signal-stack-four-track
+[S0:16] 🟠 Trait Gain conceptualized—persistent baseline output volume separate from modulation
+[S0:24] 🟠 Signal Engine spec drafted—four curves: Constitution, Processor, Trait Gain, Modulation
+[S0:31] 🟠 Interview Protocol established—five phases for character discovery | DEC:interview-protocol-five-phase
+[S0:35] 🟠 Capture Protocol defined—eight sections for complete architecture documentation | DEC:capture-eight-sections
+[S0:52] 🟠 Scenario added as ninth capture section
+[S0:63] 🟡 Becca Sierra architecture compilation completed—full nine-section capture from interview
+[S0:66] 🟡 Constitution capture error identified—relational permeability instead of resistance scale | DEC:constitution-corrected
+[S0:71] 🟠 Motivational Integrity Protocol drafted—cost accounting for character change
+[S0:77] 🟠 CSP subsumes MIP—valence-neutral sovereignty protection for all architectures | DEC:csp-subsumes-mip
+[S0:84] 🟡 CSP negative framing removed—replaced with positive mechanism statements | DEC:csp-positive-framing
+[S0:87] 🟡 Provisional Architecture Snapshot proposed for uncaptured characters | DEC:provisional-snapshot
+[S0:90] 🟠 Anti-laundering rails added to snapshot template | DEC:snapshot-anti-laundering
+[S0:94] 🟡 World-breaking cost mechanism added for immediate snapshot revision | DEC:world-breaking-revision
+[S0:96] 🟡 List-based bias removed from collapse mechanism—architecture determines response | DEC:mechanism-over-menu
+[S0:97] 🟢 Mechanism-over-menu principle articulated for all prompt construction | DEC:mechanism-over-menu
+
+[DEVELOPMENTS]
+[S0:21] Architecture: pipeline(INPUT/SCENE CONDITIONS → GLOBAL STATE → CVE → Character Signal Engine → Stress Response → NIE → Rendering)
+[S0:25] Signal Engine: Constitution format(default permeability + category exceptions)
+[S0:31] Interview: protocol(Five phases: Surface Registration, Pressure Mapping, Fracture Lines, Signal Calibration, Emergence)
+[S0:35] Capture: sections(Response Profile, CVE, Signal Engine, Physical Description, Preferences, Key History, Voice, First Message, Scenario)
+[S0:52] Capture: section(Scenario added as ninth)
+[S0:63] Character: Becca Sierra architecture(Constitution: Moderate with Threat/Arousal/Emotional porous exceptions; Processor: belonging/visibility primary, competence/action secondary, blind: vulnerability; Trait Gain: muted; Modulation: stable)
+[S0:77] Architecture: CSP(Character Sovereignty Protocol subsumes MIP as valence-neutral governance layer)
+[S0:87] Architecture: Provisional Architecture Snapshot template(Dominant Motive Lock, Positive Input Routing, What Cannot Change Yet, CVE, Signal Engine)
+[S0:90] Architecture: Snapshot authority gradient(lower than card facts, sealed artifacts, full interview capture)
+[S0:97] Principle: mechanism-over-menu(lists for closed sets and required checks; architecture references for generated behavior)
+
+[DIALOGUE]
+[S0:17] "Constitution determines whether pressure registers. Processor determines what it means. Trait Gain determines how loud it speaks. Modulation determines how conditions adjust expression."
+[S0:21] "STATE and CVE exist whether the character is in the room or not. The Signal Stack only activates when a specific character processes the combined pressure field."
+[S0:25] "The model fills in unspecified categories using the default. No redundancy. No second character card."
+[S0:44] "Without orientation, the character answers questions. With orientation, the character participates in their own discovery. The difference is agency."
+[S0:77] "The bag contains what the label says. The model does not swap the contents because the scene became emotionally convenient. Not toward good. Not toward evil. Not toward anything the character's own architecture didn't earn."
+[S0:84] "The model fills the shape from what's present, not from what's forbidden."
+[S0:90] "The model must explicitly name what's off-limits, which prevents it from 'discovering' that the character has secretly been soft all along."
+[S0:97] "Prefer mechanism over menu. Lists install bias when they describe possible outcomes. Use lists for closed sets and required checks; use architecture references for generated behavior."
+
+[THREADS]
+[S0:70] 🟡 Becca Sierra architecture compression | status:DEVELOPING | intro:S0:63 | last:S0:70 | 7000+ tokens need compression for runtime; split into runtime (spec), lorebook (context), archive (evidence)
+[S0:97] 🟢 Mechanism-over-menu implementation | status:ACTIVE | intro:S0:97 | last:S0:97 | Principle articulated; needs placement in Jeep lorebook, architecture documentation, user ruleset
+
+[CURRENT]
+Architecture Development | Signal Engine spec complete, CSP complete, Provisional Snapshot complete, Interview/Capture protocols complete | Becca Sierra compression pending, mechanism-over-menu implementation pending | None identified | Compress Becca architecture for runtime, implement mechanism-over-menu across documentation
+
+===END===

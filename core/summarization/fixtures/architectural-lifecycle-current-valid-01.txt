@@ -1,0 +1,35 @@
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+Sources: Messages 5-8
+
+[TIMELINE]
+[S5:1] Proposed decision moved to accepted
+[S5:2] Accepted decision moved to sealed
+[S5:3] Sealed decision moved to superseded
+
+[DECISIONS]
+[S5:1] 🟠 ID:decision-proposed | TYPE:GOVERNANCE | DECISION:Baseline proposed decision advanced | WHY:unstated | SCOPE:Lifecycle test | STATUS:ACCEPTED | EVIDENCE:"current accepted"
+[S5:2] 🟠 ID:decision-accepted | TYPE:IMPLEMENTATION | DECISION:Baseline accepted decision advanced | WHY:unstated | SCOPE:Lifecycle test | STATUS:SEALED | EVIDENCE:"current sealed"
+[S5:3] 🟠 ID:decision-sealed | TYPE:REPLACEMENT | DECISION:Baseline sealed decision replaced | WHY:unstated | SCOPE:Lifecycle test | STATUS:SUPERSEDED | SUPERSEDED-BY:decision-sealed-replacement | EVIDENCE:"current superseded"
+[S5:4] 🟠 ID:decision-sealed-replacement | TYPE:REPLACEMENT | DECISION:Replacement decision established | WHY:unstated | SCOPE:Lifecycle test | STATUS:ACCEPTED | SUPERSEDES:decision-sealed | EVIDENCE:"replacement accepted"
+[S5:5] 🟠 ID:new-replacement | TYPE:REPLACEMENT | DECISION:Replacement for historical superseded record | WHY:unstated | SCOPE:Lifecycle test | STATUS:ACCEPTED | SUPERSEDES:legacy-replaced | EVIDENCE:"historical replacement"
+
+[EVENTS]
+[S5:1] 🟠 decision accepted after review handoff | DEC:decision-proposed
+[S5:2] 🟠 decision sealed after final signoff | DEC:decision-accepted
+[S5:3] 🟠 decision superseded by replacement record | DEC:decision-sealed | DEC:decision-sealed-replacement
+
+[DEVELOPMENTS]
+[S5:5] Lifecycle transitions validated against baseline
+
+[DIALOGUE]
+[S5:2] "current sealed" --Archivist | lifecycle validation note
+
+[THREADS]
+[S5:5] lifecycle-current-valid | status:ACTIVE | intro:S5:1 | last:S5:5 | Valid transition fixture remains available for testing
+
+[CURRENT]
+Lifecycle Fixture | Valid transitions recorded | Confirm allowed status moves | None | None | Run validator
+
+===END===

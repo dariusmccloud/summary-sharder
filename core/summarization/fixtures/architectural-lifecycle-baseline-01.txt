@@ -1,0 +1,32 @@
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+Sources: Messages 1-4
+
+[TIMELINE]
+[S1:1] Baseline decision proposed
+[S1:2] Accepted decision recorded
+[S1:3] Sealed decision recorded
+
+[DECISIONS]
+[S1:1] 🔴 ID:decision-proposed | TYPE:GOVERNANCE | DECISION:Baseline proposed decision | WHY:unstated | SCOPE:Lifecycle test | STATUS:PROPOSED | EVIDENCE:"baseline proposed"
+[S1:2] 🔴 ID:decision-accepted | TYPE:IMPLEMENTATION | DECISION:Baseline accepted decision | WHY:unstated | SCOPE:Lifecycle test | STATUS:ACCEPTED | EVIDENCE:"baseline accepted"
+[S1:3] 🔴 ID:decision-sealed | TYPE:COMMITMENT | DECISION:Baseline sealed decision | WHY:unstated | SCOPE:Lifecycle test | STATUS:SEALED | EVIDENCE:"baseline sealed"
+[S1:4] 🔴 ID:legacy-replaced | TYPE:REPLACEMENT | DECISION:Baseline replaced decision | WHY:unstated | SCOPE:Lifecycle test | STATUS:SUPERSEDED | SUPERSEDED-BY:new-replacement | EVIDENCE:"baseline superseded"
+
+[EVENTS]
+[S1:2] 🟠 Baseline decisions captured for lifecycle tests | DEC:decision-accepted
+
+[DEVELOPMENTS]
+[S1:4] Lifecycle baseline fixture available
+
+[DIALOGUE]
+[S1:2] "baseline accepted" --Archivist | lifecycle fixture note
+
+[THREADS]
+[S1:4] lifecycle-baseline | status:ACTIVE | intro:S1:1 | last:S1:4 | Baseline fixture remains available for transition validation
+
+[CURRENT]
+Lifecycle Fixture | Baseline statuses recorded | Validate allowed transitions | None | None | Apply current transition fixture
+
+===END===

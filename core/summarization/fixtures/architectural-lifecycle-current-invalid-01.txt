@@ -1,0 +1,27 @@
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+Sources: Messages 9-12
+
+[TIMELINE]
+[S9:1] Illegal regression recorded for sealed decision
+
+[DECISIONS]
+[S9:1] 🟠 ID:decision-sealed | TYPE:REPLACEMENT | DECISION:Baseline sealed decision regressed illegally | WHY:unstated | SCOPE:Lifecycle test | STATUS:ACCEPTED | EVIDENCE:"illegal regression"
+
+[EVENTS]
+[S9:1] 🟠 decision accepted after regression attempt | DEC:decision-sealed
+
+[DEVELOPMENTS]
+[S9:1] Invalid lifecycle transition fixture prepared
+
+[DIALOGUE]
+[S9:1] "illegal regression" --Archivist | lifecycle regression note
+
+[THREADS]
+[S9:1] lifecycle-current-invalid | status:ACTIVE | intro:S9:1 | last:S9:1 | Invalid transition fixture should fail validation
+
+[CURRENT]
+Lifecycle Fixture | Invalid transition recorded | Confirm regression blocks save | None | None | Run validator
+
+===END===

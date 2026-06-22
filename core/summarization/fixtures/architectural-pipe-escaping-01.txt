@@ -1,0 +1,27 @@
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+Sources: Messages 30-33
+
+[TIMELINE]
+[S30:1] Escaped field fixture created
+
+[DECISIONS]
+[S30:1] 🔴 ID:escaped-pipe-record | TYPE:IMPLEMENTATION,PROCEDURE | DECISION:Escaped pipe handling remains canonical | WHY:input \| output stays literal | SCOPE:Parser fixture | STATUS:ACCEPTED | EVIDENCE:"Quoted A | B stays together"
+
+[EVENTS]
+[S30:1] 🟠 Escaped pipe fixture accepted for parser coverage | DEC:escaped-pipe-record
+
+[DEVELOPMENTS]
+[S30:1] Parser fixture contains quoted and escaped literal pipes
+
+[DIALOGUE]
+[S30:1] "Quoted A | B stays together" --Archivist | fixture coverage note
+
+[THREADS]
+[S30:1] escaped-pipe-fixture | status:ACTIVE | intro:S30:1 | last:S30:1 | Notes include parser coverage for quoted A \| B and literal escapes
+
+[CURRENT]
+Parser Fixture | Escaped pipe coverage active | Confirm parser round-trip | None | None | Run field parser tests
+
+===END===

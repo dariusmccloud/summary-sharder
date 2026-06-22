@@ -1,0 +1,29 @@
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+Sources: Messages 10-20
+
+[TIMELINE]
+[S10:1] Architectural profile shell entered structured validation
+[S10:2] Procedure decision accepted for review workflow
+
+[DECISIONS]
+[S10:1] 🔴 ID:architectural-shell-activation | TYPE:GOVERNANCE,PROCEDURE | DECISION:Architectural shell review is enabled for structured validation | WHY:Explicit activation keeps profile routing deterministic | SCOPE:Review flow | STATUS:ACCEPTED | EVIDENCE:"Activation | review remains canonical"
+[S10:2] 🟠 ID:pipe-escape-proof | TYPE:IMPLEMENTATION | DECISION:Escaped pipes remain literal field content during parsing | WHY:input \| output must survive parsing without data loss | SCOPE:Architectural parser | STATUS:SEALED | EVIDENCE:"Quoted A | B remains one field"
+
+[EVENTS]
+[S10:2] 🟠 Procedure parser accepted escaped pipes during validation | DEC:pipe-escape-proof
+
+[DEVELOPMENTS]
+[S10:2] Parser: escaped-pipe handling confirmed for architectural records
+
+[DIALOGUE]
+[S10:2] "Quoted A | B remains one field" --Archivist | parser validation note
+
+[THREADS]
+[S10:2] parser-hardening | status:ACTIVE | intro:S10:1 | last:S10:2 | Escaped fields and canonical validation remain under active review
+
+[CURRENT]
+Architectural Parser | Structured validation active | Confirm caps and lifecycle checks | None | None | Run fixture-backed tests
+
+===END===
