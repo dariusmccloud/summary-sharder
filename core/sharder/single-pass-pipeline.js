@@ -3,7 +3,13 @@
  */
 
 import { getSharderPrompts } from '../summarization/prompts.js';
-import { parseExtractionResponse, reconstructExtraction, parseSceneCodes } from '../summarization/sharder-pipeline.js';
+import {
+    NARRATIVE_PROFILE,
+    getSharderSectionRegistry,
+    parseExtractionResponse,
+    reconstructExtraction,
+    parseSceneCodes,
+} from '../summarization/sharder-pipeline.js';
 import { callSillyTavernAPI, callExternalAPI } from '../api/api-client.js';
 import { callConnectionProfileAPI } from '../api/connection-profile-api.js';
 import { getAbortSignal, throwIfAborted } from '../api/abort-controller.js';
@@ -106,6 +112,7 @@ function buildSharderUserPrompt(chatText, context) {
  * @returns {Promise<{raw:string,reconstructed:string,sections:Object,diagnostics:Array,severity:string,stats:Object,metadata:Object,extractedKeywords:string[]}>}
  */
 export async function runSharderPipeline(chatText, settings, context) {
+    const sectionRegistry = getSharderSectionRegistry(context?.sectionRegistry || context?.profile || NARRATIVE_PROFILE);
     const prompts = getSharderPrompts(settings);
     const systemPrompt = prompts.prompt;
 
@@ -135,14 +142,14 @@ export async function runSharderPipeline(chatText, settings, context) {
     throwIfAborted('sharder api');
     const parsedResult = context.extractKeywords ? parseSummaryResponse(raw) : { summary: raw, keywords: [] };
     const cleanedRaw = parsedResult.summary || raw;
-    const parsed = parseExtractionResponse(cleanedRaw);
+    const parsed = parseExtractionResponse(cleanedRaw, { sectionRegistry });
     const {
         sections: sanitizedSections,
         sceneCodeFixes,
         fixedCodes,
     } = sanitizeSinglePassSections(parsed, { ...context, inheritedPrefixes });
 
-    const structure = validateSinglePassOutput(sanitizedSections, { ...context, inheritedPrefixes });
+    const structure = validateSinglePassOutput(sanitizedSections, { ...context, inheritedPrefixes, sectionRegistry });
     const evidence = checkSinglePassEvidence(sanitizedSections, chatText);
     const relationships = checkRelationshipCoherence(sanitizedSections);
 
@@ -167,6 +174,7 @@ export async function runSharderPipeline(chatText, settings, context) {
         endIndex: context.endIndex,
         userNotesEdited: false,
         headerType: 'shard',
+        sectionRegistry,
     });
 
     return {
@@ -189,6 +197,7 @@ export async function runSharderPipeline(chatText, settings, context) {
             hasExistingShards: existingShards.length > 0,
             existingShardCount: existingShards.length,
             headerType: 'shard',
+            sectionRegistry,
         }
     };
 }
