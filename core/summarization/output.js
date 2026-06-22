@@ -29,6 +29,7 @@ import { archiveToWarm, archiveToCold } from '../rag/archive.js';
 import { throwIfAborted } from '../api/abort-controller.js';
 import { ARCHITECTURAL_PROFILE } from './sharder-section-registry.js';
 import { isWarmArchiveEligible } from './architectural-sharder-shell.js';
+import { buildArchitecturalShardMetadata } from './saved-shard-identity.js';
 
 // World info metadata key
 const METADATA_KEY = 'world_info';
@@ -69,6 +70,9 @@ export async function handleSummaryResult(
         ...(archiveOptions || {})
     };
     const shouldInjectToContext = resolvedArchiveOptions.injectToContext !== false;
+    const architecturalMetadata = settings?.sharderMode === true && settings?.sharderProfile === ARCHITECTURAL_PROFILE
+        ? buildArchitecturalShardMetadata(summary)
+        : {};
 
     if (shouldInjectToContext) {
         const isSharder = settings?.sharderMode === true;
@@ -89,26 +93,23 @@ export async function handleSummaryResult(
         if (settings?.sharderMode === true) {
             // Sharder mode: section-aware or standard shard vectorization
             if (settings?.rag?.enabled && settings?.rag?.autoVectorizeNewSummaries !== false) {
-                if (settings?.sharderProfile === ARCHITECTURAL_PROFILE) {
-                    ragLog.info('Architectural Memory RAG vectorization skipped; architectural RAG support is deferred.');
-                    if (typeof toastr !== 'undefined') {
-                        toastr.info('Architectural Memory saved. Architectural RAG support is deferred, so vectorization was skipped.');
-                    }
-                } else {
-                    try {
+                try {
+                    if (settings?.sharderProfile === ARCHITECTURAL_PROFILE) {
+                        await vectorizeShard(summary, startIndex, endIndex, settings, extractedKeywords);
+                    } else {
                         const mode = resolveShardChunkingMode(settings?.rag);
                         if (mode === 'section') {
                             await vectorizeShardSectionAware(summary, startIndex, endIndex, settings, extractedKeywords);
                         } else {
                             await vectorizeShard(summary, startIndex, endIndex, settings, extractedKeywords);
                         }
-                    } catch (error) {
-                        const backend = String(settings?.rag?.backend || '').toLowerCase();
-                        if (backend === 'qdrant' && isQdrantDimensionMismatchError(error) && typeof toastr !== 'undefined') {
-                            toastr.error(getQdrantDimensionMismatchToastMessage());
-                        }
-                        ragLog.warn('Failed to vectorize shard after summary save:', error?.message || error);
                     }
+                } catch (error) {
+                    const backend = String(settings?.rag?.backend || '').toLowerCase();
+                    if (backend === 'qdrant' && isQdrantDimensionMismatchError(error) && typeof toastr !== 'undefined') {
+                        toastr.error(getQdrantDimensionMismatchToastMessage());
+                    }
+                    ragLog.warn('Failed to vectorize shard after summary save:', error?.message || error);
                 }
             }
         } else {
@@ -154,7 +155,13 @@ export async function handleSummaryResult(
             startIndex,
             endIndex,
             null,
-            { source: 'output-summary', extra: { outputMode: settings?.outputMode || 'system' } }
+            {
+                source: 'output-summary',
+                extra: {
+                    outputMode: settings?.outputMode || 'system',
+                    ...architecturalMetadata,
+                }
+            }
         );
         if (!coldResult.success) {
             ragLog.warn('Cold archive failed for output summary:', coldResult.error || coldResult.reason);

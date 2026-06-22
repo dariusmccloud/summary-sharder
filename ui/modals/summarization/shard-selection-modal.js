@@ -5,8 +5,14 @@
 
 import { Popup, POPUP_RESULT, POPUP_TYPE } from '../../../../../../popup.js';
 import { escapeHtml } from '../../common/ui-utils.js';
-import { findSavedExtractions, parseExtractionResponse } from '../../../core/summarization/sharder-pipeline.js';
+import {
+    ARCHITECTURAL_PROFILE,
+    NARRATIVE_PROFILE,
+    findSavedExtractions,
+    parseExtractionResponse,
+} from '../../../core/summarization/sharder-pipeline.js';
 import { parseConsolidatedShard } from '../../../core/summarization/shard-utils.js';
+import { isSavedShardCompatibleWithProfile } from '../../../core/summarization/saved-shard-identity.js';
 import { log } from '../../../core/logger.js';
 
 function sortByRangeDesc(items) {
@@ -40,15 +46,32 @@ function buildRow(item, index) {
     `;
 }
 
-function parseSelectedShards(selectedItems) {
+function getActiveProfile(settings) {
+    return settings?.sharderProfile === ARCHITECTURAL_PROFILE ? ARCHITECTURAL_PROFILE : NARRATIVE_PROFILE;
+}
+
+function parseSelectedShards(selectedItems, settings) {
     const parsed = [];
     let skipped = 0;
+    const activeProfile = getActiveProfile(settings);
 
     for (const item of selectedItems) {
         try {
-            const parsedSections = item.type === 'consolidation'
-                ? parseConsolidatedShard(item.content || '')
-                : parseExtractionResponse(item.content || '');
+            if (!isSavedShardCompatibleWithProfile(item, activeProfile)) {
+                skipped++;
+                continue;
+            }
+
+            const rawContent = item.parsedBody || item.content || '';
+            let parsedSections;
+
+            if (item.shardProfile === ARCHITECTURAL_PROFILE) {
+                parsedSections = parseExtractionResponse(rawContent, { profile: ARCHITECTURAL_PROFILE });
+            } else if (item.contentFormat === 'legacy-bracket') {
+                parsedSections = parseConsolidatedShard(rawContent);
+            } else {
+                parsedSections = parseExtractionResponse(rawContent, { profile: NARRATIVE_PROFILE });
+            }
 
             if (!parsedSections || typeof parsedSections !== 'object') {
                 throw new Error('Parser returned invalid result');
@@ -99,7 +122,15 @@ export async function openShardSelectionModal(settings) {
     }
 
     // Force lorebook scan for sharder shard selection regardless of output mode.
-    const allItems = sortByRangeDesc(await findSavedExtractions(settings, settings?.lorebookSelection || null));
+    const activeProfile = getActiveProfile(settings);
+    const discoveredItems = sortByRangeDesc(await findSavedExtractions(settings, settings?.lorebookSelection || null));
+    const allItems = discoveredItems.filter((item) => isSavedShardCompatibleWithProfile(item, activeProfile));
+    const excludedCount = discoveredItems.length - allItems.length;
+
+    if (excludedCount > 0 && typeof toastr !== 'undefined') {
+        const label = activeProfile === ARCHITECTURAL_PROFILE ? 'Architectural' : 'Narrative';
+        toastr.info(`${excludedCount} incompatible saved shard(s) were excluded from ${label} baseline selection.`);
+    }
 
     if (!allItems.length) {
         return { confirmed: true, selectedShards: [] };
@@ -108,7 +139,7 @@ export async function openShardSelectionModal(settings) {
     if (settings?.autoIncludeShards === true) {
         return {
             confirmed: true,
-            selectedShards: parseSelectedShards(allItems),
+            selectedShards: parseSelectedShards(allItems, settings),
         };
     }
 
@@ -183,6 +214,6 @@ export async function openShardSelectionModal(settings) {
 
     return {
         confirmed: true,
-        selectedShards: parseSelectedShards(selectedItems),
+        selectedShards: parseSelectedShards(selectedItems, settings),
     };
 }

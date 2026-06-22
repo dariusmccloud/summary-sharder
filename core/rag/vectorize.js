@@ -27,6 +27,16 @@ import {
 } from './chunking.js';
 import { throwIfAborted } from '../api/abort-controller.js';
 import { ragLog } from '../logger.js';
+import {
+    ARCHITECTURAL_PROFILE,
+    NARRATIVE_PROFILE,
+    normalizeSharderProfile,
+} from '../summarization/sharder-section-registry.js';
+import {
+    buildArchitecturalShardMetadata,
+    classifySavedShardText,
+    isSavedShardCompatibleWithProfile,
+} from '../summarization/saved-shard-identity.js';
 
 const STOP_WORDS = new Set([
     'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
@@ -84,6 +94,37 @@ function annotateSummaryChunks(chunks, origin) {
         chunk.metadata.hash = scopedHash;
         chunk.metadata.text = chunk.text;
     }
+    return list;
+}
+
+function annotateShardIdentityMetadata(chunks, settings, shardText) {
+    const list = Array.isArray(chunks) ? chunks : [];
+    if (list.length === 0) {
+        return list;
+    }
+
+    const activeProfile = normalizeSharderProfile(settings?.sharderProfile || NARRATIVE_PROFILE);
+    if (activeProfile !== ARCHITECTURAL_PROFILE) {
+        return list;
+    }
+
+    const architecturalMetadata = buildArchitecturalShardMetadata(shardText);
+    if (!architecturalMetadata.shardProfile) {
+        return list;
+    }
+
+    for (const chunk of list) {
+        if (!chunk?.metadata) continue;
+        chunk.metadata.shardProfile = architecturalMetadata.shardProfile;
+        chunk.metadata.schemaVersion = architecturalMetadata.schemaVersion;
+        if (Array.isArray(architecturalMetadata.sectionKeys) && architecturalMetadata.sectionKeys.length > 0) {
+            chunk.metadata.sectionKeys = [...architecturalMetadata.sectionKeys];
+        }
+        if (Array.isArray(architecturalMetadata.stableDecisionIds) && architecturalMetadata.stableDecisionIds.length > 0) {
+            chunk.metadata.stableDecisionIds = [...architecturalMetadata.stableDecisionIds];
+        }
+    }
+
     return list;
 }
 
@@ -149,23 +190,6 @@ async function listAllChunks(collectionId, ragSettings) {
 }
 
 /**
- * Parse a saved chat memory shard format (Sharder Mode: [MEMORY SHARD: Messages X-Y]).
- * @param {string} text
- * @returns {{startIndex: number, endIndex: number, body: string}|null}
- */
-function parseMemoryShard(text) {
-    const raw = String(text || '');
-    const match = raw.match(/^\[MEMORY SHARD:\s*Messages\s*(\d+)\s*[-–]\s*(\d+)\]\s*\n\n([\s\S]*)$/i);
-    if (!match) return null;
-
-    return {
-        startIndex: parseInt(match[1], 10),
-        endIndex: parseInt(match[2], 10),
-        body: String(match[3] || '').trim(),
-    };
-}
-
-/**
  * Parse a saved standard-mode summary ([SUMMARY: Messages X-Y]).
  * @param {string} text
  * @returns {{startIndex: number, endIndex: number, body: string}|null}
@@ -189,7 +213,18 @@ function parseStandardSummary(text) {
  * @returns {{startIndex: number, endIndex: number, body: string}|null}
  */
 function parseAnySummaryMessage(text) {
-    return parseStandardSummary(text) || parseMemoryShard(text);
+    const shard = classifySavedShardText(text);
+    if (shard.wrapperType === 'memory-shard' && shard.startIndex !== null && shard.endIndex !== null) {
+        if (shard.profile === ARCHITECTURAL_PROFILE) {
+            return null;
+        }
+        return {
+            startIndex: shard.startIndex,
+            endIndex: shard.endIndex,
+            body: shard.body,
+        };
+    }
+    return parseStandardSummary(text);
 }
 
 /**
@@ -224,18 +259,22 @@ function getTargetLorebookNames(settings) {
  */
 async function collectExistingShards(settings) {
     const results = [];
+    const activeProfile = normalizeSharderProfile(settings?.sharderProfile || NARRATIVE_PROFILE);
 
     // System-message shards from current chat.
     const chat = SillyTavern.getContext()?.chat || [];
     for (const msg of chat) {
-        const parsed = parseMemoryShard(msg?.mes);
-        if (!parsed) continue;
+        const shardInfo = classifySavedShardText(msg?.mes);
+        if (shardInfo.wrapperType !== 'memory-shard') continue;
+        if (!isSavedShardCompatibleWithProfile(shardInfo, activeProfile)) continue;
 
         results.push({
-            text: parsed.body,
-            startIndex: parsed.startIndex,
-            endIndex: parsed.endIndex,
-            keywords: extractKeywordsTfIdf(parsed.body),
+            text: shardInfo.body,
+            startIndex: shardInfo.startIndex,
+            endIndex: shardInfo.endIndex,
+            keywords: extractKeywordsTfIdf(shardInfo.body),
+            profile: shardInfo.profile,
+            schemaVersion: shardInfo.schemaVersion,
         });
     }
 
@@ -249,30 +288,38 @@ async function collectExistingShards(settings) {
             for (const entry of entries) {
                 const content = String(entry?.content || entry?.memo || '').trim();
                 if (!content) continue;
+                const comment = String(entry?.comment || '');
+                const rangeMatch = comment.match(/memory\s+shard\s*(\d+)\s*[-–]\s*(\d+)/i);
+                const fallbackStartIndex = rangeMatch ? parseInt(rangeMatch[1], 10) : null;
+                const fallbackEndIndex = rangeMatch ? parseInt(rangeMatch[2], 10) : null;
 
-                const parsed = parseMemoryShard(content);
-                if (parsed) {
+                const shardInfo = classifySavedShardText(content);
+                if (isSavedShardCompatibleWithProfile(shardInfo, activeProfile)) {
+                    const startIndex = shardInfo.startIndex ?? fallbackStartIndex;
+                    const endIndex = shardInfo.endIndex ?? fallbackEndIndex;
+                    if (!Number.isInteger(startIndex) || !Number.isInteger(endIndex)) {
+                        continue;
+                    }
+
                     results.push({
-                        text: parsed.body,
-                        startIndex: parsed.startIndex,
-                        endIndex: parsed.endIndex,
+                        text: shardInfo.body,
+                        startIndex,
+                        endIndex,
                         keywords: Array.isArray(entry?.key) && entry.key.length > 0
                             ? entry.key
-                            : extractKeywordsTfIdf(parsed.body),
+                            : extractKeywordsTfIdf(shardInfo.body),
+                        profile: shardInfo.profile,
+                        schemaVersion: shardInfo.schemaVersion,
                     });
                     continue;
                 }
 
                 // Secondary heuristic: identify entries created by default name format.
-                const comment = String(entry?.comment || '');
-                const rangeMatch = comment.match(/memory\s+shard\s*(\d+)\s*[-–]\s*(\d+)/i);
                 if (rangeMatch) {
-                    const startIndex = parseInt(rangeMatch[1], 10);
-                    const endIndex = parseInt(rangeMatch[2], 10);
                     results.push({
                         text: content,
-                        startIndex,
-                        endIndex,
+                        startIndex: fallbackStartIndex,
+                        endIndex: fallbackEndIndex,
                         keywords: Array.isArray(entry?.key) && entry.key.length > 0
                             ? entry.key
                             : extractKeywordsTfIdf(content),
@@ -363,6 +410,7 @@ export async function vectorizeShard(shardText, startIdx, endIdx, settings, keyw
     const origin = getCurrentVectorWriteContext(settings);
     const chunk = chunkShard(shardText, startIdx, endIdx, effectiveKeywords);
     annotateSummaryChunks([chunk], origin);
+    annotateShardIdentityMetadata([chunk], settings, shardText);
     const collectionId = origin.collectionId;
     maybeShowVectorizeToast(1, origin);
     throwIfAborted('rag vectorization');
@@ -409,6 +457,7 @@ export async function vectorizeShardSectionAware(shardText, startIdx, endIdx, se
         Date.now(),
     );
     annotateSummaryChunks(chunks, origin);
+    annotateShardIdentityMetadata(chunks, settings, shardText);
 
     if (!Array.isArray(chunks) || chunks.length === 0) {
         const fallbackResult = await vectorizeShard(shardText, startIdx, endIdx, settings, effectiveKeywords);
@@ -767,7 +816,10 @@ async function vectorizeAllShardsSectionAwareInternal(settings) {
  * @returns {Promise<{mode: string, inserted: number, deleted: number, total: number, supersedingReplaced?: number, cumulativeAdded?: number, rollingUpdated?: number, rollingPurged?: number, sectionFallbackToStandard?: number}>}
  */
 export async function vectorizeAllShardsByMode(settings, mode = null) {
-    const resolvedMode = mode || resolveShardChunkingMode(settings?.rag);
+    const activeProfile = normalizeSharderProfile(settings?.sharderProfile || NARRATIVE_PROFILE);
+    const resolvedMode = activeProfile === ARCHITECTURAL_PROFILE
+        ? 'standard'
+        : (mode || resolveShardChunkingMode(settings?.rag));
 
     if (resolvedMode === 'section') {
         const result = await vectorizeAllShardsSectionAwareInternal(settings);
@@ -852,6 +904,7 @@ async function collectStandardShards(settings) {
                 for (const entry of entries) {
                     const content = String(entry?.content || entry?.memo || '').trim();
                     if (!content) continue;
+                    const shardInfo = classifySavedShardText(content);
 
                     // Primary: content has an embedded [SUMMARY: ...] or [MEMORY SHARD: ...] header.
                     const parsed = parseAnySummaryMessage(content);
@@ -871,7 +924,7 @@ async function collectStandardShards(settings) {
                     // "Memory Shard N-N" (the old default name format).
                     const comment = String(entry?.comment || '');
                     const rangeMatch = comment.match(/(?:summary|memory\s+shard)\s+(\d+)\s*[-–]\s*(\d+)/i);
-                    if (rangeMatch) {
+                    if (rangeMatch && shardInfo.profile !== ARCHITECTURAL_PROFILE) {
                         const startIndex = parseInt(rangeMatch[1], 10);
                         const endIndex = parseInt(rangeMatch[2], 10);
                         results.push({

@@ -14,6 +14,10 @@ import {
     parseArchitecturalExtractionResponse,
     reconstructArchitecturalExtraction,
 } from './architectural-sharder-format.js';
+import {
+    SAVED_SHARD_CLASSIFICATIONS,
+    classifySavedShardText,
+} from './saved-shard-identity.js';
 export {
     ARCHITECTURAL_DISPLAY_NAME,
     ARCHITECTURAL_PROFILE,
@@ -721,6 +725,8 @@ export async function findSavedExtractions(settings, lorebookOverride = null) {
 
     // Check messages in chat for extraction markers and consolidated shards
     messages.forEach((msg, index) => {
+        const shardInfo = classifySavedShardText(msg?.mes);
+
         if (isExtraction(msg.mes)) {
             // Extraction
             const headerMatch = msg.mes.match(/# EXTRACTION:\s*(.+)/);
@@ -737,11 +743,12 @@ export async function findSavedExtractions(settings, lorebookOverride = null) {
                 preview: msg.mes.substring(0, 150).replace(/\n/g, ' ') + '...',
                 uid: msg.send_date  // Add UID for tracking
             });
-        } else if (isConsolidatedShard(msg.mes)) {
+        } else if (isConsolidatedShard(msg.mes) || shardInfo.classification !== SAVED_SHARD_CLASSIFICATIONS.UNKNOWN) {
             // Consolidated shard (consolidation output)
-            const headerMatch = msg.mes.match(/# (?:MEMORY SHARD|CONSOLIDATED MEMORY SHARD):\s*(.+)/);
-            const identifier = headerMatch ? headerMatch[1].trim() : `Memory Shard ${index}`;
-            const messageRangeStart = parseMessageRangeStart(identifier) ?? index;
+            const identifier = shardInfo.startIndex !== null && shardInfo.endIndex !== null
+                ? `Memory Shard ${shardInfo.startIndex}-${shardInfo.endIndex}`
+                : `Memory Shard ${index}`;
+            const messageRangeStart = shardInfo.startIndex ?? parseMessageRangeStart(identifier) ?? index;
 
             extractions.push({
                 type: 'consolidation',
@@ -750,6 +757,11 @@ export async function findSavedExtractions(settings, lorebookOverride = null) {
                 messageRangeStart,
                 identifier,
                 content: msg.mes,
+                parsedBody: shardInfo.body,
+                classification: shardInfo.classification,
+                shardProfile: shardInfo.profile,
+                schemaVersion: shardInfo.schemaVersion,
+                contentFormat: shardInfo.contentFormat,
                 preview: msg.mes.substring(0, 150).replace(/\n/g, ' ') + '...',
                 uid: msg.send_date  // Add UID for tracking
             });
@@ -768,6 +780,8 @@ export async function findSavedExtractions(settings, lorebookOverride = null) {
 
             worldInfoEntries.forEach((entry, index) => {
                 const content = entry.content || entry.memo || '';
+                const shardInfo = classifySavedShardText(content);
+
                 if (isExtraction(content)) {
                     const headerMatch = content.match(/# EXTRACTION:\s*(.+)/);
                     const identifier = headerMatch
@@ -786,21 +800,23 @@ export async function findSavedExtractions(settings, lorebookOverride = null) {
                         preview: content.substring(0, 150).replace(/\n/g, ' ') + '...',
                         uid: entry.uid || entry.id  // Add UID for tracking
                     });
-                } else if (isConsolidatedShard(content)) {
-                    const headerMatch = content.match(/# (?:MEMORY SHARD|CONSOLIDATED MEMORY SHARD):\s*(.+)/);
-                    const identifier = headerMatch
-                        ? headerMatch[1].trim()
-                        : String(entry.comment ?? `Memory Shard ${index}`).trim();
-                    const messageRangeStart = parseMessageRangeStart(identifier) ?? 999999;
+                } else if (shardInfo.classification !== SAVED_SHARD_CLASSIFICATIONS.UNKNOWN) {
+                    const identifier = String(entry.comment ?? `Memory Shard ${index}`).trim();
+                    const messageRangeStart = shardInfo.startIndex ?? parseMessageRangeStart(identifier) ?? 999999;
 
                     extractions.push({
-                        type: 'consolidation',
+                        type: shardInfo.classification === SAVED_SHARD_CLASSIFICATIONS.NARRATIVE ? 'extraction' : 'consolidation',
                         source: 'lorebook',
                         index,
                         messageRangeStart,
                         entryId: entry.uid || entry.id,
                         identifier,
                         content,
+                        parsedBody: shardInfo.body,
+                        classification: shardInfo.classification,
+                        shardProfile: shardInfo.profile,
+                        schemaVersion: shardInfo.schemaVersion,
+                        contentFormat: shardInfo.contentFormat,
                         preview: content.substring(0, 150).replace(/\n/g, ' ') + '...',
                         uid: entry.uid || entry.id  // Add UID for tracking
                     });

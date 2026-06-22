@@ -97,9 +97,11 @@ function buildScopedMetadataFilter(origin, base = {}) {
 
 function filterResultsForOrigin(results, origin) {
     const scoped = isSharedWriteTarget(origin, origin?.collectionId);
-    if (!scoped) return Array.isArray(results) ? results : [];
+    const list = Array.isArray(results) ? results : [];
+    const withoutArchitectural = list.filter(item => String(item?.metadata?.shardProfile || '').trim() !== 'architectural');
+    if (!scoped) return withoutArchitectural;
 
-    return (Array.isArray(results) ? results : []).filter(item =>
+    return withoutArchitectural.filter(item =>
         String(item?.metadata?.originChatId || '').trim() === String(origin?.chatId || '').trim()
     );
 }
