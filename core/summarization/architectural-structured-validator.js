@@ -13,6 +13,13 @@ import {
     parseArchitecturalEventRecord,
     parseArchitecturalThreadRecord,
 } from './architectural-record-parser.js';
+import {
+    ARCHITECTURAL_DECISION_NEW_ID_LIMITS,
+    ARCHITECTURAL_DECISION_UPDATE_WARN_THRESHOLD,
+    buildArchitecturalBaselineLedger,
+    mergeArchitecturalDecisionLedger,
+    normalizeArchitecturalBaselineLedger,
+} from './architectural-decision-ledger.js';
 
 export const ARCHITECTURAL_DECISION_TYPES = Object.freeze([
     'GOVERNANCE',
@@ -84,14 +91,6 @@ const EXPLICIT_DECISION_EVENT_PATTERNS = [
     /\bgoverning rule changed\b/i,
 ];
 
-function cloneBaselineDecision(entry) {
-    return {
-        id: entry.id,
-        status: entry.status,
-        source: entry.source,
-    };
-}
-
 function buildDiagnostic(level, code, message, extra = {}) {
     return {
         level,
@@ -114,15 +113,6 @@ export function indexedSelectedItems(items) {
 function getDecisionField(record, field) {
     const value = record.fields?.[field];
     return Array.isArray(value) ? value[0] : value;
-}
-
-function normalizeBaselineDecisions(baselineDecisions = {}) {
-    const normalized = {};
-    Object.entries(baselineDecisions || {}).forEach(([id, entry]) => {
-        if (!id || !entry) return;
-        normalized[id] = cloneBaselineDecision(entry);
-    });
-    return normalized;
 }
 
 function recordHasCanonicalMarkers(lines = []) {
@@ -154,111 +144,13 @@ function decisionTypesAreCanonical(record) {
     return types.length > 0 && types.every((type) => ARCHITECTURAL_DECISION_TYPES.includes(type));
 }
 
-function hasValidBaselineSupersessionSemantics(record, id, status) {
-    const supersedes = getDecisionField(record, 'SUPERSEDES');
-    const supersededBy = getDecisionField(record, 'SUPERSEDED-BY');
-
-    if (supersedes && String(supersedes).trim() === id) {
-        return false;
-    }
-
-    if (supersededBy && String(supersededBy).trim() === id) {
-        return false;
-    }
-
-    if (status === 'SUPERSEDED' && !String(supersededBy || '').trim()) {
-        return false;
-    }
-
-    if (supersededBy && status !== 'SUPERSEDED') {
-        return false;
-    }
-
-    return true;
-}
-
-function parseSingleBaselineDecision(item, sourceLabel) {
-    const record = parseArchitecturalDecisionRecord(item?.content || '');
-    const id = getDecisionField(record, 'ID');
-    const status = getDecisionField(record, 'STATUS');
-
-    const hasSupersedes = getDecisionField(record, 'SUPERSEDES');
-    const hasSupersededBy = getDecisionField(record, 'SUPERSEDED-BY');
-    const isValid = !!record.sourceRef
-        && record.errors.length === 0
-        && record.duplicateFields.length === 0
-        && record.unknownFields.length === 0
-        && hasDecisionMandatoryFields(record)
-        && !!id
-        && DECISION_ID_PATTERN.test(id)
-        && decisionTypesAreCanonical(record)
-        && !!status
-        && ARCHITECTURAL_DECISION_STATUSES.includes(status)
-        && (!hasSupersedes || DECISION_ID_PATTERN.test(String(hasSupersedes).trim()))
-        && (!hasSupersededBy || DECISION_ID_PATTERN.test(String(hasSupersededBy).trim()));
-    const hasValidSupersessionSemantics = isValid
-        ? hasValidBaselineSupersessionSemantics(record, id, status)
-        : false;
-
-    if (!isValid || !hasValidSupersessionSemantics) {
-        return {
-            ok: false,
-            warning: buildDiagnostic(
-                'warning',
-                'ARCH_BASELINE_DECISION_IGNORED',
-                `Malformed historical decision ignored from ${sourceLabel}.`,
-                { recordId: id || null }
-            ),
-        };
-    }
-
-    return {
-        ok: true,
-        decision: {
-            id,
-            status,
-            source: sourceLabel,
-        },
-    };
-}
-
 export function buildArchitecturalBaselineFromShards(existingShards = []) {
-    const decisions = {};
-    const diagnostics = [];
-    const registry = getSharderSectionRegistry(ARCHITECTURAL_PROFILE);
-
-    const sortedShards = (Array.isArray(existingShards) ? existingShards : [])
-        .map((shard, originalIndex) => ({ shard, originalIndex }))
-        .sort((a, b) => {
-            const aRange = Number.isFinite(a.shard?.messageRangeStart) ? a.shard.messageRangeStart : Number.POSITIVE_INFINITY;
-            const bRange = Number.isFinite(b.shard?.messageRangeStart) ? b.shard.messageRangeStart : Number.POSITIVE_INFINITY;
-            if (aRange !== bRange) return aRange - bRange;
-            return a.originalIndex - b.originalIndex;
-        });
-
-    for (const { shard } of sortedShards) {
-        const content = String(shard?.content || '');
-        if (!content.trim()) continue;
-
-        const parsed = parseArchitecturalExtractionResponse(content, registry);
-        if (!recordHasCanonicalMarkers(parsed?._metadata?.keyLines)) {
-            continue;
-        }
-
-        const sourceLabel = String(shard?.identifier || 'historical architectural shard');
-        for (const { item } of indexedSelectedItems(parsed.decisions)) {
-            const baseline = parseSingleBaselineDecision(item, sourceLabel);
-            if (!baseline.ok) {
-                diagnostics.push(baseline.warning);
-                continue;
-            }
-            decisions[baseline.decision.id] = baseline.decision;
-        }
-    }
-
+    const ledger = buildArchitecturalBaselineLedger(existingShards);
     return {
-        decisions,
-        diagnostics,
+        decisions: ledger.decisionsById,
+        orderedIds: ledger.orderedIds,
+        diagnostics: ledger.diagnostics,
+        ledger,
     };
 }
 
@@ -469,7 +361,7 @@ function validateDecisionLifecycle(records, baselineDecisions, diagnostics) {
     });
 }
 
-function validateBaselineDecisionPresence(records, baselineDecisions, diagnostics) {
+function validateBaselineDecisionPresence(records, baselineLedger, diagnostics) {
     const currentById = new Map();
     records.forEach(({ record, itemIndex }) => {
         const id = getDecisionField(record, 'ID');
@@ -478,42 +370,19 @@ function validateBaselineDecisionPresence(records, baselineDecisions, diagnostic
         }
     });
 
-    const baselineIds = Object.keys(baselineDecisions || {});
-    const currentNonBaselineCount = [...currentById.keys()].filter((id) => !baselineDecisions[id]).length;
-    const preservingAllBaselineWouldExceedCap = baselineIds.length + currentNonBaselineCount > ARCHITECTURAL_SECTION_CAPS.decisions;
-    let emittedCapConflict = false;
-
-    baselineIds.forEach((id) => {
-        const baseline = baselineDecisions[id];
-        if (currentById.has(id)) {
-            return;
-        }
-
+    baselineLedger.orderedIds.forEach((id) => {
+        if (currentById.has(id)) return;
+        const baseline = baselineLedger.decisionsById[id];
         diagnostics.push(buildDiagnostic(
             'error',
-            'ARCH_BASELINE_DECISION_DROPPED',
-            `Baseline decision ${id} is missing from the current merged output.`,
+            'ARCH_BASELINE_DECISION_REMOVED',
+            `Inherited baseline decision ${id} was removed from the current merged output.`,
             {
                 sectionKey: 'decisions',
                 recordId: id,
                 baselineStatus: baseline?.status || null,
             }
         ));
-
-        if (preservingAllBaselineWouldExceedCap && !emittedCapConflict) {
-            diagnostics.push(buildDiagnostic(
-                'error',
-                'ARCH_BASELINE_DECISION_CAP_CONFLICT',
-                'Preserving baseline decision continuity exceeds the DECISIONS cap.',
-                {
-                    sectionKey: 'decisions',
-                    baselineCount: baselineIds.length,
-                    currentNonBaselineCount,
-                    cap: ARCHITECTURAL_SECTION_CAPS.decisions,
-                }
-            ));
-            emittedCapConflict = true;
-        }
     });
 }
 
@@ -800,6 +669,9 @@ function validateThreadRecord(record, itemIndex, diagnostics) {
 
 function validateSectionCaps(sections, diagnostics) {
     Object.entries(ARCHITECTURAL_SECTION_CAPS).forEach(([sectionKey, cap]) => {
+        if (sectionKey === 'decisions') {
+            return;
+        }
         const items = Array.isArray(sections?.[sectionKey]) ? sections[sectionKey] : [];
         const selected = selectedItems(items);
 
@@ -842,23 +714,93 @@ function validateSectionCaps(sections, diagnostics) {
     }
 }
 
+function validateDecisionCapacity(decisionMetrics, diagnostics, context = {}) {
+    if (!decisionMetrics) return;
+
+    const newCount = decisionMetrics.newCount || 0;
+    const updatedCount = decisionMetrics.updatedCount || 0;
+    const overrideRequested = context.allowDecisionCapacityOverride === true;
+    const overrideJustification = String(context.decisionCapacityOverrideJustification || '').trim();
+    const excessStatuses = Array.isArray(decisionMetrics.excessNewStatuses) ? decisionMetrics.excessNewStatuses : [];
+
+    if (newCount > ARCHITECTURAL_DECISION_NEW_ID_LIMITS.hardMax) {
+        const hasNonProposedExcess = excessStatuses.some((status) => status !== 'PROPOSED');
+
+        if (overrideRequested && decisionMetrics.overrideEligible && overrideJustification) {
+            diagnostics.push(buildDiagnostic(
+                'warning',
+                'ARCH_DECISION_NEW_ID_OVERRIDE_ACTIVE',
+                `New decision count exceeds ${ARCHITECTURAL_DECISION_NEW_ID_LIMITS.hardMax}, but an explicit PROPOSED-only override is active.`,
+                { sectionKey: 'decisions', newCount }
+            ));
+        } else {
+            diagnostics.push(buildDiagnostic(
+                'error',
+                'ARCH_DECISION_NEW_ID_HARD_LIMIT_EXCEEDED',
+                `DECISIONS introduces ${newCount} new stable IDs; hard limit is ${ARCHITECTURAL_DECISION_NEW_ID_LIMITS.hardMax}.`,
+                { sectionKey: 'decisions', newCount, hardLimit: ARCHITECTURAL_DECISION_NEW_ID_LIMITS.hardMax }
+            ));
+
+            if (decisionMetrics.overrideEligible) {
+                diagnostics.push(buildDiagnostic(
+                    'warning',
+                    'ARCH_DECISION_NEW_ID_OVERRIDE_AVAILABLE',
+                    'Excess new decisions are PROPOSED-only. Override is available with explicit action and written justification.',
+                    { sectionKey: 'decisions', newCount }
+                ));
+            } else if (hasNonProposedExcess) {
+                diagnostics.push(buildDiagnostic(
+                    'warning',
+                    'ARCH_DECISION_NEW_ID_OVERRIDE_UNAVAILABLE',
+                    'Override is unavailable because excess new decisions include ACCEPTED or SEALED authority.',
+                    { sectionKey: 'decisions', newCount }
+                ));
+            }
+        }
+    } else if (newCount > ARCHITECTURAL_DECISION_NEW_ID_LIMITS.softMax) {
+        diagnostics.push(buildDiagnostic(
+            'warning',
+            'ARCH_DECISION_NEW_ID_ELEVATED',
+            `DECISIONS introduces ${newCount} new stable IDs. Consolidation review is strongly recommended.`,
+            { sectionKey: 'decisions', newCount }
+        ));
+    } else if (newCount > ARCHITECTURAL_DECISION_NEW_ID_LIMITS.normalMax) {
+        diagnostics.push(buildDiagnostic(
+            'warning',
+            'ARCH_DECISION_NEW_ID_SOFT_GUIDANCE',
+            `DECISIONS introduces ${newCount} new stable IDs. Growth is above the normal guidance band.`,
+            { sectionKey: 'decisions', newCount }
+        ));
+    }
+
+    if (updatedCount > ARCHITECTURAL_DECISION_UPDATE_WARN_THRESHOLD) {
+        diagnostics.push(buildDiagnostic(
+            'warning',
+            'ARCH_DECISION_UPDATE_VOLUME_HIGH',
+            `DECISIONS updates ${updatedCount} existing stable IDs in one run; review for broad regeneration or churn.`,
+            { sectionKey: 'decisions', updatedCount, threshold: ARCHITECTURAL_DECISION_UPDATE_WARN_THRESHOLD }
+        ));
+    }
+}
+
 export function validateArchitecturalStructuredSections(sections, context = {}) {
     const diagnostics = [];
-    const baselineDecisions = normalizeBaselineDecisions(context.baselineDecisions);
-
-    validateSectionCaps(sections, diagnostics);
+    const baselineLedger = normalizeArchitecturalBaselineLedger(context.baselineLedger || context.baselineDecisions);
 
     const decisionRecords = indexedSelectedItems(sections?.decisions || []).map(({ item, itemIndex }) => ({
         item,
         itemIndex,
         record: parseArchitecturalDecisionRecord(item?.content || ''),
     }));
+    const decisionMetrics = mergeArchitecturalDecisionLedger(sections?.decisions || [], baselineLedger).metrics;
 
     decisionRecords.forEach(({ record, itemIndex }) => validateDecisionRecord(record, itemIndex, diagnostics));
     validateDecisionDuplicates(decisionRecords, diagnostics);
-    validateDecisionLifecycle(decisionRecords, baselineDecisions, diagnostics);
-    validateBaselineDecisionPresence(decisionRecords, baselineDecisions, diagnostics);
-    validateSupersession(decisionRecords, baselineDecisions, diagnostics);
+    validateDecisionLifecycle(decisionRecords, baselineLedger.decisionsById, diagnostics);
+    validateBaselineDecisionPresence(decisionRecords, baselineLedger, diagnostics);
+    validateSupersession(decisionRecords, baselineLedger.decisionsById, diagnostics);
+    validateDecisionCapacity(decisionMetrics, diagnostics, context);
+    validateSectionCaps(sections, diagnostics);
 
     const currentDecisionIds = new Set(
         decisionRecords

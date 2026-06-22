@@ -20,6 +20,13 @@ function readFixture(name) {
     return readFileSync(join(fixtureDir, name), 'utf8');
 }
 
+function makeDecision(id, status = 'ACCEPTED') {
+    return {
+        content: `[S8:1] 🟠 ID:${id} | TYPE:IMPLEMENTATION | DECISION:${id} decision | WHY:unstated | SCOPE:tests | STATUS:${status} | EVIDENCE:"${id}"`,
+        selected: true,
+    };
+}
+
 function parseFixture(name) {
     return parseArchitecturalExtractionResponse(readFixture(name), registry);
 }
@@ -107,18 +114,18 @@ test('baseline decision retained unchanged passes continuity check', () => {
     const baseline = buildArchitecturalBaselineFromShards([{ content: readFixture('architectural-lifecycle-baseline-01.txt'), identifier: 'baseline' }]);
     const sections = parseFixture('architectural-lifecycle-baseline-01.txt');
 
-    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions: baseline.decisions });
+    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineLedger: baseline.ledger });
 
-    assert.equal(codes(diagnostics).includes('ARCH_BASELINE_DECISION_DROPPED'), false);
+    assert.equal(codes(diagnostics).includes('ARCH_BASELINE_DECISION_REMOVED'), false);
 });
 
-test('baseline decision omitted yields blocking dropped diagnostic', () => {
+test('baseline decision omitted yields blocking removed diagnostic', () => {
     const baseline = buildArchitecturalBaselineFromShards([{ content: readFixture('architectural-lifecycle-baseline-01.txt'), identifier: 'baseline' }]);
     const sections = parseFixture('architectural-valid-minimal-01.txt');
 
-    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions: baseline.decisions });
+    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineLedger: baseline.ledger });
 
-    assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_BASELINE_DECISION_DROPPED' && entry.recordId === 'decision-proposed'), true);
+    assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_BASELINE_DECISION_REMOVED' && entry.recordId === 'decision-proposed'), true);
 });
 
 test('baseline decision retained as properly superseded with reciprocal replacement passes', () => {
@@ -133,9 +140,9 @@ test('baseline decision retained as properly superseded with reciprocal replacem
         { content: '[S2:6] 🔴 ID:new-replacement | TYPE:REPLACEMENT | DECISION:Replacement for historical superseded record | WHY:unstated | SCOPE:Lifecycle test | STATUS:ACCEPTED | SUPERSEDES:legacy-replaced | EVIDENCE:"historical replacement"', selected: true },
     ];
 
-    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions: baseline.decisions });
+    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineLedger: baseline.ledger });
 
-    assert.equal(codes(diagnostics).includes('ARCH_BASELINE_DECISION_DROPPED'), false);
+    assert.equal(codes(diagnostics).includes('ARCH_BASELINE_DECISION_REMOVED'), false);
     assert.equal(codes(diagnostics).includes('ARCH_SUPERSESSION_RECIPROCAL_MISSING'), false);
 });
 
@@ -150,26 +157,9 @@ test('baseline decision renamed without supersession yields blocking drop', () =
         { content: '[S2:5] 🔴 ID:new-replacement | TYPE:REPLACEMENT | DECISION:Replacement for historical superseded record | WHY:unstated | SCOPE:Lifecycle test | STATUS:ACCEPTED | SUPERSEDES:legacy-replaced | EVIDENCE:"historical replacement"', selected: true },
     ];
 
-    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions: baseline.decisions });
+    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineLedger: baseline.ledger });
 
-    assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_BASELINE_DECISION_DROPPED' && entry.recordId === 'decision-accepted'), true);
-});
-
-test('baseline continuity cap conflict emits explicit blocking error', () => {
-    const baselineDecisions = {};
-    for (let index = 0; index < ARCHITECTURAL_SECTION_CAPS.decisions; index++) {
-        baselineDecisions[`baseline-${index + 1}`] = { id: `baseline-${index + 1}`, status: 'ACCEPTED', source: 'baseline' };
-    }
-    const sections = parseFixture('architectural-valid-minimal-01.txt');
-    sections.decisions = Array.from({ length: ARCHITECTURAL_SECTION_CAPS.decisions }, (_, index) => ({
-        content: `[S3:${index + 1}] 🔴 ID:${index < ARCHITECTURAL_SECTION_CAPS.decisions - 1 ? `baseline-${index + 1}` : 'new-extra'} | TYPE:GOVERNANCE | DECISION:Decision ${index + 1} | WHY:unstated | SCOPE:Tests | STATUS:ACCEPTED | EVIDENCE:"fixture"`,
-        selected: true,
-    }));
-
-    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions });
-
-    assert.equal(codes(diagnostics).includes('ARCH_BASELINE_DECISION_CAP_CONFLICT'), true);
-    assert.equal(codes(diagnostics).includes('ARCH_BASELINE_DECISION_DROPPED'), true);
+    assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_BASELINE_DECISION_REMOVED' && entry.recordId === 'decision-accepted'), true);
 });
 
 test('live fixture parses exact counts and surfaces expected errors without PROCEDURE false positives', () => {
@@ -404,6 +394,53 @@ test('comma-delimited explicit DEC list normalizes safely with warning', () => {
     assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_EVENT_DEC_UNRESOLVED'), false);
 });
 
+test('decision capacity uses new stable ids rather than cumulative selected count', () => {
+    const baseline = buildArchitecturalBaselineFromShards([{
+        content: `
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+${Array.from({ length: 12 }, (_, index) => makeDecision(`baseline-${index + 1}`).content).join('\n')}
+
+[CURRENT]
+Fixture | Baseline | Capacity test | None | None | Continue
+
+===END===
+`,
+        identifier: 'baseline',
+        messageRangeStart: 1,
+    }]);
+
+    const sections = parseFixture('architectural-valid-minimal-01.txt');
+    sections.decisions = Array.from({ length: 12 }, (_, index) => makeDecision(`baseline-${index + 1}`))
+        .concat(Array.from({ length: 9 }, (_, index) => makeDecision(`new-${index + 1}`)));
+
+    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineLedger: baseline.ledger });
+
+    assert.equal(codes(diagnostics).includes('ARCH_CAP_EXCEEDED'), false);
+    assert.equal(codes(diagnostics).includes('ARCH_DECISION_NEW_ID_SOFT_GUIDANCE'), true);
+    assert.equal(codes(diagnostics).includes('ARCH_DECISION_NEW_ID_HARD_LIMIT_EXCEEDED'), false);
+});
+
+test('decision capacity blocks above hard new-id limit and allows PROPOSED-only override', () => {
+    const sections = parseFixture('architectural-valid-minimal-01.txt');
+    sections.decisions = Array.from({ length: 21 }, (_, index) => makeDecision(`new-${index + 1}`, 'PROPOSED'));
+
+    let diagnostics = validateArchitecturalStructuredSections(sections, { baselineLedger: { decisionsById: {}, orderedIds: [], diagnostics: [] } });
+    assert.equal(codes(diagnostics).includes('ARCH_DECISION_NEW_ID_HARD_LIMIT_EXCEEDED'), true);
+    assert.equal(codes(diagnostics).includes('ARCH_DECISION_NEW_ID_OVERRIDE_AVAILABLE'), true);
+
+    diagnostics = validateArchitecturalStructuredSections(sections, {
+        baselineLedger: { decisionsById: {}, orderedIds: [], diagnostics: [] },
+        allowDecisionCapacityOverride: true,
+        decisionCapacityOverrideJustification: 'Proposed-only overflow retained for review',
+    });
+    assert.equal(codes(diagnostics).includes('ARCH_DECISION_NEW_ID_HARD_LIMIT_EXCEEDED'), false);
+    assert.equal(codes(diagnostics).includes('ARCH_DECISION_NEW_ID_OVERRIDE_ACTIVE'), true);
+});
+
 test('event referencing dropped baseline decision remains unresolved', () => {
     const baseline = buildArchitecturalBaselineFromShards([{ content: readFixture('architectural-lifecycle-baseline-01.txt'), identifier: 'baseline' }]);
     const sections = parseFixture('architectural-valid-minimal-01.txt');
@@ -412,9 +449,9 @@ test('event referencing dropped baseline decision remains unresolved', () => {
     ];
     sections.events = [{ content: '[S4:2] 🟠 Event description | DEC:decision-accepted', selected: true }];
 
-    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions: baseline.decisions });
+    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineLedger: baseline.ledger });
 
-    assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_BASELINE_DECISION_DROPPED' && entry.recordId === 'decision-accepted'), true);
+    assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_BASELINE_DECISION_REMOVED' && entry.recordId === 'decision-accepted'), true);
     assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_EVENT_DEC_UNRESOLVED' && entry.recordId === 'decision-accepted'), true);
 });
 

@@ -20,6 +20,8 @@ export const ARCHITECTURAL_PRUNING_REASON_CODES = Object.freeze({
     DECISION_CORRECTION_CHAIN_MEMBER: 'DECISION_CORRECTION_CHAIN_MEMBER',
     DECISION_HAS_ACTIVE_SUPERSESSION_LINKS: 'DECISION_HAS_ACTIVE_SUPERSESSION_LINKS',
     DECISION_HAS_RULED_OUT_REASONING: 'DECISION_HAS_RULED_OUT_REASONING',
+    DECISION_BASELINE_INHERITED: 'DECISION_BASELINE_INHERITED',
+    DECISION_BASELINE_UPDATED: 'DECISION_BASELINE_UPDATED',
     THREAD_UNRESOLVED: 'THREAD_UNRESOLVED',
     UNIQUE_STRUCTURAL_REASONING: 'UNIQUE_STRUCTURAL_REASONING',
 });
@@ -140,13 +142,20 @@ function buildGroupedRecommendations(recommendations = []) {
     };
 }
 
-function buildSectionOverCapSummary(sections, recommendationsBySection) {
+function buildSectionOverCapSummary(sections, recommendationsBySection, context = {}) {
+    const decisionMetrics = context?.decisionLedgerMetrics || null;
     return SECTION_ORDER
         .filter((sectionKey) => Number.isInteger(ARCHITECTURAL_SECTION_CAPS[sectionKey]))
         .map((sectionKey) => {
             const selectedCount = indexedSelectedItems(sections?.[sectionKey] || []).length;
             const cap = ARCHITECTURAL_SECTION_CAPS[sectionKey];
-            const excess = Math.max(0, selectedCount - cap);
+            const effectiveSelectedCount = sectionKey === 'decisions' && decisionMetrics
+                ? (decisionMetrics.newCount || 0)
+                : selectedCount;
+            const effectiveCap = sectionKey === 'decisions' && decisionMetrics
+                ? (decisionMetrics.hardMax || cap)
+                : cap;
+            const excess = Math.max(0, effectiveSelectedCount - effectiveCap);
             const recommendations = recommendationsBySection.get(sectionKey) || [];
             const lowRiskCount = recommendations.filter((entry) => entry.classification === ARCHITECTURAL_PRUNING_CLASSIFICATIONS.LOW_RISK).length;
             const reviewCount = recommendations.filter((entry) => entry.classification === ARCHITECTURAL_PRUNING_CLASSIFICATIONS.REVIEW).length;
@@ -156,7 +165,7 @@ function buildSectionOverCapSummary(sections, recommendationsBySection) {
             return {
                 sectionKey,
                 selectedCount,
-                cap,
+                cap: effectiveCap,
                 excess,
                 lowRiskCount,
                 reviewCount,
@@ -164,7 +173,9 @@ function buildSectionOverCapSummary(sections, recommendationsBySection) {
                 canResolveWithLowRisk,
                 requiresManualReview: excess > 0 && lowRiskCount < excess,
                 message: excess > 0 && lowRiskCount < excess
-                    ? 'No deterministic low-risk candidates are sufficient to resolve this cap. Manual consolidation or careful review is required.'
+                    ? sectionKey === 'decisions' && decisionMetrics
+                        ? 'Inherited and updated baseline decisions are ledger-protected. Review only genuinely new decisions for consolidation.'
+                        : 'No deterministic low-risk candidates are sufficient to resolve this cap. Manual consolidation or careful review is required.'
                     : '',
             };
         })
@@ -525,12 +536,13 @@ function analyzeCurrentRecommendations(currentContexts) {
     ));
 }
 
-function analyzeDecisionRecommendations(decisionContexts, eventContexts) {
+function analyzeDecisionRecommendations(decisionContexts, eventContexts, options = {}) {
     const recommendations = [];
     const decisionById = new Map();
     const eventRefsByDecisionId = collectDecisionReferenceMap(eventContexts);
     const evidenceCounts = collectDecisionEvidenceCounts(decisionContexts);
     const changedCounts = collectDecisionChangedCounts(decisionContexts);
+    const classificationById = options?.decisionLedgerMetrics?.classificationById || {};
 
     decisionContexts.forEach((context) => {
         if (context.id) {
@@ -553,6 +565,7 @@ function analyzeDecisionRecommendations(decisionContexts, eventContexts) {
             || Boolean(linkedDecision && linkedDecision.types.includes('CORRECTION'));
         const hasUniqueEvidence = context.evidence.some((evidence) => evidenceCounts.get(evidence) === 1);
         const hasUniqueChanged = context.changed && changedCounts.get(context.changed) === 1;
+        const ledgerClass = context.id ? classificationById[context.id] : null;
         const isPureLocalImplementation = context.types.length > 0
             && context.types.every((type) => NON_GOVERNING_LOCAL_DECISION_TYPES.has(type))
             && context.types.includes('IMPLEMENTATION')
@@ -565,6 +578,42 @@ function analyzeDecisionRecommendations(decisionContexts, eventContexts) {
             context.status === 'SEALED'
             || (context.status === 'ACCEPTED' && !isPureLocalImplementation)
         ) && !context.supersededBy;
+
+        if (ledgerClass === 'inherited') {
+            recommendations.push(createRecommendation(
+                ARCHITECTURAL_PRUNING_CLASSIFICATIONS.PROTECTED,
+                'decisions',
+                context.itemIndex,
+                context.item,
+                {
+                    sourceRef: context.sourceRef,
+                    stableDecisionId: context.id || null,
+                    reasonCodes: [ARCHITECTURAL_PRUNING_REASON_CODES.DECISION_BASELINE_INHERITED],
+                    basis: [
+                        'Baseline decision was carried forward unchanged and is protected by continuity rules.',
+                    ],
+                }
+            ));
+            return;
+        }
+
+        if (ledgerClass === 'updated') {
+            recommendations.push(createRecommendation(
+                ARCHITECTURAL_PRUNING_CLASSIFICATIONS.PROTECTED,
+                'decisions',
+                context.itemIndex,
+                context.item,
+                {
+                    sourceRef: context.sourceRef,
+                    stableDecisionId: context.id || null,
+                    reasonCodes: [ARCHITECTURAL_PRUNING_REASON_CODES.DECISION_BASELINE_UPDATED],
+                    basis: [
+                        'Baseline decision was updated in this run and should not be pruned to control new-ID growth.',
+                    ],
+                }
+            ));
+            return;
+        }
 
         if (isActiveGoverning) {
             reasonCodes.push(ARCHITECTURAL_PRUNING_REASON_CODES.DECISION_ACTIVE_GOVERNING);
@@ -681,7 +730,7 @@ export function analyzeArchitecturalPruningAdvisor(sections, context = {}) {
         ...analyzeTimelineRecommendations(timelineContexts, eventContexts, decisionContexts),
         ...analyzeThreadRecommendations(threadContexts, developmentContexts, decisionContexts),
         ...analyzeCurrentRecommendations(currentContexts),
-        ...analyzeDecisionRecommendations(decisionContexts, eventContexts),
+        ...analyzeDecisionRecommendations(decisionContexts, eventContexts, context),
     ]);
 
     const recommendationsBySection = new Map();
@@ -692,7 +741,7 @@ export function analyzeArchitecturalPruningAdvisor(sections, context = {}) {
         recommendationsBySection.get(entry.sectionKey).push(entry);
     });
 
-    const overCapSections = buildSectionOverCapSummary(normalizedSections, recommendationsBySection);
+    const overCapSections = buildSectionOverCapSummary(normalizedSections, recommendationsBySection, context);
     const groups = buildGroupedRecommendations(recommendations);
 
     return {

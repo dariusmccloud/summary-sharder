@@ -21,6 +21,7 @@ import { validateSinglePassOutput, getSinglePassSeverity } from './fidelity-vali
 import { checkSinglePassEvidence } from './evidence-checker.js';
 import { checkRelationshipCoherence } from './relationship-guard.js';
 import { buildArchitecturalBaselineFromShards } from '../summarization/architectural-structured-validator.js';
+import { mergeArchitecturalDecisionLedger } from '../summarization/architectural-decision-ledger.js';
 
 /**
  * @param {Object} settings
@@ -155,19 +156,35 @@ export async function runSharderPipeline(chatText, settings, context) {
         sceneCodeFixes,
         fixedCodes,
     } = sanitizeSinglePassSections(parsed, { ...context, inheritedPrefixes });
+    const mergedSections = sectionRegistry.profile === ARCHITECTURAL_PROFILE
+        ? {
+            ...sanitizedSections,
+            decisions: mergeArchitecturalDecisionLedger(
+                sanitizedSections?.decisions || [],
+                architecturalBaseline.ledger || architecturalBaseline.decisions
+            ).items,
+        }
+        : sanitizedSections;
+    const decisionLedger = sectionRegistry.profile === ARCHITECTURAL_PROFILE
+        ? mergeArchitecturalDecisionLedger(
+            sanitizedSections?.decisions || [],
+            architecturalBaseline.ledger || architecturalBaseline.decisions
+        )
+        : null;
 
-    const structure = validateSinglePassOutput(sanitizedSections, {
+    const structure = validateSinglePassOutput(mergedSections, {
         ...context,
         inheritedPrefixes,
         sectionRegistry,
         baselineDecisions: architecturalBaseline.decisions,
+        baselineLedger: architecturalBaseline.ledger || architecturalBaseline.decisions,
     });
     const evidence = sectionRegistry.profile === ARCHITECTURAL_PROFILE
         ? { diagnostics: [], stats: { checked: 0, lowEvidence: 0 } }
-        : checkSinglePassEvidence(sanitizedSections, chatText);
+        : checkSinglePassEvidence(mergedSections, chatText);
     const relationships = sectionRegistry.profile === ARCHITECTURAL_PROFILE
         ? { diagnostics: [], stats: { relationships: 0, outOfBounds: 0 } }
-        : checkRelationshipCoherence(sanitizedSections);
+        : checkRelationshipCoherence(mergedSections);
 
     const diagnostics = [
         ...structure.diagnostics,
@@ -186,7 +203,7 @@ export async function runSharderPipeline(chatText, settings, context) {
 
     const severity = getSinglePassSeverity(diagnostics);
 
-    const reconstructed = reconstructExtraction(sanitizedSections, {
+    const reconstructed = reconstructExtraction(mergedSections, {
         startIndex: context.startIndex,
         endIndex: context.endIndex,
         userNotesEdited: false,
@@ -198,7 +215,7 @@ export async function runSharderPipeline(chatText, settings, context) {
     return {
         raw,
         reconstructed,
-        sections: sanitizedSections,
+        sections: mergedSections,
         extractedKeywords: parsedResult.keywords,
         diagnostics,
         severity,
@@ -221,6 +238,8 @@ export async function runSharderPipeline(chatText, settings, context) {
             ...(sectionRegistry.profile === ARCHITECTURAL_PROFILE ? {
                 shardProfile: ARCHITECTURAL_PROFILE,
                 baselineDecisions: architecturalBaseline.decisions,
+                baselineLedger: architecturalBaseline.ledger || architecturalBaseline.decisions,
+                decisionLedgerMetrics: decisionLedger?.metrics || null,
             } : {}),
         }
     };

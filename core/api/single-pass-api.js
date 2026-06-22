@@ -230,7 +230,8 @@ export async function runSharder(startIndex, endIndex, settings, selectedShards 
             false,
             headless.result.extractedKeywords || [],
             null,
-            review.archiveOptions || null
+            review.archiveOptions || null,
+            review.resultMetadata || null
         );
 
         if (outputResult.didInjectToContext) {

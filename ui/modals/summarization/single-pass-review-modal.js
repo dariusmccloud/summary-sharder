@@ -17,6 +17,7 @@ import {
     ARCHITECTURAL_SECTION_CAPS,
     validateArchitecturalStructuredSections,
 } from '../../../core/summarization/architectural-structured-validator.js';
+import { mergeArchitecturalDecisionLedger } from '../../../core/summarization/architectural-decision-ledger.js';
 import {
     ARCHITECTURAL_PRUNING_CLASSIFICATIONS,
     analyzeArchitecturalPruningAdvisor,
@@ -47,6 +48,14 @@ function isArchitecturalCurrentSection(state, sectionKey) {
 
 function getSelectedItems(items) {
     return (Array.isArray(items) ? items : []).filter((item) => item?.selected !== false);
+}
+
+function getArchitecturalDecisionCountText(state, selected, total) {
+    const metrics = state.decisionLedgerMetrics || computeDecisionLedgerMetrics(state);
+    if (!metrics) {
+        return `(${selected}/${total})`;
+    }
+    return `(${selected} selected | ${metrics.newCount} new / cap ${metrics.hardMax})`;
 }
 
 function getArchitecturalCurrentError(state) {
@@ -348,8 +357,17 @@ function buildDynamicArchitecturalSections(state) {
     return sections;
 }
 
+function computeDecisionLedgerMetrics(state) {
+    if (!isArchitecturalState(state)) return null;
+    return mergeArchitecturalDecisionLedger(
+        state.editableSections?.decisions || [],
+        state.metadata?.baselineLedger || state.metadata?.baselineDecisions || {}
+    ).metrics;
+}
+
 function computeArchitecturalDynamicDiagnostics(state) {
     const sections = buildDynamicArchitecturalSections(state);
+    state.decisionLedgerMetrics = computeDecisionLedgerMetrics(state);
     const shellDiagnostics = validateArchitecturalShellSections(sections)
         .filter((diagnostic) =>
             !ARCHITECTURAL_IMMUTABLE_DIAGNOSTIC_CODES.has(diagnostic.code)
@@ -357,7 +375,10 @@ function computeArchitecturalDynamicDiagnostics(state) {
         );
     const structuredDiagnostics = validateArchitecturalStructuredSections(sections, {
         baselineDecisions: state.metadata?.baselineDecisions || {},
+        baselineLedger: state.metadata?.baselineLedger || state.metadata?.baselineDecisions || {},
         profile: ARCHITECTURAL_PROFILE,
+        allowDecisionCapacityOverride: state.decisionCapacityOverride?.enabled === true,
+        decisionCapacityOverrideJustification: state.decisionCapacityOverride?.justification || '',
     });
 
     return mergeDiagnostics(shellDiagnostics, structuredDiagnostics);
@@ -427,6 +448,7 @@ function refreshArchitecturalAdvisor(state) {
     if (!isArchitecturalState(state)) return;
     state.pruningAdvisor = analyzeArchitecturalPruningAdvisor(state.editableSections, {
         profile: ARCHITECTURAL_PROFILE,
+        decisionLedgerMetrics: state.decisionLedgerMetrics || computeDecisionLedgerMetrics(state),
     });
 }
 
@@ -568,6 +590,52 @@ function architecturalKeyBlockHtml(state) {
     `;
 }
 
+function architecturalDecisionCapacityHtml(state) {
+    if (!isArchitecturalState(state)) return '';
+    const metrics = state.decisionLedgerMetrics || computeDecisionLedgerMetrics(state);
+    if (!metrics) return '';
+
+    const overrideEligible = metrics.overrideEligible && metrics.newCount > metrics.hardMax;
+    const overrideEnabled = state.decisionCapacityOverride?.enabled === true;
+    const justification = String(state.decisionCapacityOverride?.justification || '');
+    const statusLabel = metrics.guidanceLevel === 'blocked'
+        ? `Hard limit exceeded (${metrics.newCount}/${metrics.hardMax} new IDs)`
+        : metrics.guidanceLevel === 'elevated'
+            ? `Elevated guidance (${metrics.newCount} new IDs)`
+            : metrics.guidanceLevel === 'soft'
+                ? `Soft guidance (${metrics.newCount} new IDs)`
+                : `Within normal band (${metrics.newCount} new IDs)`;
+
+    return `
+        <div class="ss-sp-panel ss-architectural-capacity" style="margin-top: 12px;">
+            <div class="ss-output-header">
+                <span>Decision Ledger</span>
+                <span class="ss-hint">${escapeHtml(statusLabel)}</span>
+            </div>
+            <div class="ss-architectural-capacity-grid">
+                <div><strong>Inherited:</strong> ${metrics.inheritedCount}</div>
+                <div><strong>Updated:</strong> ${metrics.updatedCount}</div>
+                <div><strong>New this run:</strong> ${metrics.newCount}</div>
+                <div><strong>Soft guidance:</strong> ${metrics.softMax}</div>
+                <div><strong>Hard new-ID limit:</strong> ${metrics.hardMax}</div>
+                <div><strong>Override:</strong> ${overrideEnabled ? 'Active' : (overrideEligible ? 'Available' : 'Unavailable')}</div>
+            </div>
+            ${overrideEligible ? `
+                <label class="ss-override-toggle" style="margin-top: 10px;">
+                    <input type="checkbox" id="ss-sp-decision-override" ${overrideEnabled ? 'checked' : ''} />
+                    <span>Allow PROPOSED-only overflow beyond the hard new-ID limit</span>
+                </label>
+                <textarea id="ss-sp-decision-override-justification"
+                          class="text_pole"
+                          rows="3"
+                          placeholder="Required justification for decision-capacity override"
+                          style="margin-top: 8px; width: 100%;"
+                >${escapeHtml(justification)}</textarea>
+            ` : ''}
+        </div>
+    `;
+}
+
 function diagnosticsHtml(diagnostics) {
     if (!diagnostics?.length) {
         return '<div class="ss-sp-diag-empty">No diagnostics. Output looks structurally clean.</div>';
@@ -694,10 +762,15 @@ function sectionsHtml(state) {
         const isProtectedCurrent = isArchitecturalCurrentSection(state, section.key);
         const addItemDisabled = isProtectedCurrent;
         const cap = isArchitecturalState(state) ? ARCHITECTURAL_SECTION_CAPS[section.key] : null;
-        const countText = isArchitecturalState(state) && Number.isInteger(cap)
+        const decisionMetrics = section.key === 'decisions' ? (state.decisionLedgerMetrics || computeDecisionLedgerMetrics(state)) : null;
+        const countText = isArchitecturalState(state) && section.key === 'decisions'
+            ? getArchitecturalDecisionCountText(state, selected, total)
+            : isArchitecturalState(state) && Number.isInteger(cap)
             ? `(${selected} selected / cap ${cap})`
             : `(${selected}/${total})`;
-        const overCap = isArchitecturalState(state) && Number.isInteger(cap) && selected > cap;
+        const overCap = isArchitecturalState(state) && section.key === 'decisions'
+            ? (decisionMetrics?.newCount || 0) > (decisionMetrics?.hardMax || 0)
+            : isArchitecturalState(state) && Number.isInteger(cap) && selected > cap;
         const sectionDiagnosticSummary = getSectionDiagnosticSummary(state, section.key);
         const severityClass = sectionDiagnosticSummary.level ? `ss-section-${sectionDiagnosticSummary.level}` : '';
         return `
@@ -802,18 +875,19 @@ function buildPruningSection(state) {
     const uncoveredGroup = !hasUncovered
         ? ''
         : `
-            <div class="ss-pruning-group ss-sub-accordion" data-pruning-group="Uncovered Messages">
+            <div class="ss-pruning-group ss-sub-accordion" data-pruning-group="Low-Coverage Source Messages">
                 <div class="ss-pruning-group-header">
                     <span class="ss-sub-accordion-toggle"><i class="fa-solid fa-chevron-right"></i></span>
-                    <span class="ss-pruning-group-title">📭 Uncovered Messages</span>
+                    <span class="ss-pruning-group-title" title="Source messages from the selected chat range that had weak representation in the generated shard. Review them to decide whether important continuity was missed.">📭 Low-Coverage Source Messages</span>
                     <span class="ss-pruning-group-count">(${uncoveredMessages.length} messages)</span>
                 </div>
                 <div class="ss-sub-accordion-content" style="display:none;">
                     <div class="ss-pruning-items">
+                        <div class="ss-hint" style="margin-bottom:8px;">These source messages had weak representation in the generated shard. Review them only if you need to check whether continuity-relevant material was skipped or compressed too hard.</div>
                         ${uncoveredMessages.map((msg, i) => `
                             <div class="ss-pruning-item ss-uncovered-message" data-section="uncovered" data-index="${i}">
                                 <div class="ss-pruning-content"><strong>[Msg ${msg.msgIndex}] ${escapeHtml(msg.name)}:</strong> ${escapeHtml(msg.preview || '')}${(msg.preview || '').length >= 150 ? '...' : ''}</div>
-                                <div class="ss-pruning-source">Coverage: ${Math.round((msg.coverageRatio || 0) * 100)}%</div>
+                                <div class="ss-pruning-source">Shard coverage estimate: ${Math.round((msg.coverageRatio || 0) * 100)}%</div>
                             </div>
                         `).join('')}
                     </div>
@@ -875,6 +949,7 @@ function buildModalHtml(state) {
                 ${architecturalKeyBlockHtml(state)}
                 ${sectionsHtml(state)}
             </div>
+            ${architecturalDecisionCapacityHtml(state)}
             ${buildPruningAdvisorSection(state)}
             ${buildPruningSection(state)}
 
@@ -930,14 +1005,20 @@ function updateSectionCount(state, sectionKey) {
     const cap = isArchitecturalState(state) ? ARCHITECTURAL_SECTION_CAPS[sectionKey] : null;
     const el = document.querySelector(`[data-ss-count-key="${CSS.escape(sectionKey)}"]`);
     if (el) {
-        el.textContent = isArchitecturalState(state) && Number.isInteger(cap)
+        el.textContent = isArchitecturalState(state) && sectionKey === 'decisions'
+            ? getArchitecturalDecisionCountText(state, selected, total)
+            : isArchitecturalState(state) && Number.isInteger(cap)
             ? `(${selected} selected / cap ${cap})`
             : `(${selected}/${total})`;
     }
 
     const accordion = document.querySelector(`.ss-review-accordion[data-section="sp-${CSS.escape(sectionKey)}"]`);
-    if (accordion && isArchitecturalState(state) && Number.isInteger(cap)) {
-        accordion.classList.toggle('ss-over-cap', selected > cap);
+    if (accordion && isArchitecturalState(state) && (Number.isInteger(cap) || sectionKey === 'decisions')) {
+        const decisionMetrics = state.decisionLedgerMetrics || computeDecisionLedgerMetrics(state);
+        const overCap = sectionKey === 'decisions'
+            ? (decisionMetrics?.newCount || 0) > (decisionMetrics?.hardMax || 0)
+            : selected > cap;
+        accordion.classList.toggle('ss-over-cap', overCap);
     }
 
     if (accordion) {
@@ -1004,6 +1085,11 @@ function updateOutputEditor(state) {
     }
 
     if (isArchitecturalState(state)) {
+        const capacityPanel = document.querySelector('.ss-architectural-capacity');
+        if (capacityPanel) {
+            capacityPanel.outerHTML = architecturalDecisionCapacityHtml(state);
+            setupDecisionCapacityOverrideHandlers(state);
+        }
         const advisorAccordion = document.querySelector('.ss-review-accordion[data-section="sp-pruning-advisor"]');
         if (advisorAccordion) {
             advisorAccordion.outerHTML = buildPruningAdvisorSection(state);
@@ -1015,6 +1101,26 @@ function updateOutputEditor(state) {
     updateInlineDiagnostics(state);
 }
 
+function setupDecisionCapacityOverrideHandlers(state) {
+    const checkbox = document.getElementById('ss-sp-decision-override');
+    const justification = document.getElementById('ss-sp-decision-override-justification');
+
+    if (checkbox && checkbox.dataset.ssBound !== 'true') {
+        checkbox.dataset.ssBound = 'true';
+        checkbox.addEventListener('change', (event) => {
+            state.decisionCapacityOverride.enabled = event.currentTarget.checked;
+            updateOutputEditor(state);
+        });
+    }
+
+    if (justification && justification.dataset.ssBound !== 'true') {
+        justification.dataset.ssBound = 'true';
+        justification.addEventListener('input', (event) => {
+            state.decisionCapacityOverride.justification = event.currentTarget.value;
+        });
+    }
+}
+
 function updatePruningHeaderCount(state) {
     const el = document.getElementById('ss-sp-pruning-count');
     if (el) {
@@ -1024,6 +1130,8 @@ function updatePruningHeaderCount(state) {
 
 function attachPruningGroupHeaderHandler(header) {
     if (!header) return;
+    if (header.dataset.ssPruningAccordionBound === 'true') return;
+    header.dataset.ssPruningAccordionBound = 'true';
     header.addEventListener('click', (e) => {
         if (e.target?.closest?.('button,input,label')) return;
         const group = header.closest('.ss-pruning-group');
@@ -1980,6 +2088,11 @@ export async function openSharderReviewModal(pipelineResult, settings, regenFn =
             archiveWarm: false,
             archiveCold: false,
         },
+        decisionCapacityOverride: {
+            enabled: false,
+            justification: '',
+        },
+        decisionLedgerMetrics: pipelineResult.metadata?.decisionLedgerMetrics || null,
     };
 
     if (isArchitecturalState(state)) {
@@ -2037,6 +2150,7 @@ export async function openSharderReviewModal(pipelineResult, settings, regenFn =
         setupGlobalSelectionHandlers(state);
         setupRegenerateHandler(state, regenFn);
         setupOutputOverrideHandlers(state);
+        setupDecisionCapacityOverrideHandlers(state);
         setupCopyOutputHandler();
         setupArchiveOptionHandlers(state);
         updateOutputEditor(state);
@@ -2066,6 +2180,15 @@ export async function openSharderReviewModal(pipelineResult, settings, regenFn =
                 : applyRescues(baseOutput, state.rescuedItems),
             archiveOptions: state.archiveOptions,
             archivedItems: state.archivedItems,
+            resultMetadata: isArchitecturalState(state) && state.decisionCapacityOverride.enabled
+                ? {
+                    architecturalDecisionCapacityOverride: {
+                        justification: String(state.decisionCapacityOverride.justification || '').trim(),
+                        decisionMetrics: state.decisionLedgerMetrics || null,
+                        timestamp: Date.now(),
+                    },
+                }
+                : null,
         };
     }
 

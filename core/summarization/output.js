@@ -10,7 +10,7 @@ import {
     saveWorldInfo,
     createWorldInfoEntry,
 } from '../../../../../world-info.js';
-import { chat_metadata, characters, this_chid, saveChatConditional } from '../../../../../../script.js';
+import { chat_metadata, characters, this_chid, saveChatConditional, saveMetadata } from '../../../../../../script.js';
 import { findIndexByUID } from '../processing/utils.js';
 import { parseBannedKeywords, filterBannedKeywords } from '../processing/keyword-filter.js';
 import { refreshMultipleLorebooksUI } from '../processing/lorebook-refresh.js';
@@ -44,6 +44,7 @@ const METADATA_KEY = 'world_info';
  * @param {string[]} extractedKeywords - AI-extracted keywords from the summary
  * @param {string|null} insertAfterUID - UID (send_date) of message to insert after
  * @param {{injectToContext?: boolean, archiveWarm?: boolean, archiveCold?: boolean}|null} archiveOptions
+ * @param {Object|null} resultMetadata
  * @param {{skipDomMesidUpdate?: boolean}|null} options
  * @returns {Promise<{didInjectToContext: boolean, mode: 'system'|'lorebook', outputUID: string|null, successCount?: number}>}
  */
@@ -56,6 +57,7 @@ export async function handleSummaryResult(
     extractedKeywords = [],
     insertAfterUID = null,
     archiveOptions = null,
+    resultMetadata = null,
     options = null
 ) {
     throwIfAborted('summary output');
@@ -90,6 +92,16 @@ export async function handleSummaryResult(
 
     throwIfAborted('summary output');
     if (didInjectToContext) {
+        if (resultMetadata?.architecturalDecisionCapacityOverride) {
+            await persistArchitecturalDecisionCapacityOverride(
+                outputUID,
+                mode,
+                startIndex,
+                endIndex,
+                resultMetadata.architecturalDecisionCapacityOverride
+            );
+        }
+
         if (settings?.sharderMode === true) {
             // Sharder mode: section-aware or standard shard vectorization
             if (settings?.rag?.enabled && settings?.rag?.autoVectorizeNewSummaries !== false) {
@@ -174,6 +186,27 @@ export async function handleSummaryResult(
         outputUID,
         ...(mode === 'lorebook' ? { successCount: successCount || 0 } : {})
     };
+}
+
+async function persistArchitecturalDecisionCapacityOverride(outputUID, mode, startIndex, endIndex, overrideMetadata) {
+    if (!chat_metadata.summary_sharder) {
+        chat_metadata.summary_sharder = {};
+    }
+    if (!Array.isArray(chat_metadata.summary_sharder.architecturalDecisionCapacityOverrides)) {
+        chat_metadata.summary_sharder.architecturalDecisionCapacityOverrides = [];
+    }
+
+    chat_metadata.summary_sharder.architecturalDecisionCapacityOverrides.push({
+        outputUID: outputUID || null,
+        mode,
+        startIndex,
+        endIndex,
+        justification: String(overrideMetadata?.justification || '').trim(),
+        decisionMetrics: overrideMetadata?.decisionMetrics || null,
+        timestamp: Number.isFinite(overrideMetadata?.timestamp) ? overrideMetadata.timestamp : Date.now(),
+    });
+
+    await saveMetadata();
 }
 
 /**
