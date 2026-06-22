@@ -1,6 +1,7 @@
 import { getFeatureApiDisplayString } from '../../core/api/feature-api-config.js';
 import { getActiveRagSettings, getChatRanges } from '../../core/settings.js';
 import { escapeHtml } from '../common/ui-utils.js';
+import { getFabActionVisibility, renderFabActionButton } from './fab-action-state.js';
 import {
     getActiveApiFeature,
     getStatusMode
@@ -66,19 +67,7 @@ function createSnapshot(settings, isGenerating, lastSummarizedIndex = -1) {
         ragBackend: activeRag.backend || 'n/a',
         ragScoring: activeRag.scoringMethod || 'keyword',
         ragChunking: activeRag.sectionAwareChunking ? 'section-aware' : 'standard',
-        actions: getActionVisibility(sharderMode, ragEnabled, isGenerating),
-    };
-}
-
-function getActionVisibility(sharderMode, ragEnabled, isGenerating) {
-    return {
-        summarize: !sharderMode,
-        singlePass: sharderMode,
-        stop: isGenerating,
-        vectorize: ragEnabled,
-        purgeVectors: ragEnabled,
-        browseVectors: ragEnabled,
-        ragDebug: ragEnabled,
+        actions: getFabActionVisibility(sharderMode, ragEnabled, isGenerating),
     };
 }
 
@@ -88,7 +77,7 @@ function buildActionsPanel(snapshot) {
     // Summary Mode section
     if (!snapshot.sharderMode) {
         const items = [
-            actionBtn('summarize', 'fa-play', 'Summarize Now'),
+            actionBtn('summarize', 'fa-play', 'Summarize Now', '', snapshot.isGenerating),
         ];
         if (snapshot.actions.stop) {
             items.push(actionBtn('stop', 'fa-stop', 'Stop'));
@@ -100,7 +89,7 @@ function buildActionsPanel(snapshot) {
     if (snapshot.sharderMode) {
         const items = [];
         items.push(
-            actionBtn('single-pass', 'fa-bolt', 'Run Sharder'),
+            actionBtn('single-pass', 'fa-bolt', 'Run Sharder', '', snapshot.isGenerating),
             actionBtn('batch-sharder', 'fa-layer-group', 'Batch Sharder')
         );
         if (snapshot.actions.stop) {
@@ -211,12 +200,6 @@ function buildAdvancedPanel(snapshot) {
     return `<div class="ss-fab-panel-content">${renderSections([configSection, managementSection])}</div>`;
 }
 
-function actionBtn(action, icon, label, extraClass = '') {
-    const classes = ['ss-fab-action', 'menu_button', extraClass].filter(Boolean).join(' ');
-    return `
-        <button type="button" class="${classes}" data-action="${escapeHtml(action)}">
-            <i class="fa-solid ${escapeHtml(icon)}"></i>
-            <span>${escapeHtml(label)}</span>
-        </button>
-    `;
+function actionBtn(action, icon, label, extraClass = '', disabled = false) {
+    return renderFabActionButton(action, icon, label, extraClass, disabled);
 }
