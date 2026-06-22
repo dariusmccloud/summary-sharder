@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import {
     ARCHITECTURAL_PROFILE,
@@ -16,8 +18,10 @@ import {
     parseArchitecturalExtractionResponse,
     reconstructArchitecturalExtraction,
 } from './architectural-sharder-format.js';
+import { validateArchitecturalStructuredSections } from './architectural-structured-validator.js';
 
 const registry = getSharderSectionRegistry(ARCHITECTURAL_PROFILE);
+const fixtureDir = join(process.cwd(), 'core', 'summarization', 'fixtures');
 
 test('architectural parser reads bracket headers without narrative sections', () => {
     const sections = parseArchitecturalExtractionResponse(`
@@ -166,4 +170,20 @@ test('canonical architectural output has one final terminator and only approved 
     assert.equal(inspection.terminatorCount, 1);
     assert.equal(inspection.endsWithTerminator, true);
     assert.equal(inspection.hasTrailingContent, false);
+});
+
+test('architectural dialogue parser preserves a two-line dialogue record as one item through reconstruction', () => {
+    const source = readFileSync(join(fixtureDir, 'architectural-dialogue-two-line-01.txt'), 'utf8');
+    const sections = parseArchitecturalExtractionResponse(source, registry);
+    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions: {} });
+    const reconstructed = reconstructArchitecturalExtraction(sections, registry);
+
+    assert.equal(sections.dialogue.length, 1);
+    assert.equal(sections.dialogue[0].content.split('\n').length, 2);
+    assert.equal(diagnostics.some((entry) => entry.level === 'error'), false);
+    assert.equal(reconstructed.includes('[S40:1] "Speaker and context must survive multiline parsing"\n--Archivist | fixture validation context'), true);
+
+    sections.dialogue[0].content += '\nthird line';
+    const blocked = validateArchitecturalStructuredSections(sections, { baselineDecisions: {} });
+    assert.equal(blocked.some((entry) => entry.code === 'ARCH_DIALOGUE_TOO_MANY_LINES'), true);
 });

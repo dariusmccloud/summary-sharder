@@ -1,4 +1,5 @@
 export const ARCHITECTURAL_SOURCE_REF_PATTERN = /^S\d+:\d+$/;
+const ARCHITECTURAL_WRAPPED_SOURCE_REF_PATTERN = /^(?:\[(S\d+:\d+)\]|\((S\d+:\d+)\))$/;
 
 export const ARCHITECTURAL_DECISION_FIELDS = Object.freeze([
     'ID',
@@ -212,28 +213,43 @@ export function splitArchitecturalPipeFields(text) {
 
         const fieldName = segment.slice(0, colonIndex).trim();
         const rawValue = segment.slice(colonIndex + 1).trim();
+        const normalizedFieldName = fieldName.toUpperCase();
 
         if (!fieldName) {
             result.malformedSegments.push(segment);
             continue;
         }
 
-        result.fieldOrder.push(fieldName);
-        result.rawFields.push({ field: fieldName, value: rawValue, raw: segment });
+        result.fieldOrder.push(normalizedFieldName);
+        result.rawFields.push({
+            field: normalizedFieldName,
+            rawField: fieldName,
+            value: rawValue,
+            raw: segment,
+        });
 
-        if (Object.prototype.hasOwnProperty.call(result.fields, fieldName)) {
-            result.duplicateFields.push(fieldName);
+        if (fieldName !== normalizedFieldName) {
+            result.warnings.push({
+                code: 'NONCANONICAL_FIELD_CASE',
+                message: `Field name "${fieldName}" was normalized to "${normalizedFieldName}".`,
+                field: normalizedFieldName,
+                rawField: fieldName,
+            });
         }
 
-        if (Object.prototype.hasOwnProperty.call(result.fields, fieldName)) {
-            const prior = result.fields[fieldName];
+        if (Object.prototype.hasOwnProperty.call(result.fields, normalizedFieldName)) {
+            result.duplicateFields.push(normalizedFieldName);
+        }
+
+        if (Object.prototype.hasOwnProperty.call(result.fields, normalizedFieldName)) {
+            const prior = result.fields[normalizedFieldName];
             if (Array.isArray(prior)) {
                 prior.push(unescapeArchitecturalFieldValue(rawValue));
             } else {
-                result.fields[fieldName] = [prior, unescapeArchitecturalFieldValue(rawValue)];
+                result.fields[normalizedFieldName] = [prior, unescapeArchitecturalFieldValue(rawValue)];
             }
         } else {
-            result.fields[fieldName] = unescapeArchitecturalFieldValue(rawValue);
+            result.fields[normalizedFieldName] = unescapeArchitecturalFieldValue(rawValue);
         }
     }
 
@@ -258,7 +274,7 @@ export function splitArchitecturalPipeFields(text) {
 
 export function parseArchitecturalSourceReference(text) {
     const raw = String(text || '').trim();
-    const match = raw.match(/^[\[(](S\d+:\d+)[\])]$/);
+    const match = raw.match(ARCHITECTURAL_WRAPPED_SOURCE_REF_PATTERN);
     if (!match) {
         return {
             ok: false,
@@ -274,13 +290,13 @@ export function parseArchitecturalSourceReference(text) {
     return {
         ok: true,
         raw,
-        normalized: match[1],
+        normalized: match[1] || match[2],
         error: null,
     };
 }
 
 function extractLeadingSourceReference(text, result) {
-    const match = String(text || '').trim().match(/^([\[(]S\d+:\d+[\])])\s*(.*)$/s);
+    const match = String(text || '').trim().match(/^((?:\[(?:S\d+:\d+)\]|\((?:S\d+:\d+)\)))\s*(.*)$/s);
     if (!match) {
         pushError(result, 'MISSING_SOURCE_REF', 'Missing required leading source reference.');
         return { rest: String(text || '').trim() };
@@ -314,26 +330,26 @@ function firstFieldValue(rawValue) {
 
 function normalizeDecisionFields(splitResult, result) {
     for (const entry of splitResult.rawFields) {
-        const name = entry.field.toUpperCase();
         result.rawFields.push({
-            field: name,
+            field: entry.field,
+            rawField: entry.rawField,
             value: entry.value,
             raw: entry.raw,
         });
-        result.fieldOrder.push(name);
+        result.fieldOrder.push(entry.field);
     }
 
-    result.duplicateFields = splitResult.duplicateFields.map((field) => field.toUpperCase());
+    result.duplicateFields = [...splitResult.duplicateFields];
     result.malformedSegments = [...splitResult.malformedSegments];
     splitResult.errors.forEach((error) => pushError(result, error.code, error.message, { segments: error.segments, fields: error.fields }));
+    splitResult.warnings.forEach((warning) => pushWarning(result, warning.code, warning.message, { field: warning.field, rawField: warning.rawField }));
 
     Object.entries(splitResult.fields).forEach(([fieldName, value]) => {
-        const name = fieldName.toUpperCase();
-        result.fields[name] = Array.isArray(value)
+        result.fields[fieldName] = Array.isArray(value)
             ? value.map((entry) => String(entry))
             : String(value);
-        if (!ARCHITECTURAL_DECISION_FIELDS.includes(name)) {
-            result.unknownFields.push(name);
+        if (!ARCHITECTURAL_DECISION_FIELDS.includes(fieldName)) {
+            result.unknownFields.push(fieldName);
         }
     });
 }

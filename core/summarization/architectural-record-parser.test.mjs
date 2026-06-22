@@ -53,6 +53,10 @@ test('source reference parser accepts bracket and paren forms and rejects malfor
     });
     assert.equal(parseArchitecturalSourceReference('[S10:2]').normalized, 'S10:2');
     assert.equal(parseArchitecturalSourceReference('S10:2').ok, false);
+    assert.equal(parseArchitecturalSourceReference('(S1:2]').ok, false);
+    assert.equal(parseArchitecturalSourceReference('[S1:2)').ok, false);
+    assert.equal(parseArchitecturalSourceReference('[S1:2').ok, false);
+    assert.equal(parseArchitecturalSourceReference('S1:2]').ok, false);
 });
 
 test('decision parser preserves raw data and parses structured fields', () => {
@@ -75,6 +79,15 @@ test('decision parser reports duplicate fields and preserves unknown field names
 
     assert.equal(record.duplicateFields.includes('TYPE'), true);
     assert.equal(record.unknownFields.includes('EXTRA'), true);
+});
+
+test('decision parser detects mixed-case duplicate fields in normalized namespace', () => {
+    const record = parseArchitecturalDecisionRecord(
+        '[S10:2] 🔴 ID:test | TYPE:GOVERNANCE | type:PROCEDURE | DECISION:X | WHY:unstated | SCOPE:Y | STATUS:ACCEPTED | EVIDENCE:"z"'
+    );
+
+    assert.equal(record.duplicateFields.includes('TYPE'), true);
+    assert.equal(record.warnings.some((entry) => entry.code === 'NONCANONICAL_FIELD_CASE'), true);
 });
 
 test('event parser captures description and multiple DEC references', () => {

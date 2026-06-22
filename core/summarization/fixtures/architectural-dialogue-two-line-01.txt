@@ -1,0 +1,28 @@
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+Sources: Messages 40-41
+
+[TIMELINE]
+[S40:1] Dialogue structure fixture captured
+
+[DECISIONS]
+[S40:1] 🟠 ID:dialogue-structure-fixture | TYPE:PROCEDURE | DECISION:Two-line dialogue records remain single items during parsing | WHY:Structural context may continue on a second explicit line | SCOPE:Architectural dialogue parsing | STATUS:ACCEPTED | EVIDENCE:"Speaker and context must survive multiline parsing"
+
+[EVENTS]
+[S40:1] 🟠 dialogue structure fixture accepted for parser hardening | DEC:dialogue-structure-fixture
+
+[DEVELOPMENTS]
+[S40:1] Parser: dialogue continuation line preserved during reconstruction
+
+[DIALOGUE]
+[S40:1] "Speaker and context must survive multiline parsing"
+--Archivist | fixture validation context
+
+[THREADS]
+[S40:1] dialogue-two-line-fixture | status:ACTIVE | intro:S40:1 | last:S40:1 | Preserve multiline dialogue rows as one canonical record
+
+[CURRENT]
+Dialogue Fixture | Two-line structured dialogue active | Verify parse and reconstruction | None | None | Run validator
+
+===END===

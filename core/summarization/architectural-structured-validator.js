@@ -6,13 +6,11 @@ import {
 } from './sharder-section-registry.js';
 import { parseArchitecturalExtractionResponse } from './architectural-sharder-format.js';
 import {
-    ARCHITECTURAL_DECISION_FIELDS,
     ARCHITECTURAL_SOURCE_REF_PATTERN,
     ARCHITECTURAL_WEIGHT_BY_EMOJI,
     parseArchitecturalDecisionRecord,
     parseArchitecturalDialogueRecord,
     parseArchitecturalEventRecord,
-    parseArchitecturalSourceReference,
     parseArchitecturalThreadRecord,
 } from './architectural-record-parser.js';
 
@@ -84,11 +82,6 @@ const EXPLICIT_DECISION_EVENT_PATTERNS = [
     /\bauthority hardened\b/i,
     /\bwording hardened\b/i,
     /\bgoverning rule changed\b/i,
-    /\baccepted\b/i,
-    /\bsealed\b/i,
-    /\bsuperseded\b/i,
-    /\bcorrected\b/i,
-    /\breplaced\b/i,
 ];
 
 function cloneBaselineDecision(entry) {
@@ -112,8 +105,10 @@ function selectedItems(items) {
     return (Array.isArray(items) ? items : []).filter((item) => item?.selected !== false);
 }
 
-function selectedNonEmptyItems(items) {
-    return selectedItems(items).filter((item) => String(item?.content || '').trim());
+export function indexedSelectedItems(items) {
+    return (Array.isArray(items) ? items : [])
+        .map((item, itemIndex) => ({ item, itemIndex }))
+        .filter(({ item }) => item?.selected !== false);
 }
 
 function getDecisionField(record, field) {
@@ -142,12 +137,44 @@ function isCanonicalArchitecturalShardContent(content) {
     return recordHasCanonicalMarkers(parsed?._metadata?.keyLines);
 }
 
+function hasDecisionMandatoryFields(record) {
+    const mandatory = ['ID', 'TYPE', 'DECISION', 'WHY', 'SCOPE', 'STATUS', 'EVIDENCE'];
+    return mandatory.every((field) => {
+        const value = getDecisionField(record, field);
+        return value !== undefined && String(value).trim();
+    });
+}
+
+function decisionTypesAreCanonical(record) {
+    const typeValue = getDecisionField(record, 'TYPE');
+    const types = typeof typeValue === 'string'
+        ? typeValue.split(',').map((entry) => entry.trim()).filter(Boolean)
+        : [];
+
+    return types.length > 0 && types.every((type) => ARCHITECTURAL_DECISION_TYPES.includes(type));
+}
+
 function parseSingleBaselineDecision(item, sourceLabel) {
     const record = parseArchitecturalDecisionRecord(item?.content || '');
     const id = getDecisionField(record, 'ID');
     const status = getDecisionField(record, 'STATUS');
 
-    if (!record.sourceRef || !id || !status || !DECISION_ID_PATTERN.test(id) || !ARCHITECTURAL_DECISION_STATUSES.includes(status)) {
+    const hasSupersedes = getDecisionField(record, 'SUPERSEDES');
+    const hasSupersededBy = getDecisionField(record, 'SUPERSEDED-BY');
+    const isValid = !!record.sourceRef
+        && record.errors.length === 0
+        && record.duplicateFields.length === 0
+        && record.unknownFields.length === 0
+        && hasDecisionMandatoryFields(record)
+        && !!id
+        && DECISION_ID_PATTERN.test(id)
+        && decisionTypesAreCanonical(record)
+        && !!status
+        && ARCHITECTURAL_DECISION_STATUSES.includes(status)
+        && (!hasSupersedes || DECISION_ID_PATTERN.test(String(hasSupersedes).trim()))
+        && (!hasSupersededBy || DECISION_ID_PATTERN.test(String(hasSupersededBy).trim()));
+
+    if (!isValid) {
         return {
             ok: false,
             warning: buildDiagnostic(
@@ -174,7 +201,16 @@ export function buildArchitecturalBaselineFromShards(existingShards = []) {
     const diagnostics = [];
     const registry = getSharderSectionRegistry(ARCHITECTURAL_PROFILE);
 
-    for (const shard of Array.isArray(existingShards) ? existingShards : []) {
+    const sortedShards = (Array.isArray(existingShards) ? existingShards : [])
+        .map((shard, originalIndex) => ({ shard, originalIndex }))
+        .sort((a, b) => {
+            const aRange = Number.isFinite(a.shard?.messageRangeStart) ? a.shard.messageRangeStart : Number.POSITIVE_INFINITY;
+            const bRange = Number.isFinite(b.shard?.messageRangeStart) ? b.shard.messageRangeStart : Number.POSITIVE_INFINITY;
+            if (aRange !== bRange) return aRange - bRange;
+            return a.originalIndex - b.originalIndex;
+        });
+
+    for (const { shard } of sortedShards) {
         const content = String(shard?.content || '');
         if (!content.trim()) continue;
 
@@ -184,7 +220,7 @@ export function buildArchitecturalBaselineFromShards(existingShards = []) {
         }
 
         const sourceLabel = String(shard?.identifier || 'historical architectural shard');
-        for (const item of selectedItems(parsed.decisions)) {
+        for (const { item } of indexedSelectedItems(parsed.decisions)) {
             const baseline = parseSingleBaselineDecision(item, sourceLabel);
             if (!baseline.ok) {
                 diagnostics.push(baseline.warning);
@@ -230,6 +266,14 @@ function validateDecisionRecord(record, itemIndex, diagnostics) {
             'ARCH_DECISION_MALFORMED',
             error.message,
             { sectionKey: 'decisions', itemIndex, recordId: record.decisionId || null }
+        ));
+    });
+    record.warnings.forEach((warning) => {
+        diagnostics.push(buildDiagnostic(
+            'warning',
+            warning.code === 'NONCANONICAL_FIELD_CASE' ? 'ARCH_DECISION_FIELD_CASE_NORMALIZED' : 'ARCH_DECISION_WARNING',
+            warning.message,
+            { sectionKey: 'decisions', itemIndex, recordId: record.decisionId || null, field: warning.field }
         ));
     });
 
@@ -524,6 +568,15 @@ function validateEventRecord(record, itemIndex, currentDecisionIds, diagnostics)
         ));
     });
 
+    if (!String(record.description || '').trim()) {
+        diagnostics.push(buildDiagnostic(
+            'error',
+            'ARCH_EVENT_EMPTY_DESCRIPTION',
+            'Event description cannot be empty.',
+            { sectionKey: 'events', itemIndex }
+        ));
+    }
+
     if (record.unknownFields.length > 0) {
         diagnostics.push(buildDiagnostic(
             'error',
@@ -666,7 +719,7 @@ function validateSectionCaps(sections, diagnostics) {
         const items = Array.isArray(sections?.[sectionKey]) ? sections[sectionKey] : [];
         const selected = selectedItems(items);
 
-        selected.forEach((item, itemIndex) => {
+        indexedSelectedItems(items).forEach(({ item, itemIndex }) => {
             if (!String(item?.content || '').trim()) {
                 diagnostics.push(buildDiagnostic(
                     'error',
@@ -711,7 +764,7 @@ export function validateArchitecturalStructuredSections(sections, context = {}) 
 
     validateSectionCaps(sections, diagnostics);
 
-    const decisionRecords = selectedItems(sections?.decisions || []).map((item, itemIndex) => ({
+    const decisionRecords = indexedSelectedItems(sections?.decisions || []).map(({ item, itemIndex }) => ({
         item,
         itemIndex,
         record: parseArchitecturalDecisionRecord(item?.content || ''),
@@ -728,17 +781,17 @@ export function validateArchitecturalStructuredSections(sections, context = {}) 
             .filter((id) => id && DECISION_ID_PATTERN.test(id))
     );
 
-    selectedItems(sections?.events || []).forEach((item, itemIndex) => {
+    indexedSelectedItems(sections?.events || []).forEach(({ item, itemIndex }) => {
         const record = parseArchitecturalEventRecord(item?.content || '');
         validateEventRecord(record, itemIndex, currentDecisionIds, diagnostics);
     });
 
-    selectedItems(sections?.dialogue || []).forEach((item, itemIndex) => {
+    indexedSelectedItems(sections?.dialogue || []).forEach(({ item, itemIndex }) => {
         const record = parseArchitecturalDialogueRecord(item?.content || '');
         validateDialogueRecord(record, itemIndex, diagnostics);
     });
 
-    selectedItems(sections?.threads || []).forEach((item, itemIndex) => {
+    indexedSelectedItems(sections?.threads || []).forEach(({ item, itemIndex }) => {
         const record = parseArchitecturalThreadRecord(item?.content || '');
         validateThreadRecord(record, itemIndex, diagnostics);
     });

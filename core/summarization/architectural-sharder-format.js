@@ -54,14 +54,17 @@ function isEmptyItem(content) {
 
 function parseSceneCodes(text) {
     if (!text) return [];
-    const regex = /[\[(]S(\d+):(\d+)[\])]/g;
+    const regex = /(?:\[(S(\d+):(\d+))\]|\((S(\d+):(\d+))\))/g;
     const codes = [];
     let match;
     while ((match = regex.exec(text)) !== null) {
+        const normalized = match[1] || match[4];
+        const startMsg = match[2] || match[5];
+        const sceneNum = match[3] || match[6];
         codes.push({
-            code: `[S${match[1]}:${match[2]}]`,
-            startMsg: parseInt(match[1], 10),
-            sceneNum: parseInt(match[2], 10),
+            code: `[${normalized}]`,
+            startMsg: parseInt(startMsg, 10),
+            sceneNum: parseInt(sceneNum, 10),
         });
     }
     return codes;
@@ -77,6 +80,21 @@ function parseWeightFromLine(line) {
 }
 
 function parseArchitecturalSectionItems(content, sectionKey) {
+    if (sectionKey === 'current') {
+        const currentContent = String(content || '').trim();
+        if (!currentContent || isEmptyItem(currentContent)) {
+            return [];
+        }
+        return [{
+            id: `${sectionKey}-0`,
+            content: currentContent,
+            weight: 3,
+            selected: true,
+            edited: false,
+            sceneCodes: parseSceneCodes(currentContent),
+        }];
+    }
+
     const items = [];
     const lines = String(content || '').split('\n');
     let currentItem = null;
@@ -87,9 +105,8 @@ function parseArchitecturalSectionItems(content, sectionKey) {
 
         const isBullet = /^[-•*–—]\s/.test(trimmed);
         const isNumbered = /^\d+\.\s/.test(trimmed);
-        const isSceneCodeStart = /^[\[(]S\d+:\d+[\])]/.test(trimmed);
-        const isPipeDelimited = /\|/.test(trimmed);
-        const isNewItem = isBullet || isNumbered || isSceneCodeStart || isPipeDelimited;
+        const isSceneCodeStart = /^(?:\[(?:S\d+:\d+)\]|\((?:S\d+:\d+)\))/.test(trimmed);
+        const isNewItem = isBullet || isNumbered || isSceneCodeStart;
 
         if (isNewItem) {
             if (currentItem && !isEmptyItem(currentItem.content)) {

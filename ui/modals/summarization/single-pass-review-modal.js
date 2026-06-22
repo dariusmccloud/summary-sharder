@@ -282,6 +282,19 @@ function refreshArchitecturalDiagnostics(state) {
     state.diagnostics = mergeDiagnostics(state.sourceDiagnostics, state.dynamicDiagnostics);
 }
 
+function getCurrentSaveDiagnostics(state) {
+    if (isArchitecturalState(state)) {
+        refreshArchitecturalDiagnostics(state);
+        return mergeDiagnostics(state.sourceDiagnostics, state.dynamicDiagnostics);
+    }
+
+    return state.diagnostics || [];
+}
+
+function hasBlockingReviewErrors(diagnostics) {
+    return (Array.isArray(diagnostics) ? diagnostics : []).some((diagnostic) => diagnostic?.level === 'error');
+}
+
 function rebuildOutput(state) {
     const sections = {};
     reviewSections(state).forEach((section) => {
@@ -426,7 +439,7 @@ function sectionRows(state, sectionKey, items) {
             .map((code) => `<span class="ss-scene-badge">${escapeHtml(code)}</span>`)
             .join(' ');
 
-        const weightHtml = sectionKey === 'events'
+        const weightHtml = sectionKey === 'events' && !isArchitecturalState(state)
             ? `<div class="ss-sp-weight-row">${weightSelectorHtml(item)}</div>`
             : '';
 
@@ -1129,7 +1142,7 @@ function setupSectionHandlers(state, regenFn) {
             const empty = container.querySelector('.ss-empty');
             if (empty) empty.remove();
 
-            const weightHtml = sectionKey === 'events'
+            const weightHtml = sectionKey === 'events' && !isArchitecturalState(state)
                 ? `<div class="ss-sp-weight-row">${weightSelectorHtml(newItem)}</div>`
                 : '';
 
@@ -1243,7 +1256,7 @@ function setupSectionHandlers(state, regenFn) {
                     });
                 }
 
-                if (sectionKey === 'events') {
+                if (sectionKey === 'events' && !isArchitecturalState(state)) {
                     newRow.querySelectorAll('.ss-weight-btn').forEach((wb) => {
                         wb.addEventListener('click', (ev) => {
                             ev.stopPropagation();
@@ -1683,6 +1696,23 @@ export async function openSharderReviewModal(pipelineResult, settings, regenFn =
             cancelButton: 'Cancel',
             wide: true,
             large: true,
+            onClosing: (activePopup) => {
+                if (activePopup?.result !== POPUP_RESULT.AFFIRMATIVE) {
+                    return true;
+                }
+
+                const saveDiagnostics = getCurrentSaveDiagnostics(state);
+                updateOutputEditor(state);
+
+                if (hasBlockingReviewErrors(saveDiagnostics)) {
+                    if (typeof toastr !== 'undefined') {
+                        toastr.warning('Save blocked due to error-level diagnostics');
+                    }
+                    return false;
+                }
+
+                return true;
+            },
         }
     );
 
@@ -1701,14 +1731,8 @@ export async function openSharderReviewModal(pipelineResult, settings, regenFn =
 
     const result = await showPromise;
     if (result === POPUP_RESULT.AFFIRMATIVE) {
-        if (isArchitecturalState(state)) {
-            refreshArchitecturalDiagnostics(state);
-        }
-        const saveDiagnostics = isArchitecturalState(state)
-            ? mergeDiagnostics(state.sourceDiagnostics, state.dynamicDiagnostics)
-            : state.diagnostics;
-        const hasErrors = saveDiagnostics.some((d) => d.level === 'error');
-        if (hasErrors) {
+        const saveDiagnostics = getCurrentSaveDiagnostics(state);
+        if (hasBlockingReviewErrors(saveDiagnostics)) {
             toastr.warning('Save blocked due to error-level diagnostics');
             return {
                 confirmed: false,
