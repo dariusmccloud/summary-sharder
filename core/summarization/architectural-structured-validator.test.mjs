@@ -315,3 +315,20 @@ test('event descriptions cannot be empty', () => {
     const diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions: {} });
     assert.equal(codes(diagnostics).includes('ARCH_EVENT_EMPTY_DESCRIPTION'), true);
 });
+
+test('dialogue allows omitted context but rejects explicitly empty context', () => {
+    const sections = parseFixture('architectural-valid-minimal-01.txt');
+    sections.dialogue = [
+        { content: '[S2:1] "Exact quote." --Elena', selected: true },
+        { content: '[S2:2] "Exact quote." --Elena | optional structural context', selected: true },
+    ];
+
+    let diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions: {} });
+    assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_DIALOGUE_MISSING_CONTEXT'), false);
+
+    sections.dialogue = [
+        { content: '[S2:3] "Exact quote." --Elena |', selected: true },
+    ];
+    diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions: {} });
+    assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_DIALOGUE_MISSING_CONTEXT'), true);
+});

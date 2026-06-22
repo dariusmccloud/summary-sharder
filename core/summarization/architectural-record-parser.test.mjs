@@ -101,13 +101,20 @@ test('event parser captures description and multiple DEC references', () => {
     assert.deepEqual(record.decisionRefs, ['decision-sealed', 'decision-sealed-replacement']);
 });
 
-test('dialogue parser enforces quote, speaker, context, and line count structure', () => {
+test('dialogue parser enforces quote, speaker, optional context, and line count structure', () => {
     const valid = parseArchitecturalDialogueRecord('[S1:1] "Exact quote" --Speaker | structural context');
+    const validWithoutContext = parseArchitecturalDialogueRecord('[S1:1] "Exact quote" --Speaker');
+    const invalidEmptyContext = parseArchitecturalDialogueRecord('[S1:1] "Exact quote" --Speaker |');
     const invalid = parseArchitecturalDialogueRecord('[S1:1] "Exact quote"\nline2\nline3');
 
     assert.equal(valid.quote, 'Exact quote');
     assert.equal(valid.speaker, 'Speaker');
     assert.equal(valid.context, 'structural context');
+    assert.equal(validWithoutContext.quote, 'Exact quote');
+    assert.equal(validWithoutContext.speaker, 'Speaker');
+    assert.equal(validWithoutContext.context, '');
+    assert.equal(validWithoutContext.errors.length, 0);
+    assert.equal(invalidEmptyContext.errors.some((entry) => entry.code === 'MISSING_CONTEXT'), true);
     assert.equal(invalid.errors.some((entry) => entry.code === 'MISSING_SPEAKER'), true);
     assert.equal(invalid.lineCount, 3);
 });

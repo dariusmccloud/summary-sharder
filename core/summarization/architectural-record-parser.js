@@ -476,10 +476,10 @@ export function parseArchitecturalDialogueRecord(text) {
     const pipeIndex = findTopLevelIndex(speakerAndContext, '|');
     if (pipeIndex < 0) {
         result.speaker = speakerAndContext.trim();
+        result.context = '';
         if (!result.speaker) {
             pushError(result, 'EMPTY_SPEAKER', 'Dialogue speaker cannot be empty.');
         }
-        pushError(result, 'MISSING_CONTEXT', 'Dialogue entry requires structural context after |.');
         return result;
     }
 
