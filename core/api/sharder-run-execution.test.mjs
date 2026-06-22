@@ -105,6 +105,8 @@ test('selection resolves before generation', async () => {
     const executionDeps = makeExecutionDeps();
 
     const selection = await resolveSelectedShardsForRun(
+        52,
+        101,
         { profile: 'architectural', autoIncludeShards: false },
         undefined,
         {
@@ -133,6 +135,8 @@ test('cancelled selection never starts generation or operation state', async () 
     const { calls } = makeExecutionDeps();
 
     const selection = await resolveSelectedShardsForRun(
+        52,
+        101,
         { profile: 'architectural', autoIncludeShards: false },
         undefined,
         deps,
@@ -198,6 +202,8 @@ test('narrative RAG bypass still reaches generation through the core path', asyn
     const executionDeps = makeExecutionDeps();
 
     const selection = await resolveSelectedShardsForRun(
+        52,
+        101,
         { profile: 'narrative', autoIncludeShards: false, rag: { enabled: true } },
         undefined,
         selectionDeps.deps,
@@ -218,6 +224,8 @@ test('architectural RAG still performs selection before generation', async () =>
     const executionDeps = makeExecutionDeps();
 
     const selection = await resolveSelectedShardsForRun(
+        52,
+        101,
         { profile: 'architectural', autoIncludeShards: false, rag: { enabled: true } },
         undefined,
         {

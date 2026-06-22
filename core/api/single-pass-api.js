@@ -167,7 +167,7 @@ export async function runSharder(startIndex, endIndex, settings, selectedShards 
         const { getActiveSharderProfile, shouldBypassShardSelectionForRag } = await import('../summarization/shard-selection-policy.js');
         const { openShardSelectionModal, parseSelectedShards } = await import('../../ui/modals/summarization/shard-selection-modal.js');
 
-        const selection = await resolveSelectedShardsForRun(settings, selectedShards, {
+        const selection = await resolveSelectedShardsForRun(startIndex, endIndex, settings, selectedShards, {
             shouldBypassShardSelectionForRag,
             getActiveSharderProfile,
             findSavedExtractions,
@@ -179,6 +179,10 @@ export async function runSharder(startIndex, endIndex, settings, selectedShards 
         if (!selection.confirmed) {
             toastr.info('Sharder cancelled');
             return;
+        }
+
+        if (selection.mode === 'auto-include-overlap-filtered' && selection.excludedOverlapCount > 0) {
+            toastr.info(`${selection.excludedOverlapCount} overlapping saved shard(s) were ignored. This run will use only non-overlapping baselines.`);
         }
 
         const started = startSharderHeadlessOperation(startIndex, endIndex, {

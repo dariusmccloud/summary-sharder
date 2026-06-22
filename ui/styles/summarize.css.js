@@ -494,6 +494,26 @@ export const SUMMARIZE_CSS = `
     color: var(--ss-text-secondary);
 }
 
+.ss-accordion-status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    margin-left: 2px;
+}
+
+.ss-accordion-status.ss-level-error {
+    color: var(--ss-error);
+}
+
+.ss-accordion-status.ss-level-warning {
+    color: var(--ss-warning);
+}
+
+.ss-accordion-status.ss-level-info {
+    color: var(--ss-info);
+}
+
 .ss-accordion-content {
     padding: 10px;
     border-top: 1px solid var(--ss-border);

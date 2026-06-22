@@ -272,6 +272,53 @@ function getRowDiagnostics(state, sectionKey, itemIndex) {
     );
 }
 
+function getSectionDiagnosticSummary(state, sectionKey) {
+    const sectionDiagnostics = (state.diagnostics || []).filter((diagnostic) => diagnostic?.sectionKey === sectionKey);
+    const counts = {
+        error: 0,
+        warning: 0,
+        info: 0,
+    };
+
+    sectionDiagnostics.forEach((diagnostic) => {
+        if (diagnostic?.level === 'error') counts.error += 1;
+        else if (diagnostic?.level === 'warning') counts.warning += 1;
+        else if (diagnostic?.level === 'info') counts.info += 1;
+    });
+
+    const level = counts.error > 0
+        ? 'error'
+        : counts.warning > 0
+            ? 'warning'
+            : counts.info > 0
+                ? 'info'
+                : null;
+
+    return {
+        counts,
+        level,
+        total: counts.error + counts.warning + counts.info,
+    };
+}
+
+function buildSectionHeaderStatus(summary) {
+    if (!summary?.level) {
+        return '';
+    }
+
+    const label = summary.level === 'error'
+        ? `${summary.counts.error} error${summary.counts.error === 1 ? '' : 's'}`
+        : summary.level === 'warning'
+            ? `${summary.counts.warning} warning${summary.counts.warning === 1 ? '' : 's'}`
+            : `${summary.counts.info} info`;
+
+    return `
+        <span class="ss-accordion-status ss-level-${escapeHtml(summary.level)}" title="${escapeHtml(label)}">
+            <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+        </span>
+    `;
+}
+
 function buildDynamicArchitecturalSections(state) {
     const sections = {};
     reviewSections(state).forEach((section) => {
@@ -541,12 +588,15 @@ function sectionsHtml(state) {
             ? `(${selected} selected / cap ${cap})`
             : `(${selected}/${total})`;
         const overCap = isArchitecturalState(state) && Number.isInteger(cap) && selected > cap;
+        const sectionDiagnosticSummary = getSectionDiagnosticSummary(state, section.key);
+        const severityClass = sectionDiagnosticSummary.level ? `ss-section-${sectionDiagnosticSummary.level}` : '';
         return `
-            <div class="ss-review-accordion ${overCap ? 'ss-over-cap' : ''}" data-section="sp-${escapeHtml(section.key)}">
+            <div class="ss-review-accordion ${overCap ? 'ss-over-cap' : ''} ${severityClass}" data-section="sp-${escapeHtml(section.key)}">
                 <div class="ss-accordion-header">
                     <span class="ss-accordion-toggle"><i class="fa-solid fa-chevron-right"></i></span>
                     <span class="ss-accordion-emoji">${section.emoji}</span>
                     <span class="ss-accordion-title">${escapeHtml(sectionTitle(section))}</span>
+                    ${buildSectionHeaderStatus(sectionDiagnosticSummary)}
                     <span class="ss-accordion-count" data-ss-count-key="${escapeHtml(section.key)}">${escapeHtml(countText)}</span>
                 </div>
                 <div class="ss-accordion-content" style="display:none;">
@@ -777,6 +827,26 @@ function updateSectionCount(state, sectionKey) {
     const accordion = document.querySelector(`.ss-review-accordion[data-section="sp-${CSS.escape(sectionKey)}"]`);
     if (accordion && isArchitecturalState(state) && Number.isInteger(cap)) {
         accordion.classList.toggle('ss-over-cap', selected > cap);
+    }
+
+    if (accordion) {
+        const summary = getSectionDiagnosticSummary(state, sectionKey);
+        accordion.classList.toggle('ss-section-error', summary.level === 'error');
+        accordion.classList.toggle('ss-section-warning', summary.level === 'warning');
+        accordion.classList.toggle('ss-section-info', summary.level === 'info');
+
+        const statusContainer = accordion.querySelector('.ss-accordion-status');
+        const statusMarkup = buildSectionHeaderStatus(summary).trim();
+        if (statusMarkup) {
+            if (statusContainer) {
+                statusContainer.outerHTML = statusMarkup;
+            } else {
+                const title = accordion.querySelector('.ss-accordion-title');
+                title?.insertAdjacentHTML('afterend', statusMarkup);
+            }
+        } else if (statusContainer) {
+            statusContainer.remove();
+        }
     }
 }
 

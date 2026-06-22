@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { resolveSelectedShardsForRun } from './sharder-run-selection.js';
+import { annotateShardSelectionCandidates, resolveSelectedShardsForRun } from './sharder-run-selection.js';
 
 function makeDeps(overrides = {}) {
     const calls = {
@@ -28,9 +28,10 @@ function makeDeps(overrides = {}) {
             calls.parseSelectedShards += 1;
             return items.map((item) => ({ identifier: item.identifier, content: item.content, parsedSections: item.parsedSections || {} }));
         },
-        openShardSelectionModal: async (_settings, items) => {
+        openShardSelectionModal: async (_settings, items, context) => {
             calls.openShardSelectionModal += 1;
             calls.modalItems = items;
+            calls.modalContext = context;
             return overrides.modalResult || { confirmed: true, selectedShards: [] };
         },
         ...overrides.deps,
@@ -44,6 +45,8 @@ test('architectural plus saved shard plus auto-include off calls selection modal
     const { deps, calls } = makeDeps({ discoveredItems: saved });
 
     const result = await resolveSelectedShardsForRun(
+        52,
+        101,
         { profile: 'architectural', autoIncludeShards: false },
         undefined,
         deps,
@@ -52,7 +55,10 @@ test('architectural plus saved shard plus auto-include off calls selection modal
     assert.equal(result.confirmed, true);
     assert.equal(calls.findSavedExtractions, 1);
     assert.equal(calls.openShardSelectionModal, 1);
-    assert.deepEqual(calls.modalItems, saved);
+    assert.equal(calls.modalItems.length, 1);
+    assert.equal(calls.modalItems[0].identifier, 'Memory Shard 1-50');
+    assert.equal(calls.modalItems[0].selectionEligible, true);
+    assert.equal(calls.modalItems[0].overlapsCurrentRange, false);
 });
 
 test('architectural plus auto-include on skips modal and includes compatible shards', async () => {
@@ -63,6 +69,8 @@ test('architectural plus auto-include on skips modal and includes compatible sha
     const { deps, calls } = makeDeps({ discoveredItems: saved });
 
     const result = await resolveSelectedShardsForRun(
+        52,
+        101,
         { profile: 'architectural', autoIncludeShards: true },
         undefined,
         deps,
@@ -79,6 +87,8 @@ test('architectural plus RAG enabled still calls selection modal when auto-inclu
     const { deps, calls } = makeDeps({ discoveredItems: saved });
 
     const result = await resolveSelectedShardsForRun(
+        52,
+        101,
         { profile: 'architectural', autoIncludeShards: false, rag: { enabled: true } },
         undefined,
         {
@@ -95,6 +105,8 @@ test('narrative plus RAG preserves bypass', async () => {
     const { deps, calls } = makeDeps();
 
     const result = await resolveSelectedShardsForRun(
+        52,
+        101,
         { profile: 'narrative', autoIncludeShards: false, bypass: true, rag: { enabled: true } },
         undefined,
         deps,
@@ -113,6 +125,8 @@ test('canceling selection aborts the sharder run before generation', async () =>
     });
 
     const result = await resolveSelectedShardsForRun(
+        52,
+        101,
         { profile: 'architectural', autoIncludeShards: false },
         undefined,
         deps,
@@ -128,6 +142,8 @@ test('selecting zero shards continues from scratch', async () => {
     });
 
     const result = await resolveSelectedShardsForRun(
+        52,
+        101,
         { profile: 'architectural', autoIncludeShards: false },
         undefined,
         deps,
@@ -147,6 +163,8 @@ test('incompatible narrative, legacy, unknown, and malformed shards do not appea
     const { deps, calls } = makeDeps({ discoveredItems: saved });
 
     await resolveSelectedShardsForRun(
+        52,
+        101,
         { profile: 'architectural', autoIncludeShards: false },
         undefined,
         deps,
@@ -161,6 +179,8 @@ test('no compatible shards proceeds directly to generation without showing modal
     });
 
     const result = await resolveSelectedShardsForRun(
+        52,
+        101,
         { profile: 'architectural', autoIncludeShards: false },
         undefined,
         deps,
@@ -169,4 +189,60 @@ test('no compatible shards proceeds directly to generation without showing modal
     assert.equal(result.confirmed, true);
     assert.equal(calls.openShardSelectionModal, 0);
     assert.deepEqual(result.selectedShards, []);
+});
+
+test('overlapping compatible shards remain visible but are marked ineligible for manual selection', async () => {
+    const saved = [
+        { classification: 'architectural', identifier: 'Memory Shard 0-50', content: 'A', startIndex: 0, endIndex: 50 },
+        { classification: 'architectural', identifier: 'Memory Shard 60-80', content: 'B', startIndex: 60, endIndex: 80 },
+    ];
+    const { deps, calls } = makeDeps({ discoveredItems: saved });
+
+    await resolveSelectedShardsForRun(
+        0,
+        100,
+        { profile: 'architectural', autoIncludeShards: false },
+        undefined,
+        deps,
+    );
+
+    assert.equal(calls.openShardSelectionModal, 1);
+    assert.equal(calls.modalItems[0].selectionEligible, false);
+    assert.equal(calls.modalItems[0].overlapsCurrentRange, true);
+    assert.match(calls.modalItems[0].selectionDisabledReason, /overlaps the current run range/i);
+    assert.equal(calls.modalItems[1].selectionEligible, false);
+    assert.equal(calls.modalContext.overlappingCount, 2);
+    assert.equal(calls.modalContext.eligibleCount, 0);
+});
+
+test('auto-include excludes overlapping shards and reports filtered mode', async () => {
+    const saved = [
+        { classification: 'architectural', identifier: 'Memory Shard 0-50', content: 'A', startIndex: 0, endIndex: 50 },
+        { classification: 'architectural', identifier: 'Memory Shard 120-140', content: 'B', startIndex: 120, endIndex: 140 },
+    ];
+    const { deps } = makeDeps({ discoveredItems: saved });
+
+    const result = await resolveSelectedShardsForRun(
+        0,
+        100,
+        { profile: 'architectural', autoIncludeShards: true },
+        undefined,
+        deps,
+    );
+
+    assert.equal(result.mode, 'auto-include-overlap-filtered');
+    assert.equal(result.excludedOverlapCount, 1);
+    assert.deepEqual(result.selectedShards.map((item) => item.identifier), ['Memory Shard 120-140']);
+});
+
+test('annotateShardSelectionCandidates uses inclusive range overlap', () => {
+    const annotated = annotateShardSelectionCandidates([
+        { identifier: 'left', startIndex: 0, endIndex: 49 },
+        { identifier: 'inside', startIndex: 60, endIndex: 80 },
+        { identifier: 'touching', startIndex: 101, endIndex: 120 },
+    ], 50, 100);
+
+    assert.equal(annotated[0].selectionEligible, true);
+    assert.equal(annotated[1].selectionEligible, false);
+    assert.equal(annotated[2].selectionEligible, true);
 });
