@@ -411,7 +411,9 @@ export const SUMMARIZE_CSS = `
 .popup:has(.ss-single-pass-review-modal) .popup-content {
     flex: 1 1 auto;
     min-height: 0;
-    overflow: hidden;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
 }
 
 .popup:has(.ss-single-pass-review-modal) .popup-controls {
@@ -422,12 +424,9 @@ export const SUMMARIZE_CSS = `
     display: flex;
     flex-direction: column;
     gap: 12px;
-    max-height: 100%;
-    min-height: 0;
-    overflow-y: auto;
-    overflow-x: hidden;
+    min-height: 100%;
+    overflow: visible;
     padding: 15px;
-    overscroll-behavior: contain;
 }
 
 /* Review Accordion */
