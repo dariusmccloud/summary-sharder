@@ -8,6 +8,10 @@ import { escapeHtml } from '../../common/ui-utils.js';
 import { archiveToWarm } from '../../../core/rag/archive.js';
 import { log } from '../../../core/logger.js';
 import {
+    buildArchitecturalKeyLines,
+    isWarmArchiveEligible,
+} from '../../../core/summarization/architectural-sharder-shell.js';
+import {
     ARCHITECTURAL_PROFILE,
     NARRATIVE_PROFILE,
     getSharderContentSections,
@@ -58,6 +62,18 @@ function getArchitecturalCurrentError(state) {
 function reviewSections(stateOrRegistry = null) {
     const registry = stateOrRegistry?.sectionRegistry || stateOrRegistry;
     return getSharderContentSections(registry);
+}
+
+function getWarmArchiveUnavailableMessage(state) {
+    return isArchitecturalState(state)
+        ? 'Architectural RAG support is deferred for this profile.'
+        : 'Enable RAG to use warm archive';
+}
+
+function getReviewKeyLines(sections) {
+    return Array.isArray(sections?._metadata?.keyLines)
+        ? [...sections._metadata.keyLines]
+        : [];
 }
 
 function normalizeSceneCodes(sceneCodes) {
@@ -171,6 +187,12 @@ function rebuildOutput(state) {
                 weight: item.weight,
             }));
     });
+    if (isArchitecturalState(state)) {
+        sections._metadata = {
+            ...(sections._metadata || {}),
+            keyLines: [...state.keyLines],
+        };
+    }
 
     return reconstructExtraction(sections, {
         ...(state.metadata || {}),
@@ -193,6 +215,24 @@ function applyRescues(output, rescuedItems) {
     }
 
     return `${(output || '').trimEnd()}\n\n[RESCUED_ITEMS]\n${lines.join('\n')}`;
+}
+
+function architecturalKeyBlockHtml(state) {
+    if (!isArchitecturalState(state)) {
+        return '';
+    }
+
+    const keyLines = buildArchitecturalKeyLines(state.keyLines);
+    const body = keyLines.map((line) => `<div>${escapeHtml(line)}</div>`).join('');
+
+    return `
+        <div class="ss-sp-panel" style="margin-bottom: 12px;">
+            <div class="ss-output-header">
+                <span>KEY Metadata</span>
+            </div>
+            <div class="ss-sp-key-metadata">${body}</div>
+        </div>
+    `;
 }
 
 function diagnosticsHtml(diagnostics) {
@@ -224,6 +264,8 @@ function sectionRows(state, sectionKey, items) {
     if (!items.length) {
         return '<p class="ss-empty">No items in this section.</p>';
     }
+
+    const warmArchiveUnavailableMessage = getWarmArchiveUnavailableMessage(state);
 
     return items.map((item) => {
         const isSelected = item.selected !== false;
@@ -257,8 +299,8 @@ function sectionRows(state, sectionKey, items) {
                         <button class="ss-cr-item-archive menu_button ${item.archived ? 'ss-cr-item-archived' : ''}"
                                 data-section-key="${escapeHtml(sectionKey)}"
                                 data-item-id="${escapeHtml(item.id)}"
-                                ${(!state.ragEnabled || item.archived) ? 'disabled' : ''}
-                                ${!state.ragEnabled ? 'title="Enable RAG to use warm archive"' : ''}>
+                                ${(!state.warmArchiveAvailable || item.archived) ? 'disabled' : ''}
+                                ${!state.warmArchiveAvailable ? `title="${escapeHtml(warmArchiveUnavailableMessage)}"` : ''}>
                             ${item.archived ? 'Archived ✓' : 'Archive'}
                         </button>
                     </div>
@@ -275,6 +317,7 @@ function sectionsHtml(state) {
         const items = state.editableSections[section.key] || [];
         const { selected, total } = sectionCount(items);
         const isProtectedCurrent = isArchitecturalCurrentSection(state, section.key);
+        const addItemDisabled = isProtectedCurrent;
         return `
             <div class="ss-review-accordion" data-section="sp-${escapeHtml(section.key)}">
                 <div class="ss-accordion-header">
@@ -292,7 +335,7 @@ function sectionsHtml(state) {
                     <div class="ss-cr-items" data-section-key="${escapeHtml(section.key)}">
                         ${sectionRows(state, section.key, items)}
                     </div>
-                    <button class="menu_button ss-sp-add-item" data-section-key="${escapeHtml(section.key)}" style="margin-top:6px;">+ Add Item</button>
+                    <button class="menu_button ss-sp-add-item" data-section-key="${escapeHtml(section.key)}" style="margin-top:6px;" ${addItemDisabled ? 'disabled title="Architectural CURRENT must remain singular"' : ''}>+ Add Item</button>
                 </div>
             </div>
         `;
@@ -317,11 +360,15 @@ function getPruneMetaForSectionKey(sectionKey, state = null) {
     };
 }
 
-function buildPruningSection(report) {
+function buildPruningSection(state) {
+    const report = state.pruningReport;
     const hasSections = report?.sections?.length > 0;
     const uncoveredMessages = report?.uncoveredMessages || [];
     const hasUncovered = uncoveredMessages.length > 0;
     const hasContent = hasSections || hasUncovered;
+    const allowWarmArchive = state.warmArchiveAvailable;
+    const allowRescue = !isArchitecturalState(state);
+    const warmArchiveUnavailableMessage = getWarmArchiveUnavailableMessage(state);
 
     const shardGroups = !hasSections
         ? ''
@@ -333,6 +380,7 @@ function buildPruningSection(report) {
                     <div class="ss-pruning-content">${escapeHtml((item.content || '').substring(0, 120))}${(item.content || '').length > 120 ? '...' : ''}</div>
                     <div class="ss-pruning-source">From: ${escapeHtml(String(item?.source ?? '').trim())}</div>
                     <div class="ss-pruning-actions">
+                        ${allowWarmArchive ? `
                         <label class="ss-approve-toggle">
                             <input type="checkbox" class="ss-approve-checkbox"
                                    data-type="pruning"
@@ -340,6 +388,8 @@ function buildPruningSection(report) {
                                    data-index="${i}" />
                             <span>Archive</span>
                         </label>
+                        ` : `<span class="ss-hint" title="${escapeHtml(warmArchiveUnavailableMessage)}">Warm archive unavailable</span>`}
+                        ${allowRescue ? `
                         <button class="ss-rescue-btn menu_button"
                                 data-type="pruning"
                                 data-section="${escapeHtml(groupName)}"
@@ -347,6 +397,7 @@ function buildPruningSection(report) {
                                 data-content="${escapeHtml(item.content || '')}">
                             Rescue
                         </button>
+                        ` : ''}
                     </div>
                 </div>
             `).join('');
@@ -438,27 +489,40 @@ function buildModalHtml(state) {
             </div>
 
             <div class="ss-sp-sections-area">
+                ${architecturalKeyBlockHtml(state)}
                 ${sectionsHtml(state)}
             </div>
-            ${buildPruningSection(state.pruningReport)}
+            ${buildPruningSection(state)}
 
             <div class="ss-sp-panel" style="margin-top: 12px;">
                 <div class="ss-output-header">
                     <span>Final Output Review</span>
                     <div class="ss-output-actions">
                         <button id="ss-sp-copy-output" class="menu_button">Copy</button>
-                        <button id="ss-sp-edit-output" class="menu_button">Edit</button>
+                        ${isArchitecturalState(state) ? '' : '<button id="ss-sp-edit-output" class="menu_button">Edit</button>'}
                     </div>
                 </div>
                 <textarea id="ss-sp-output-editor" class="text_pole ss-sp-output-editor" readonly>${escapeHtml(state.finalOutput || '')}</textarea>
             </div>
 
+            ${isArchitecturalState(state) ? `
+            <div class="ss-sp-panel" style="margin-top: 12px;">
+                <div class="ss-sp-diag ss-level-info">
+                    <div class="ss-sp-diag-head">
+                        <span class="ss-sp-diag-level">INFO</span>
+                        <span class="ss-sp-diag-code">ARCH_RAG_DEFERRED</span>
+                    </div>
+                    <div class="ss-sp-diag-msg">Architectural RAG support is deferred. Warm archive and retrieval are unavailable for this profile.</div>
+                </div>
+            </div>
+            ` : ''}
+
             ${state.pruningReport?.totalPruned > 0 ? `
             <div class="ss-archive-section">
                 <h4>Archive Output</h4>
                 <div class="ss-archive-options">
-                    <label class="ss-archive-option ${state.ragEnabled ? '' : 'ss-disabled'}" ${state.ragEnabled ? '' : 'title="Enable RAG to use warm archive"'}>
-                        <input type="checkbox" id="ss-sp-archive-warm" ${state.ragEnabled ? '' : 'disabled'} />
+                    <label class="ss-archive-option ${state.warmArchiveAvailable ? '' : 'ss-disabled'}" ${state.warmArchiveAvailable ? '' : `title="${escapeHtml(getWarmArchiveUnavailableMessage(state))}"`}>
+                        <input type="checkbox" id="ss-sp-archive-warm" ${state.warmArchiveAvailable ? '' : 'disabled'} />
                         <span>Archive output to warm storage (RAG-retrievable)</span>
                     </label>
                     <label class="ss-archive-option">
@@ -487,7 +551,7 @@ function updateOutputEditor(state) {
     state.reconstructedOutput = rebuildOutput(state);
     const editor = document.getElementById('ss-sp-output-editor');
     if (editor) {
-        editor.value = typeof state.outputOverride === 'string'
+        editor.value = !isArchitecturalState(state) && typeof state.outputOverride === 'string'
             ? state.outputOverride
             : state.reconstructedOutput;
     }
@@ -517,7 +581,7 @@ function attachPruningGroupHeaderHandler(header) {
 }
 
 function wireRescueButton(state, btn) {
-    if (!btn) return;
+    if (!btn || isArchitecturalState(state)) return;
     btn.addEventListener('click', (e) => {
         const { type, section, content } = e.currentTarget.dataset;
         state.rescuedItems.push({
@@ -622,20 +686,20 @@ function addPrunedItemToReportAndUI(state, sectionKey, itemContent, sceneCodes =
             <div class="ss-pruning-content">${escapeHtml(preview)}${(itemContent || '').length > 120 ? '...' : ''}</div>
             <div class="ss-pruning-source">From: ${escapeHtml(sourceLabel)}</div>
             <div class="ss-pruning-actions">
-                <label class="ss-approve-toggle">
+                ${state.warmArchiveAvailable ? `<label class="ss-approve-toggle">
                     <input type="checkbox" class="ss-approve-checkbox"
                            data-type="pruning"
                            data-section="${escapeHtml(metaName)}"
                            data-index="${idx}" />
                     <span>Archive</span>
-                </label>
-                <button class="ss-rescue-btn menu_button"
+                </label>` : `<span class="ss-hint" title="${escapeHtml(getWarmArchiveUnavailableMessage(state))}">Warm archive unavailable</span>`}
+                ${isArchitecturalState(state) ? '' : `<button class="ss-rescue-btn menu_button"
                         data-type="pruning"
                         data-section="${escapeHtml(metaName)}"
                         data-index="${idx}"
                         data-content="${escapeHtml(itemContent || '')}">
                     Rescue
-                </button>
+                </button>`}
             </div>
         </div>
     `;
@@ -670,7 +734,13 @@ function setupAccordionHandlers() {
 function setupOutputOverrideHandlers(state) {
     const btn = document.getElementById('ss-sp-edit-output');
     const textarea = document.getElementById('ss-sp-output-editor');
-    if (!btn || !textarea) return;
+    if (!textarea) return;
+    if (isArchitecturalState(state)) {
+        textarea.readOnly = true;
+        state.outputOverride = null;
+        return;
+    }
+    if (!btn) return;
 
     textarea.addEventListener('input', () => {
         if (!textarea.readOnly) {
@@ -846,6 +916,12 @@ function setupSectionHandlers(state, regenFn) {
     document.querySelectorAll('.ss-sp-add-item').forEach((btn) => {
         btn.addEventListener('click', (e) => {
             const sectionKey = e.currentTarget.dataset.sectionKey;
+            if (isArchitecturalCurrentSection(state, sectionKey)) {
+                if (typeof toastr !== 'undefined') {
+                    toastr.warning('Architectural CURRENT must remain singular');
+                }
+                return;
+            }
             const items = state.editableSections[sectionKey];
             if (!items) return;
 
@@ -877,7 +953,7 @@ function setupSectionHandlers(state, regenFn) {
                             <button class="ss-cr-item-archive menu_button"
                                     data-section-key="${escapeHtml(sectionKey)}"
                                     data-item-id="${escapeHtml(newItem.id)}"
-                                    ${!state.ragEnabled ? 'disabled title="Enable RAG to use warm archive"' : ''}>
+                                    ${!state.warmArchiveAvailable ? `disabled title="${escapeHtml(getWarmArchiveUnavailableMessage(state))}"` : ''}>
                                 Archive
                             </button>
                         </div>
@@ -948,7 +1024,7 @@ function setupSectionHandlers(state, regenFn) {
                 }
 
                 const archiveBtn = newRow.querySelector('.ss-cr-item-archive');
-                if (archiveBtn && state.ragEnabled) {
+                if (archiveBtn && state.warmArchiveAvailable) {
                     archiveBtn.addEventListener('click', async () => {
                         if (newItem.archived) return;
                         const range = inferRangeFromSceneCodes([], state.metadata?.startIndex, state.metadata?.endIndex);
@@ -1087,9 +1163,9 @@ function setupSectionHandlers(state, regenFn) {
 
     document.querySelectorAll('.ss-cr-item-archive').forEach((btn) => {
         btn.addEventListener('click', async (e) => {
-            if (!state.ragEnabled) {
+            if (!state.warmArchiveAvailable) {
                 if (typeof toastr !== 'undefined') {
-                    toastr.warning('Enable RAG to use warm archive');
+                    toastr.warning(getWarmArchiveUnavailableMessage(state));
                 }
                 return;
             }
@@ -1128,7 +1204,7 @@ function setupSectionHandlers(state, regenFn) {
                 e.currentTarget.textContent = 'Archive';
                 if (typeof toastr !== 'undefined') {
                     toastr.error(result.reason === 'rag-disabled'
-                        ? 'Enable RAG to use warm archive'
+                        ? getWarmArchiveUnavailableMessage(state)
                         : 'Failed to archive item');
                 }
                 return;
@@ -1154,10 +1230,10 @@ function setupSectionHandlers(state, regenFn) {
         checkbox.addEventListener('change', async (e) => {
             if (!e.target.checked) return;
 
-            if (!state.ragEnabled) {
+            if (!state.warmArchiveAvailable) {
                 e.target.checked = false;
                 if (typeof toastr !== 'undefined') {
-                    toastr.warning('Enable RAG to use warm archive');
+                    toastr.warning(getWarmArchiveUnavailableMessage(state));
                 }
                 return;
             }
@@ -1198,7 +1274,7 @@ function setupSectionHandlers(state, regenFn) {
                 e.target.checked = false;
                 if (typeof toastr !== 'undefined') {
                     toastr.error(result.reason === 'rag-disabled'
-                        ? 'Enable RAG to use warm archive'
+                        ? getWarmArchiveUnavailableMessage(state)
                         : 'Failed to archive item');
                 }
                 return;
@@ -1282,24 +1358,26 @@ async function setupRegenerateHandler(state, regenFn) {
         btn.textContent = 'Regenerating...';
         try {
             const newResult = await regenFn();
+            const regeneratedSections = newResult.sections || parseExtractionResponse(newResult.reconstructed || '', { sectionRegistry: state.sectionRegistry });
 
             // Update state
             state.diagnostics = newResult.diagnostics || [];
             state.editableSections = normalizeSectionItems(
-                newResult.sections || parseExtractionResponse(newResult.reconstructed || '', { sectionRegistry: state.sectionRegistry }),
+                regeneratedSections,
                 state.sectionRegistry
             );
+            state.keyLines = getReviewKeyLines(regeneratedSections);
             state.pruningReport = newResult.llmPruningReport || { totalPruned: 0, sections: [] };
             state.outputOverride = null;
             state.rescuedItems = [];
 
             // Re-render sections area
             const sectionsArea = document.querySelector('.ss-sp-sections-area');
-            if (sectionsArea) sectionsArea.innerHTML = sectionsHtml(state);
+            if (sectionsArea) sectionsArea.innerHTML = architecturalKeyBlockHtml(state) + sectionsHtml(state);
 
             // Re-render pruning section
             const pruningAccordion = document.querySelector('.ss-review-accordion[data-section="sp-pruning"]');
-            if (pruningAccordion) pruningAccordion.outerHTML = buildPruningSection(state.pruningReport);
+            if (pruningAccordion) pruningAccordion.outerHTML = buildPruningSection(state);
 
             // Re-render diagnostics content
             const diagArea = document.querySelector('.ss-sp-diagnostics');
@@ -1358,6 +1436,7 @@ export async function openSharderReviewModal(pipelineResult, settings, regenFn =
         diagnostics: pipelineResult.diagnostics || [],
         metadata: pipelineResult.metadata || {},
         editableSections: normalizeSectionItems(pipelineResult.sections || parsed, sectionRegistry),
+        keyLines: getReviewKeyLines(pipelineResult.sections || parsed),
         finalOutput: pipelineResult.reconstructed || '',
         reconstructedOutput: pipelineResult.reconstructed || '',
         rescuedItems: [],
@@ -1368,6 +1447,7 @@ export async function openSharderReviewModal(pipelineResult, settings, regenFn =
         outputOverride: null,
         settings,
         ragEnabled: settings?.rag?.enabled === true,
+        warmArchiveAvailable: isWarmArchiveEligible(sectionRegistry, settings?.rag?.enabled === true),
         archivedItems: [],
         archiveOptions: {
             archiveWarm: false,
@@ -1429,13 +1509,15 @@ export async function openSharderReviewModal(pipelineResult, settings, regenFn =
             };
         }
 
-        const baseOutput = typeof state.outputOverride === 'string'
+        const baseOutput = !isArchitecturalState(state) && typeof state.outputOverride === 'string'
             ? state.outputOverride
             : rebuildOutput(state);
 
         return {
             confirmed: true,
-            finalOutput: applyRescues(baseOutput, state.rescuedItems),
+            finalOutput: isArchitecturalState(state)
+                ? baseOutput
+                : applyRescues(baseOutput, state.rescuedItems),
             archiveOptions: state.archiveOptions,
             archivedItems: state.archivedItems,
         };

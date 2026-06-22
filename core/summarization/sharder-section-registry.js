@@ -50,10 +50,12 @@ function cloneRegistry(registry) {
     };
 }
 
-function assertContentSections(contentSections) {
+function assertContentSections(contentSections, renderFormat = null) {
     if (!Array.isArray(contentSections) || contentSections.length === 0) {
         throw new TypeError('Sharder section registry requires a non-empty contentSections array.');
     }
+
+    const allowBlankEmoji = renderFormat === 'bracket';
 
     contentSections.forEach((section, index) => {
         if (!section || typeof section !== 'object') {
@@ -65,7 +67,7 @@ function assertContentSections(contentSections) {
         if (typeof section.name !== 'string' || !section.name.trim()) {
             throw new TypeError(`Sharder content section "${section.key}" requires a non-empty name.`);
         }
-        if (typeof section.emoji !== 'string' || !section.emoji.trim()) {
+        if (typeof section.emoji !== 'string' || (!allowBlankEmoji && !section.emoji.trim())) {
             throw new TypeError(`Sharder content section "${section.key}" requires a non-empty emoji.`);
         }
         if (section.altNames !== undefined && !Array.isArray(section.altNames)) {
@@ -75,7 +77,7 @@ function assertContentSections(contentSections) {
 }
 
 function normalizeRegistryObject(registry) {
-    assertContentSections(registry?.contentSections);
+    assertContentSections(registry?.contentSections, registry?.renderFormat);
 
     const metadataSections = registry.metadataSections === undefined ? [] : registry.metadataSections;
     const freeformSectionKeys = registry.freeformSectionKeys === undefined ? [] : registry.freeformSectionKeys;
@@ -94,6 +96,11 @@ function normalizeRegistryObject(registry) {
         displayName: typeof registry.displayName === 'string' && registry.displayName.trim()
             ? registry.displayName
             : registry.profile || NARRATIVE_DISPLAY_NAME,
+        schemaVersion: registry.schemaVersion,
+        profileMarker: registry.profileMarker,
+        schemaMarker: registry.schemaMarker,
+        renderFormat: registry.renderFormat,
+        terminator: registry.terminator,
         metadataSections: cloneSections(metadataSections),
         contentSections: cloneSections(registry.contentSections),
         freeformSectionKeys: [...freeformSectionKeys],

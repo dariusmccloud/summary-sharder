@@ -199,3 +199,30 @@ test('architectural compatibility data is immutable and accessor-safe', () => {
     assert.equal(ARCHITECTURAL_SHARDER_REGISTRY.metadataSections[0].selectable, false);
     assert.equal(getSharderSectionRegistry(ARCHITECTURAL_PROFILE).contentSections[0].key, 'timeline');
 });
+
+test('architectural registry round-trips through accessor without losing configuration', () => {
+    const architectural = getSharderSectionRegistry(ARCHITECTURAL_PROFILE);
+    const roundTripped = getSharderSectionRegistry(architectural);
+
+    assert.equal(roundTripped.profile, ARCHITECTURAL_PROFILE);
+    assert.equal(roundTripped.renderFormat, 'bracket');
+    assert.equal(roundTripped.schemaVersion, ARCHITECTURAL_SCHEMA_VERSION);
+    assert.equal(roundTripped.profileMarker, ARCHITECTURAL_PROFILE_MARKER);
+    assert.equal(roundTripped.schemaMarker, ARCHITECTURAL_SCHEMA_MARKER);
+    assert.equal(roundTripped.terminator, '===END===');
+    assert.deepEqual(
+        roundTripped.contentSections.map((section) => section.key),
+        EXPECTED_ARCHITECTURAL_CONTENT_SECTIONS.map((section) => section.key),
+    );
+});
+
+test('blank emojis remain invalid for non-bracket custom registries', () => {
+    assert.throws(
+        () => getSharderSectionRegistry({
+            profile: 'custom-emoji',
+            contentSections: [{ emoji: '', name: 'ALPHA', key: 'alpha' }],
+            renderFormat: 'emoji',
+        }),
+        /non-empty emoji/,
+    );
+});

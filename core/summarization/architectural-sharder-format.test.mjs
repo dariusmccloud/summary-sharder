@@ -8,6 +8,11 @@ import {
     getSharderSectionRegistry,
 } from './sharder-section-registry.js';
 import {
+    countStandaloneArchitecturalTerminators,
+    inspectCanonicalArchitecturalOutput,
+    normalizeArchitecturalResponse,
+} from './architectural-sharder-shell.js';
+import {
     parseArchitecturalExtractionResponse,
     reconstructArchitecturalExtraction,
 } from './architectural-sharder-format.js';
@@ -102,4 +107,63 @@ test('architectural renderer owns canonical KEY metadata and terminator', () => 
     assert.equal(output.includes('Schema: wrong'), false);
     assert.equal(output.includes('Sources: Messages 1-3'), true);
     assert.equal(output.includes('(S2:1) Event item'), false);
+});
+
+test('architectural parser strips every standalone raw terminator line before section parsing', () => {
+    const response = `
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+Sources: Messages 4-6
+===END===
+
+[CURRENT]
+Project|State|Focus|Pending|Blocked|Next
+
+===END===
+
+===END===
+`;
+
+    const sections = parseArchitecturalExtractionResponse(response, registry);
+
+    assert.equal(countStandaloneArchitecturalTerminators(response), 3);
+    assert.equal(sections._metadata.architectural.terminatorCount, 3);
+    assert.equal(sections.current[0].content.includes('===END==='), false);
+});
+
+test('architectural terminator normalization handles missing and repeated raw markers', () => {
+    assert.equal(countStandaloneArchitecturalTerminators(''), 0);
+    assert.equal(countStandaloneArchitecturalTerminators('===END==='), 1);
+    assert.equal(countStandaloneArchitecturalTerminators('===END===\n===END==='), 2);
+    assert.equal(countStandaloneArchitecturalTerminators('\n===END===\n\n===END===\n\n===END===\n'), 3);
+
+    assert.equal(normalizeArchitecturalResponse('\n===END===\n[CURRENT]\nA\n===END===\n').includes('===END==='), false);
+});
+
+test('canonical architectural output has one final terminator and only approved headers', () => {
+    const output = reconstructArchitecturalExtraction({
+        _metadata: {
+            keyLines: [
+                'Sources: Messages 9-10',
+                'xref: decisions -> events',
+            ],
+        },
+        timeline: [{ content: '(S9:1) Timeline item', selected: true }],
+        decisions: [{ content: '(S9:1) Decision item', selected: true }],
+        events: [{ content: '(S9:2) Event item', selected: true }],
+        developments: [],
+        dialogue: [],
+        threads: [],
+        current: [{ content: 'Project|State|Focus|Pending|Blocked|Next', selected: true }],
+    }, registry);
+
+    const inspection = inspectCanonicalArchitecturalOutput(output, registry);
+
+    assert.equal(inspection.beginsWithKey, true);
+    assert.deepEqual(inspection.unsupportedHeaders, []);
+    assert.equal(inspection.currentHeaderCount, 1);
+    assert.equal(inspection.terminatorCount, 1);
+    assert.equal(inspection.endsWithTerminator, true);
+    assert.equal(inspection.hasTrailingContent, false);
 });

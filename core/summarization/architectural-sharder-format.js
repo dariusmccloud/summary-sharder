@@ -1,9 +1,9 @@
 import {
-    ARCHITECTURAL_PROFILE_MARKER,
-    ARCHITECTURAL_SCHEMA_MARKER,
-} from './sharder-section-registry.js';
-
-const ARCHITECTURAL_TERMINATOR = '===END===';
+    ARCHITECTURAL_TERMINATOR,
+    buildArchitecturalKeyLines,
+    countStandaloneArchitecturalTerminators,
+    normalizeArchitecturalResponse,
+} from './architectural-sharder-shell.js';
 
 const WEIGHT_BY_EMOJI = new Map([
     ['🔴', 5],
@@ -20,14 +20,6 @@ const WEIGHT_BY_NAME = new Map([
     ['minor', 2],
     ['trivial', 1],
 ]);
-
-function normalizeArchitecturalResponse(response) {
-    if (!response) return '';
-    return String(response)
-        .replace(/\r\n/g, '\n')
-        .replace(/\n*===END===\s*$/gi, '')
-        .trim();
-}
 
 function isEmptyContent(content) {
     const lower = String(content || '').toLowerCase().trim();
@@ -145,7 +137,7 @@ export function parseArchitecturalExtractionResponse(response, registry) {
     const metadata = {
         keyLines: [],
         keyPresent: false,
-        terminatorCount: (String(response || '').match(/===END===/g) || []).length,
+        terminatorCount: countStandaloneArchitecturalTerminators(response),
         unknownSectionHeaders: [],
     };
     const contentSections = registry.contentSections;
@@ -200,17 +192,10 @@ export function parseArchitecturalExtractionResponse(response, registry) {
 
 export function reconstructArchitecturalExtraction(sections, registry) {
     const lines = [];
-    const rawKeyLines = Array.isArray(sections?._metadata?.keyLines)
-        ? sections._metadata.keyLines
-        : [];
-    const extraKeyLines = rawKeyLines.filter((line) => {
-        return !/^Profile\s*:/i.test(line) && !/^Schema\s*:/i.test(line);
-    });
+    const keyLines = buildArchitecturalKeyLines(sections?._metadata?.keyLines);
 
     lines.push('[KEY]');
-    lines.push(`Profile: ${ARCHITECTURAL_PROFILE_MARKER}`);
-    lines.push(`Schema: ${ARCHITECTURAL_SCHEMA_MARKER}`);
-    extraKeyLines.forEach((line) => lines.push(line));
+    keyLines.forEach((line) => lines.push(line));
     lines.push('');
 
     registry.contentSections.forEach((section) => {

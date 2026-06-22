@@ -28,6 +28,7 @@ import {
 import { archiveToWarm, archiveToCold } from '../rag/archive.js';
 import { throwIfAborted } from '../api/abort-controller.js';
 import { ARCHITECTURAL_PROFILE } from './sharder-section-registry.js';
+import { isWarmArchiveEligible } from './architectural-sharder-shell.js';
 
 // World info metadata key
 const METADATA_KEY = 'world_info';
@@ -128,6 +129,11 @@ export async function handleSummaryResult(
 
     throwIfAborted('summary output');
     if (didInjectToContext && resolvedArchiveOptions.archiveWarm) {
+        const skipWarmArchive = settings?.sharderMode === true
+            && !isWarmArchiveEligible(settings?.sharderProfile, settings?.rag?.enabled === true);
+        if (skipWarmArchive) {
+            ragLog.info('Warm archive skipped for Architectural Memory; architectural RAG support is deferred.');
+        } else {
         const warmResult = await archiveToWarm(
             [{ text: summary, source: 'output-summary' }],
             startIndex,
@@ -137,6 +143,7 @@ export async function handleSummaryResult(
         );
         if (!warmResult.success && warmResult.reason !== 'rag-disabled') {
             ragLog.warn('Warm archive failed for output summary:', warmResult.error || warmResult.reason);
+        }
         }
     }
 
