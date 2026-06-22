@@ -20,7 +20,12 @@ import {
 import { startUiOperation, endUiOperation } from './api-ui-helpers.js';
 import { log } from '../logger.js';
 import { ARCHITECTURAL_PROFILE, normalizeSharderProfile } from '../summarization/sharder-section-registry.js';
-import { prepareSharderHeadlessRun } from './sharder-run-selection.js';
+import { resolveSelectedShardsForRun } from './sharder-run-selection.js';
+import {
+    startSharderHeadlessOperation,
+    executeSharderHeadlessRun,
+    cleanupSharderHeadlessOperation,
+} from './sharder-run-execution.js';
 
 let isSharderRunning = false;
 
@@ -162,40 +167,30 @@ export async function runSharder(startIndex, endIndex, settings, selectedShards 
         const { getActiveSharderProfile, shouldBypassShardSelectionForRag } = await import('../summarization/shard-selection-policy.js');
         const { openShardSelectionModal, parseSelectedShards } = await import('../../ui/modals/summarization/shard-selection-modal.js');
 
-        const prepared = await prepareSharderHeadlessRun(startIndex, endIndex, settings, selectedShards, {
+        const selection = await resolveSelectedShardsForRun(settings, selectedShards, {
             shouldBypassShardSelectionForRag,
             getActiveSharderProfile,
             findSavedExtractions,
             isSavedShardCompatibleWithProfile,
             parseSelectedShards,
             openShardSelectionModal,
-            runSharderHeadless,
         });
 
-        if (!prepared.confirmed) {
+        if (!selection.confirmed) {
             toastr.info('Sharder cancelled');
             return;
         }
 
-        createAbortController();
-        opId = startUiOperation({
-            feature: 'sharder',
-            primaryButton: 'ss-run-single-pass',
-            disabled: true,
-            label: 'Running Sharder...',
-            lockButtons: [],
-            showStop: true,
+        const started = startSharderHeadlessOperation(startIndex, endIndex, {
+            createAbortController,
+            startUiOperation,
+            showProgressToast: (message, title, options) => toastr.info(message, title, options),
         });
-        operationStarted = true;
-
-        progressToast = toastr.info(
-            `Sharder processing messages ${startIndex} to ${endIndex}...`,
-            'Sharder',
-            { timeOut: 0, extendedTimeOut: 0 }
-        );
-
-        const headless = prepared.headless;
-        throwIfAborted('sharder generation');
+        ({ progressToast, operationStarted, opId } = started);
+        const headless = await executeSharderHeadlessRun(startIndex, endIndex, settings, selection.selectedShards, {
+            runSharderHeadless,
+            throwIfAborted,
+        });
 
         const { openSharderReviewModal } = await import('../../ui/modals/summarization/single-pass-review-modal.js');
 
@@ -206,7 +201,7 @@ export async function runSharder(startIndex, endIndex, settings, selectedShards 
                 settings,
                 startIndex,
                 endIndex,
-                prepared.selectedShards,
+                selection.selectedShards,
                 headless.extractKeywords
             );
             throwIfAborted('sharder regenerate');
@@ -277,21 +272,14 @@ export async function runSharder(startIndex, endIndex, settings, selectedShards 
         log.error('Sharder failed:', error);
         toastr.error(`Sharder failed: ${error.message}`);
     } finally {
-        if (progressToast) {
-            toastr.clear(progressToast);
-        }
-        if (operationStarted) {
-            clearAbortController();
-            endUiOperation({
-                feature: 'sharder',
-                primaryButton: 'ss-run-single-pass',
-                disabled: false,
-                label: originalText,
-                lockButtons: [],
-                showStop: false,
-                opId,
-            });
-        }
+        cleanupSharderHeadlessOperation(
+            { progressToast, operationStarted, opId, originalText },
+            {
+                clearProgressToast: (toastRef) => toastr.clear(toastRef),
+                clearAbortController,
+                endUiOperation,
+            }
+        );
         isSharderRunning = false;
     }
 }

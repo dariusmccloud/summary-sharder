@@ -1,16 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { prepareSharderHeadlessRun, resolveSelectedShardsForRun } from './sharder-run-selection.js';
+import { resolveSelectedShardsForRun } from './sharder-run-selection.js';
 
 function makeDeps(overrides = {}) {
     const calls = {
         findSavedExtractions: 0,
         openShardSelectionModal: 0,
         parseSelectedShards: 0,
-        runSharderHeadless: 0,
         modalItems: null,
-        headlessSelectedShards: null,
     };
 
     const deps = {
@@ -35,11 +33,6 @@ function makeDeps(overrides = {}) {
             calls.modalItems = items;
             return overrides.modalResult || { confirmed: true, selectedShards: [] };
         },
-        runSharderHeadless: async (_start, _end, _settings, selectedShards) => {
-            calls.runSharderHeadless += 1;
-            calls.headlessSelectedShards = selectedShards;
-            return { result: { ok: true }, chatText: 'chat', extractKeywords: false };
-        },
         ...overrides.deps,
     };
 
@@ -60,26 +53,6 @@ test('architectural plus saved shard plus auto-include off calls selection modal
     assert.equal(calls.findSavedExtractions, 1);
     assert.equal(calls.openShardSelectionModal, 1);
     assert.deepEqual(calls.modalItems, saved);
-});
-
-test('selected architectural shard reaches prompt assembly path through headless run', async () => {
-    const selected = [{ identifier: 'Memory Shard 1-50', content: 'selected baseline', parsedSections: { decisions: [] } }];
-    const { deps, calls } = makeDeps({
-        discoveredItems: [{ classification: 'architectural', identifier: 'Memory Shard 1-50', content: 'selected baseline' }],
-        modalResult: { confirmed: true, selectedShards: selected },
-    });
-
-    const result = await prepareSharderHeadlessRun(
-        52,
-        101,
-        { profile: 'architectural', autoIncludeShards: false },
-        undefined,
-        deps,
-    );
-
-    assert.equal(result.confirmed, true);
-    assert.equal(calls.runSharderHeadless, 1);
-    assert.deepEqual(calls.headlessSelectedShards, selected);
 });
 
 test('architectural plus auto-include on skips modal and includes compatible shards', async () => {
@@ -134,39 +107,34 @@ test('narrative plus RAG preserves bypass', async () => {
 });
 
 test('canceling selection aborts the sharder run before generation', async () => {
-    const { deps, calls } = makeDeps({
+    const { deps } = makeDeps({
         discoveredItems: [{ classification: 'architectural', identifier: 'Memory Shard 1-50', content: 'A' }],
         modalResult: { confirmed: false, selectedShards: [] },
     });
 
-    const result = await prepareSharderHeadlessRun(
-        52,
-        101,
+    const result = await resolveSelectedShardsForRun(
         { profile: 'architectural', autoIncludeShards: false },
         undefined,
         deps,
     );
 
     assert.equal(result.confirmed, false);
-    assert.equal(calls.runSharderHeadless, 0);
 });
 
 test('selecting zero shards continues from scratch', async () => {
-    const { deps, calls } = makeDeps({
+    const { deps } = makeDeps({
         discoveredItems: [{ classification: 'architectural', identifier: 'Memory Shard 1-50', content: 'A' }],
         modalResult: { confirmed: true, selectedShards: [] },
     });
 
-    const result = await prepareSharderHeadlessRun(
-        52,
-        101,
+    const result = await resolveSelectedShardsForRun(
         { profile: 'architectural', autoIncludeShards: false },
         undefined,
         deps,
     );
 
     assert.equal(result.confirmed, true);
-    assert.deepEqual(calls.headlessSelectedShards, []);
+    assert.deepEqual(result.selectedShards, []);
 });
 
 test('incompatible narrative, legacy, unknown, and malformed shards do not appear in architectural selection', async () => {
@@ -192,9 +160,7 @@ test('no compatible shards proceeds directly to generation without showing modal
         discoveredItems: [{ classification: 'narrative', identifier: 'narrative', content: 'B' }],
     });
 
-    const result = await prepareSharderHeadlessRun(
-        52,
-        101,
+    const result = await resolveSelectedShardsForRun(
         { profile: 'architectural', autoIncludeShards: false },
         undefined,
         deps,
@@ -202,6 +168,5 @@ test('no compatible shards proceeds directly to generation without showing modal
 
     assert.equal(result.confirmed, true);
     assert.equal(calls.openShardSelectionModal, 0);
-    assert.equal(calls.runSharderHeadless, 1);
-    assert.deepEqual(calls.headlessSelectedShards, []);
+    assert.deepEqual(result.selectedShards, []);
 });

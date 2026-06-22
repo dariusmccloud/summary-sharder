@@ -52,23 +52,3 @@ export async function resolveSelectedShardsForRun(settings, selectedShards, deps
         mode: 'manual',
     };
 }
-
-export async function prepareSharderHeadlessRun(startIndex, endIndex, settings, selectedShards, deps) {
-    const selection = await resolveSelectedShardsForRun(settings, selectedShards, deps);
-    if (!selection.confirmed) {
-        return {
-            confirmed: false,
-            selectedShards: [],
-            mode: selection.mode,
-            headless: null,
-        };
-    }
-
-    const headless = await deps.runSharderHeadless(startIndex, endIndex, settings, selection.selectedShards);
-    return {
-        confirmed: true,
-        selectedShards: selection.selectedShards,
-        mode: selection.mode,
-        headless,
-    };
-}
