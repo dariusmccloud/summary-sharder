@@ -8,6 +8,7 @@ import { escapeHtml } from '../../common/ui-utils.js';
 import { archiveToWarm } from '../../../core/rag/archive.js';
 import { log } from '../../../core/logger.js';
 import {
+    NARRATIVE_PROFILE,
     getSharderContentSections,
     getSharderSectionRegistry,
     parseExtractionResponse,
@@ -1260,7 +1261,9 @@ function setupArchiveOptionHandlers(state) {
  * @returns {Promise<{confirmed:boolean, finalOutput:string, archiveOptions:Object, archivedItems:Array}>}
  */
 export async function openSharderReviewModal(pipelineResult, settings, regenFn = null) {
-    const sectionRegistry = getSharderSectionRegistry(pipelineResult.metadata?.sectionRegistry || 'narrative');
+    const sectionRegistry = getSharderSectionRegistry(
+        pipelineResult.metadata?.sectionRegistry || pipelineResult.metadata?.profile || NARRATIVE_PROFILE
+    );
     const parsed = parseExtractionResponse(pipelineResult.reconstructed || '', { sectionRegistry });
 
     const state = {

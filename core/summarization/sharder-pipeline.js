@@ -5,6 +5,7 @@
 import { loadWorldInfo } from '../../../../../world-info.js';
 import { log } from '../logger.js';
 import {
+    NARRATIVE_PROFILE,
     getSharderContentSections,
     getSharderSectionRegistry,
 } from './sharder-section-registry.js';
@@ -45,7 +46,7 @@ const EMOJI_BY_VALUE = new Map(EVENT_WEIGHTS.map(w => [w.value, w.emoji]));
  * @param {string} response - Raw LLM response
  * @returns {string} Normalized response
  */
-export function normalizeExtractionResponse(response, registryOrProfile = 'narrative') {
+export function normalizeExtractionResponse(response, registryOrProfile = NARRATIVE_PROFILE) {
     if (!response) return response;
 
     const contentSections = getSharderContentSections(registryOrProfile);
@@ -129,7 +130,7 @@ export function validateExtractionQuality(sections, context = {}) {
     };
 
     // Count populated sections
-    getSharderContentSections(context.sectionRegistry).forEach(section => {
+    getSharderContentSections(context.sectionRegistry || context.profile || NARRATIVE_PROFILE).forEach(section => {
         const items = sections[section.key] || [];
         if (items.length > 0 && items.some(i => i.selected)) {
             stats.sectionsPopulated++;
@@ -430,7 +431,7 @@ export function getWeightEmoji(value) {
  * @returns {Object} Parsed sections with items
  */
 export function parseExtractionResponse(response, options = {}) {
-    const registry = getSharderSectionRegistry(options.sectionRegistry || options.profile);
+    const registry = getSharderSectionRegistry(options.sectionRegistry || options.profile || NARRATIVE_PROFILE);
     const contentSections = registry.contentSections;
     const freeformSectionKeys = registry.freeformSectionKeys;
     const sections = {};
@@ -606,7 +607,7 @@ function parseSectionItems(content, sectionKey) {
  * @returns {string} Formatted extraction text
  */
 export function reconstructExtraction(sections, metadata = {}) {
-    const contentSections = getSharderContentSections(metadata.sectionRegistry || metadata.profile);
+    const contentSections = getSharderContentSections(metadata.sectionRegistry || metadata.profile || NARRATIVE_PROFILE);
     const lines = [];
 
     // Header

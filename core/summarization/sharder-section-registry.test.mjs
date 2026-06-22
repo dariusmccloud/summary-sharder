@@ -33,6 +33,8 @@ const EXPECTED_CONTENT_SECTIONS = [
     { emoji: '📍', name: 'CURRENT', key: 'currentState', altNames: ['CURRENT STATE'], isLast: true },
 ];
 
+const EXPECTED_FREEFORM_SECTION_KEYS = ['tone', 'currentState', 'worldState', 'scenes', 'voice'];
+
 test('narrative content sections retain exact original order', () => {
     assert.deepEqual(
         getSharderContentSections().map((section) => section.key),
@@ -42,6 +44,10 @@ test('narrative content sections retain exact original order', () => {
 
 test('each narrative section retains exact metadata', () => {
     assert.deepEqual(getSharderContentSections(), EXPECTED_CONTENT_SECTIONS);
+});
+
+test('narrative freeform section keys retain exact original order', () => {
+    assert.deepEqual(getSharderFreeformSectionKeys(), EXPECTED_FREEFORM_SECTION_KEYS);
 });
 
 test('KEY exists only in metadata definitions', () => {
@@ -106,6 +112,14 @@ test('accessor-returned values cannot mutate canonical source', () => {
     assert.equal(getSharderContentSections()[0].key, 'tone');
 });
 
+test('accessor-returned altNames arrays cannot mutate canonical source', () => {
+    const sections = getSharderContentSections();
+    sections[1].altNames.push('MUTATED');
+
+    assert.deepEqual(NARRATIVE_SHARDER_REGISTRY.contentSections[1].altNames, ['CHARACTER NOTES']);
+    assert.deepEqual(getSharderContentSections()[1].altNames, ['CHARACTER NOTES']);
+});
+
 test('optional missing metadata and freeform arrays are handled safely', () => {
     const registry = getSharderSectionRegistry({
         profile: 'custom',
@@ -133,4 +147,3 @@ test('malformed content-section registries fail predictably', () => {
         /non-empty key/,
     );
 });
-

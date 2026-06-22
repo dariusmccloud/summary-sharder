@@ -4,6 +4,7 @@
 
 import { getSharderPrompts } from '../summarization/prompts.js';
 import {
+    NARRATIVE_PROFILE,
     getSharderSectionRegistry,
     parseExtractionResponse,
     reconstructExtraction,
@@ -111,7 +112,7 @@ function buildSharderUserPrompt(chatText, context) {
  * @returns {Promise<{raw:string,reconstructed:string,sections:Object,diagnostics:Array,severity:string,stats:Object,metadata:Object,extractedKeywords:string[]}>}
  */
 export async function runSharderPipeline(chatText, settings, context) {
-    const sectionRegistry = getSharderSectionRegistry(context?.sectionRegistry || 'narrative');
+    const sectionRegistry = getSharderSectionRegistry(context?.sectionRegistry || context?.profile || NARRATIVE_PROFILE);
     const prompts = getSharderPrompts(settings);
     const systemPrompt = prompts.prompt;
 
