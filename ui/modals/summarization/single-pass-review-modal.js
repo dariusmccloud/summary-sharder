@@ -18,6 +18,11 @@ import {
     validateArchitecturalStructuredSections,
 } from '../../../core/summarization/architectural-structured-validator.js';
 import {
+    ARCHITECTURAL_PRUNING_CLASSIFICATIONS,
+    analyzeArchitecturalPruningAdvisor,
+    buildArchitecturalPruningAdvisorUiModel,
+} from '../../../core/summarization/architectural-pruning-advisor.js';
+import {
     ARCHITECTURAL_PROFILE,
     NARRATIVE_PROFILE,
     getSharderContentSections,
@@ -367,6 +372,7 @@ function refreshArchitecturalDiagnostics(state) {
 function getCurrentSaveDiagnostics(state) {
     if (isArchitecturalState(state)) {
         refreshArchitecturalDiagnostics(state);
+        refreshArchitecturalAdvisor(state);
         return mergeDiagnostics(state.sourceDiagnostics, state.dynamicDiagnostics);
     }
 
@@ -415,6 +421,110 @@ function applyRescues(output, rescuedItems) {
     }
 
     return `${(output || '').trimEnd()}\n\n[RESCUED_ITEMS]\n${lines.join('\n')}`;
+}
+
+function refreshArchitecturalAdvisor(state) {
+    if (!isArchitecturalState(state)) return;
+    state.pruningAdvisor = analyzeArchitecturalPruningAdvisor(state.editableSections, {
+        profile: ARCHITECTURAL_PROFILE,
+    });
+}
+
+function formatAdvisorLabel(classification) {
+    if (classification === ARCHITECTURAL_PRUNING_CLASSIFICATIONS.LOW_RISK) return 'Low-risk candidate';
+    if (classification === ARCHITECTURAL_PRUNING_CLASSIFICATIONS.REVIEW) return 'Review carefully';
+    return 'Protected';
+}
+
+function buildAdvisorItemLabel(entry) {
+    if (entry.stableDecisionId) {
+        return `ID:${entry.stableDecisionId}`;
+    }
+    if (entry.sourceRef) {
+        return entry.sourceRef;
+    }
+    return `item ${entry.itemIndex + 1}`;
+}
+
+function buildAdvisorGroup(title, entries, cssClass) {
+    if (!entries.length) {
+        return `
+            <div class="ss-pruning-advisor-group ${cssClass}">
+                <div class="ss-pruning-advisor-group-title">${escapeHtml(title)}</div>
+                <p class="ss-empty">No items in this group.</p>
+            </div>
+        `;
+    }
+
+    return `
+        <div class="ss-pruning-advisor-group ${cssClass}">
+            <div class="ss-pruning-advisor-group-title">${escapeHtml(title)}</div>
+            <div class="ss-pruning-advisor-items">
+                ${entries.map((entry) => `
+                    <div class="ss-pruning-advisor-item">
+                        <div class="ss-pruning-advisor-item-header">
+                            <span class="ss-pruning-advisor-item-title">${escapeHtml(String(entry.sectionKey || '').toUpperCase())} item ${entry.itemIndex + 1}</span>
+                            <span class="ss-pruning-advisor-item-meta">${escapeHtml(buildAdvisorItemLabel(entry))}</span>
+                            <span class="ss-pruning-advisor-badge ss-pruning-advisor-badge-${escapeHtml(entry.classification)}">${escapeHtml(formatAdvisorLabel(entry.classification))}</span>
+                        </div>
+                        <div class="ss-pruning-advisor-reasons">
+                            ${entry.reasonCodes.map((code) => `<span class="ss-pruning-advisor-reason-code">${escapeHtml(code)}</span>`).join('')}
+                        </div>
+                        <div class="ss-pruning-advisor-basis">
+                            <div class="ss-pruning-advisor-basis-title">Based on what</div>
+                            <ul>
+                                ${entry.basis.map((basis) => `<li>${escapeHtml(basis)}</li>`).join('')}
+                            </ul>
+                        </div>
+                        <div class="ss-pruning-advisor-actions">
+                            <button class="menu_button ss-pruning-advisor-go" data-section-key="${escapeHtml(entry.sectionKey)}" data-item-id="${escapeHtml(entry.itemId)}">Go to item</button>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+    `;
+}
+
+function buildPruningAdvisorSection(state) {
+    if (!isArchitecturalState(state)) {
+        return '';
+    }
+
+    const uiModel = buildArchitecturalPruningAdvisorUiModel(state.pruningAdvisor);
+    const overCap = uiModel.overCapSections.filter((entry) => entry.excess > 0);
+    const overCapSummary = overCap.length > 0
+        ? `
+            <div class="ss-pruning-advisor-summary">
+                ${overCap.map((entry) => `
+                    <div class="ss-pruning-advisor-summary-row">
+                        <div>
+                            <strong>${escapeHtml(String(entry.sectionKey || '').toUpperCase())}</strong>
+                            needs ${entry.excess} removal${entry.excess === 1 ? '' : 's'} (${entry.selectedCount}/${entry.cap})
+                        </div>
+                        ${entry.message ? `<div class="ss-pruning-advisor-summary-note">${escapeHtml(entry.message)}</div>` : ''}
+                    </div>
+                `).join('')}
+            </div>
+        `
+        : '<p class="ss-hint">No sections are currently over cap. Advisor remains available for inspection.</p>';
+
+    return `
+        <div class="ss-review-accordion ${overCap.length > 0 ? 'ss-section-warning expanded' : ''}" data-section="sp-pruning-advisor">
+            <div class="ss-accordion-header">
+                <span class="ss-accordion-toggle"><i class="fa-solid fa-chevron-right"></i></span>
+                <span class="ss-accordion-emoji">🧭</span>
+                <span class="ss-accordion-title">Pruning Advisor</span>
+                <span class="ss-accordion-count">(${(state.pruningAdvisor?.recommendations || []).length})</span>
+            </div>
+            <div class="ss-accordion-content" style="display:${overCap.length > 0 ? 'block' : 'none'};">
+                ${overCapSummary}
+                ${buildAdvisorGroup('Low-risk candidates', uiModel.lowRisk, 'ss-pruning-advisor-low-risk')}
+                ${buildAdvisorGroup('Review carefully', uiModel.review, 'ss-pruning-advisor-review')}
+                ${buildAdvisorGroup('Protected', uiModel.protected, 'ss-pruning-advisor-protected')}
+            </div>
+        </div>
+    `;
 }
 
 function architecturalKeyBlockHtml(state) {
@@ -765,6 +875,7 @@ function buildModalHtml(state) {
                 ${architecturalKeyBlockHtml(state)}
                 ${sectionsHtml(state)}
             </div>
+            ${buildPruningAdvisorSection(state)}
             ${buildPruningSection(state)}
 
             <div class="ss-sp-panel" style="margin-top: 12px;">
@@ -853,6 +964,7 @@ function updateSectionCount(state, sectionKey) {
 function updateOutputEditor(state) {
     if (isArchitecturalState(state)) {
         refreshArchitecturalDiagnostics(state);
+        refreshArchitecturalAdvisor(state);
     }
 
     state.reconstructedOutput = rebuildOutput(state);
@@ -889,6 +1001,15 @@ function updateOutputEditor(state) {
     const diagCount = document.querySelector('.ss-review-accordion[data-section="sp-diagnostics"] .ss-accordion-count');
     if (diagCount) {
         diagCount.textContent = `(${state.diagnostics.length})`;
+    }
+
+    if (isArchitecturalState(state)) {
+        const advisorAccordion = document.querySelector('.ss-review-accordion[data-section="sp-pruning-advisor"]');
+        if (advisorAccordion) {
+            advisorAccordion.outerHTML = buildPruningAdvisorSection(state);
+            setupAccordionHandlers();
+            setupPruningAdvisorHandlers();
+        }
     }
 
     updateInlineDiagnostics(state);
@@ -1090,6 +1211,30 @@ function revealFirstBlockingDiagnostic() {
         behavior: 'smooth',
         block: 'nearest',
         inline: 'nearest',
+    });
+}
+
+function navigateToReviewItem(sectionKey, itemId) {
+    const accordion = expandAccordion(`sp-${sectionKey}`);
+    const row = document.querySelector(`.ss-cr-item-row[data-section-key="${CSS.escape(sectionKey)}"][data-item-id="${CSS.escape(itemId)}"]`);
+    if (accordion) {
+        accordion.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+    if (row) {
+        row.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+}
+
+function setupPruningAdvisorHandlers() {
+    document.querySelectorAll('.ss-pruning-advisor-go').forEach((button) => {
+        if (button.dataset.ssAdvisorBound === 'true') return;
+        button.dataset.ssAdvisorBound = 'true';
+        button.addEventListener('click', (event) => {
+            const sectionKey = event.currentTarget.dataset.sectionKey;
+            const itemId = event.currentTarget.dataset.itemId;
+            if (!sectionKey || !itemId) return;
+            navigateToReviewItem(sectionKey, itemId);
+        });
     });
 }
 
@@ -1748,8 +1893,13 @@ async function setupRegenerateHandler(state, regenFn) {
             // Re-render sections area
             const sectionsArea = document.querySelector('.ss-sp-sections-area');
             if (sectionsArea) sectionsArea.innerHTML = architecturalKeyBlockHtml(state) + sectionsHtml(state);
+            state.pruningAdvisor = analyzeArchitecturalPruningAdvisor(state.editableSections, {
+                profile: ARCHITECTURAL_PROFILE,
+            });
 
             // Re-render pruning section
+            const advisorAccordion = document.querySelector('.ss-review-accordion[data-section="sp-pruning-advisor"]');
+            if (advisorAccordion) advisorAccordion.outerHTML = buildPruningAdvisorSection(state);
             const pruningAccordion = document.querySelector('.ss-review-accordion[data-section="sp-pruning"]');
             if (pruningAccordion) pruningAccordion.outerHTML = buildPruningSection(state);
 
@@ -1760,6 +1910,7 @@ async function setupRegenerateHandler(state, regenFn) {
             // Re-wire all handlers
             setupAccordionHandlers();
             setupSectionHandlers(state, regenFn);
+            setupPruningAdvisorHandlers();
             updateOutputEditor(state);
 
             if (typeof toastr !== 'undefined') {
@@ -1836,6 +1987,7 @@ export async function openSharderReviewModal(pipelineResult, settings, regenFn =
             ARCHITECTURAL_IMMUTABLE_DIAGNOSTIC_CODES.has(diagnostic.code)
         );
         refreshArchitecturalDiagnostics(state);
+        refreshArchitecturalAdvisor(state);
     } else {
         state.sourceDiagnostics = pipelineResult.diagnostics || [];
     }
@@ -1881,6 +2033,7 @@ export async function openSharderReviewModal(pipelineResult, settings, regenFn =
     setTimeout(() => {
         setupAccordionHandlers();
         setupSectionHandlers(state, regenFn);
+        setupPruningAdvisorHandlers();
         setupGlobalSelectionHandlers(state);
         setupRegenerateHandler(state, regenFn);
         setupOutputOverrideHandlers(state);
