@@ -107,6 +107,18 @@ export function parseManagedMemoryShardComment(comment) {
     };
 }
 
+export function parseManagedSummaryComment(comment) {
+    const match = String(comment || '').match(/summary\s*(\d+)\s*[-–]\s*(\d+)/i);
+    if (!match) {
+        return null;
+    }
+
+    return {
+        startIndex: parseInt(match[1], 10),
+        endIndex: parseInt(match[2], 10),
+    };
+}
+
 function extractKeyBlockLines(body) {
     const lines = normalizeText(body).split('\n');
     let inKeyBlock = false;
@@ -301,6 +313,73 @@ export function buildSavedShardCandidate(content, options = {}) {
         startIndex,
         endIndex,
         text: shardInfo.body,
+    };
+}
+
+export function buildStandardSummaryCandidate(content, options = {}) {
+    const {
+        comment = '',
+    } = options;
+
+    const shardInfo = classifySavedShardText(content);
+    const wrapperSummaryMatch = String(content || '').match(/^\[SUMMARY:\s*Messages\s*(\d+)\s*[-–]\s*(\d+)\]\s*\n\n([\s\S]*)$/i);
+    if (wrapperSummaryMatch) {
+        return {
+            kind: 'summary-wrapper',
+            startIndex: parseInt(wrapperSummaryMatch[1], 10),
+            endIndex: parseInt(wrapperSummaryMatch[2], 10),
+            text: normalizeText(wrapperSummaryMatch[3]),
+            shardInfo,
+        };
+    }
+
+    if (shardInfo.wrapperType === 'memory-shard') {
+        if (shardInfo.classification === SAVED_SHARD_CLASSIFICATIONS.NARRATIVE
+            || shardInfo.classification === SAVED_SHARD_CLASSIFICATIONS.LEGACY) {
+            return {
+                kind: 'memory-shard-wrapper',
+                startIndex: shardInfo.startIndex,
+                endIndex: shardInfo.endIndex,
+                text: shardInfo.body,
+                shardInfo,
+            };
+        }
+        return null;
+    }
+
+    const memoryShardCandidate = buildSavedShardCandidate(content, {
+        comment,
+        activeProfile: NARRATIVE_PROFILE,
+    });
+    if (memoryShardCandidate) {
+        return {
+            kind: 'memory-shard-comment',
+            startIndex: memoryShardCandidate.startIndex,
+            endIndex: memoryShardCandidate.endIndex,
+            text: memoryShardCandidate.text,
+            shardInfo: memoryShardCandidate,
+        };
+    }
+
+    const summaryRange = parseManagedSummaryComment(comment);
+    if (!summaryRange) {
+        return null;
+    }
+
+    if (shardInfo?.keyMetadata?.hasMalformedArchitecturalIdentity === true) {
+        return null;
+    }
+
+    if (shardInfo.classification !== SAVED_SHARD_CLASSIFICATIONS.UNKNOWN) {
+        return null;
+    }
+
+    return {
+        kind: 'summary-comment',
+        startIndex: summaryRange.startIndex,
+        endIndex: summaryRange.endIndex,
+        text: String(content || '').trim(),
+        shardInfo,
     };
 }
 

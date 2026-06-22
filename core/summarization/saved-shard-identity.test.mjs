@@ -6,10 +6,12 @@ import {
     SAVED_SHARD_CLASSIFICATIONS,
     SAVED_SHARD_FORMATS,
     buildSavedShardCandidate,
+    buildStandardSummaryCandidate,
     buildArchitecturalShardMetadata,
     classifySavedShardText,
     isSavedShardCompatibleWithProfile,
     parseManagedMemoryShardComment,
+    parseManagedSummaryComment,
 } from './saved-shard-identity.js';
 
 const WRAPPED_ARCHITECTURAL_SHARD = `[MEMORY SHARD: Messages 10-12]
@@ -76,6 +78,20 @@ Sources: Messages 50-52
 Project | Malformed schema | Exclude safely | None | None | Continue
 
 ===END===`;
+
+const WRAPPED_MALFORMED_ARCHITECTURAL_SHARD = `[MEMORY SHARD: Messages 60-62]
+
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v2
+Sources: Messages 60-62
+
+[CURRENT]
+Project | Wrapped malformed | Reject in standard summary | None | None | Continue
+
+===END===`;
+
+const GENERIC_PROSE_SUMMARY = `A plain prose recap with no managed shard markers.`;
 
 test('classifies wrapped architectural system-message shard and preserves wrapper range', () => {
     const shard = classifySavedShardText(WRAPPED_ARCHITECTURAL_SHARD);
@@ -164,6 +180,14 @@ test('managed memory shard comment parsing only accepts managed memory shard nam
     assert.equal(parseManagedMemoryShardComment('Not a shard'), null);
 });
 
+test('managed summary comment parsing accepts only summary names', () => {
+    assert.deepEqual(parseManagedSummaryComment('Summary 7-9'), {
+        startIndex: 7,
+        endIndex: 9,
+    });
+    assert.equal(parseManagedSummaryComment('Memory Shard 7-9'), null);
+});
+
 test('comment fallback accepts compatible narrative and legacy lorebook bodies only in narrative mode', () => {
     const narrativeCandidate = buildSavedShardCandidate(WRAPPED_NARRATIVE_SHARD.replace(/^\[MEMORY SHARD:[\s\S]*?\]\n\n/, ''), {
         comment: 'Memory Shard 30-32',
@@ -207,4 +231,75 @@ test('managed memory shard comments never override unknown content identity', ()
     });
 
     assert.equal(candidate, null);
+});
+
+test('standard summary admission accepts wrapped narrative memory shard', () => {
+    const candidate = buildStandardSummaryCandidate(WRAPPED_NARRATIVE_SHARD);
+
+    assert.equal(candidate.kind, 'memory-shard-wrapper');
+    assert.equal(candidate.startIndex, 30);
+    assert.equal(candidate.endIndex, 32);
+});
+
+test('standard summary admission accepts wrapped legacy memory shard', () => {
+    const candidate = buildStandardSummaryCandidate(WRAPPED_LEGACY_SHARD);
+
+    assert.equal(candidate.kind, 'memory-shard-wrapper');
+    assert.equal(candidate.startIndex, 40);
+    assert.equal(candidate.endIndex, 42);
+});
+
+test('standard summary admission rejects wrapped architectural memory shard', () => {
+    const candidate = buildStandardSummaryCandidate(WRAPPED_ARCHITECTURAL_SHARD);
+
+    assert.equal(candidate, null);
+});
+
+test('standard summary admission rejects wrapped malformed architectural memory shard', () => {
+    const candidate = buildStandardSummaryCandidate(WRAPPED_MALFORMED_ARCHITECTURAL_SHARD);
+
+    assert.equal(candidate, null);
+});
+
+test('standard summary admission rejects raw architectural lorebook body even when comment is memory shard', () => {
+    const candidate = buildStandardSummaryCandidate(RAW_ARCHITECTURAL_SHARD, {
+        comment: 'Memory Shard 20-22',
+    });
+
+    assert.equal(candidate, null);
+});
+
+test('standard summary admission rejects malformed architectural lorebook body for memory shard and summary comments', () => {
+    const memoryShardCandidate = buildStandardSummaryCandidate(MALFORMED_ARCHITECTURAL_SHARD.replace(/^\[MEMORY SHARD:[\s\S]*?\]\n\n/, ''), {
+        comment: 'Memory Shard 50-52',
+    });
+    const summaryCandidate = buildStandardSummaryCandidate(MALFORMED_ARCHITECTURAL_SHARD.replace(/^\[MEMORY SHARD:[\s\S]*?\]\n\n/, ''), {
+        comment: 'Summary 50-52',
+    });
+
+    assert.equal(memoryShardCandidate, null);
+    assert.equal(summaryCandidate, null);
+});
+
+test('standard summary admission accepts generic prose summary by Summary N-N comment', () => {
+    const candidate = buildStandardSummaryCandidate(GENERIC_PROSE_SUMMARY, {
+        comment: 'Summary 70-71',
+    });
+
+    assert.equal(candidate.kind, 'summary-comment');
+    assert.equal(candidate.startIndex, 70);
+    assert.equal(candidate.endIndex, 71);
+    assert.equal(candidate.text, GENERIC_PROSE_SUMMARY);
+});
+
+test('standard summary admission accepts narrative and legacy lorebook bodies by memory shard comment', () => {
+    const narrativeCandidate = buildStandardSummaryCandidate(WRAPPED_NARRATIVE_SHARD.replace(/^\[MEMORY SHARD:[\s\S]*?\]\n\n/, ''), {
+        comment: 'Memory Shard 30-32',
+    });
+    const legacyCandidate = buildStandardSummaryCandidate(WRAPPED_LEGACY_SHARD.replace(/^\[MEMORY SHARD:[\s\S]*?\]\n\n/, ''), {
+        comment: 'Memory Shard 40-42',
+    });
+
+    assert.equal(narrativeCandidate.kind, 'memory-shard-comment');
+    assert.equal(legacyCandidate.kind, 'memory-shard-comment');
 });

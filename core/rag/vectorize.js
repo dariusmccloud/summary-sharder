@@ -34,6 +34,7 @@ import {
 } from '../summarization/sharder-section-registry.js';
 import {
     buildSavedShardCandidate,
+    buildStandardSummaryCandidate,
     classifySavedShardText,
     isSavedShardCompatibleWithProfile,
 } from '../summarization/saved-shard-identity.js';
@@ -183,18 +184,16 @@ function parseStandardSummary(text) {
  * @returns {{startIndex: number, endIndex: number, body: string}|null}
  */
 function parseAnySummaryMessage(text) {
-    const shard = classifySavedShardText(text);
-    if (shard.wrapperType === 'memory-shard' && shard.startIndex !== null && shard.endIndex !== null) {
-        if (shard.profile === ARCHITECTURAL_PROFILE) {
-            return null;
-        }
-        return {
-            startIndex: shard.startIndex,
-            endIndex: shard.endIndex,
-            body: shard.body,
-        };
+    const candidate = buildStandardSummaryCandidate(text);
+    if (!candidate) {
+        return null;
     }
-    return parseStandardSummary(text);
+
+    return {
+        startIndex: candidate.startIndex,
+        endIndex: candidate.endIndex,
+        body: candidate.text,
+    };
 }
 
 /**
@@ -830,7 +829,6 @@ export async function vectorizeAllShardsSectionAware(settings) {
 async function collectStandardShards(settings) {
     const ragStd = settings?.ragStandard;
     const results = [];
-    const activeProfile = normalizeSharderProfile(settings?.sharderProfile || NARRATIVE_PROFILE);
 
     // Scan chat system messages for [SUMMARY: ...] or [MEMORY SHARD: ...] prefixes.
     const chat = SillyTavern.getContext()?.chat || [];
@@ -859,7 +857,6 @@ async function collectStandardShards(settings) {
                 for (const entry of entries) {
                     const content = String(entry?.content || entry?.memo || '').trim();
                     if (!content) continue;
-                    const shardInfo = classifySavedShardText(content);
 
                     // Primary: content has an embedded [SUMMARY: ...] or [MEMORY SHARD: ...] header.
                     const parsed = parseAnySummaryMessage(content);
@@ -875,36 +872,17 @@ async function collectStandardShards(settings) {
                         continue;
                     }
 
-                    // Secondary: identify entries by comment matching "Summary N-N" or
-                    // "Memory Shard N-N" (the old default name format).
-                    const comment = String(entry?.comment || '');
-                    const summaryRangeMatch = comment.match(/summary\s+(\d+)\s*[-–]\s*(\d+)/i);
-                    if (summaryRangeMatch && shardInfo.classification === 'unknown') {
-                        const startIndex = parseInt(summaryRangeMatch[1], 10);
-                        const endIndex = parseInt(summaryRangeMatch[2], 10);
-                        results.push({
-                            text: content,
-                            startIndex,
-                            endIndex,
-                            keywords: Array.isArray(entry?.key) && entry.key.length > 0
-                                ? entry.key
-                                : extractKeywordsTfIdf(content),
-                        });
-                        continue;
-                    }
-
-                    const memoryShardCandidate = buildSavedShardCandidate(content, {
-                        comment,
-                        activeProfile,
+                    const candidate = buildStandardSummaryCandidate(content, {
+                        comment: entry?.comment || '',
                     });
-                    if (memoryShardCandidate) {
+                    if (candidate) {
                         results.push({
-                            text: memoryShardCandidate.text,
-                            startIndex: memoryShardCandidate.startIndex,
-                            endIndex: memoryShardCandidate.endIndex,
+                            text: candidate.text,
+                            startIndex: candidate.startIndex,
+                            endIndex: candidate.endIndex,
                             keywords: Array.isArray(entry?.key) && entry.key.length > 0
                                 ? entry.key
-                                : extractKeywordsTfIdf(memoryShardCandidate.text),
+                                : extractKeywordsTfIdf(candidate.text),
                         });
                     }
                 }
