@@ -517,7 +517,7 @@ jQuery(async () => {
 
     // Initialize floating action button
     initFab(settings, {
-        onSinglePass: (start, end, selectedShards = []) => runSharder(start, end, settings, selectedShards),
+        onSinglePass: (start, end, selectedShards) => runSharder(start, end, settings, selectedShards),
         onBatchSharder: async (ranges, batchConfig) => {
             const { runSharderQueue } = await import('./core/api/single-pass-queue-api.js');
             await runSharderQueue(ranges, settings, batchConfig);

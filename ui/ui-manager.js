@@ -827,11 +827,7 @@ export function renderSettingsUI(settings, callbacks) {
             return;
         }
 
-        const { openShardSelectionModal } = await import('./modals/summarization/shard-selection-modal.js');
-        const shardSelection = await openShardSelectionModal(settings);
-        if (!shardSelection?.confirmed) return;
-
-        runSharder(startIdx, endIdx, settings, shardSelection.selectedShards || []);
+        runSharder(startIdx, endIdx, settings);
     });
 
     document.getElementById('ss-run-single-pass-batch')?.addEventListener('click', async () => {

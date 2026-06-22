@@ -644,11 +644,7 @@ async function handleSinglePass() {
     const range = parseRangeInput(rangeStr, maxIndex);
     if (!range) return;
 
-    const { openShardSelectionModal } = await import('../modals/summarization/shard-selection-modal.js');
-    const shardSelection = await openShardSelectionModal(settingsRef);
-    if (!shardSelection?.confirmed) return;
-
-    await callbacksRef.onSinglePass?.(range.startIdx, range.endIdx, shardSelection.selectedShards || []);
+    await callbacksRef.onSinglePass?.(range.startIdx, range.endIdx);
 }
 
 async function handleBatchSharder() {

@@ -47,7 +47,7 @@ function buildRow(item, index) {
     `;
 }
 
-function parseSelectedShards(selectedItems, settings) {
+export function parseSelectedShards(selectedItems, settings) {
     const parsed = [];
     let skipped = 0;
     const activeProfile = getActiveSharderProfile(settings);
@@ -110,21 +110,25 @@ function updateCount(total) {
  * @param {Object} settings
  * @returns {Promise<{confirmed:boolean, selectedShards:Array}>}
  */
-export async function openShardSelectionModal(settings) {
+export async function openShardSelectionModal(settings, preloadedItems = null) {
     // In RAG mode, the vector store retrieves and assembles relevant chunks from all
     // shards automatically. Consolidating shards first collapses section-level
     // embeddings into a single blob, losing the granularity the pipeline depends on.
-    if (shouldBypassShardSelectionForRag(settings)) {
+    if (!Array.isArray(preloadedItems) && shouldBypassShardSelectionForRag(settings)) {
         return { confirmed: true, selectedShards: [] };
     }
 
     // Force lorebook scan for sharder shard selection regardless of output mode.
     const activeProfile = getActiveSharderProfile(settings);
-    const discoveredItems = sortByRangeDesc(await findSavedExtractions(settings, settings?.lorebookSelection || null));
-    const allItems = discoveredItems.filter((item) => isSavedShardCompatibleWithProfile(item, activeProfile));
+    const discoveredItems = Array.isArray(preloadedItems)
+        ? sortByRangeDesc(preloadedItems)
+        : sortByRangeDesc(await findSavedExtractions(settings, settings?.lorebookSelection || null));
+    const allItems = Array.isArray(preloadedItems)
+        ? discoveredItems
+        : discoveredItems.filter((item) => isSavedShardCompatibleWithProfile(item, activeProfile));
     const excludedCount = discoveredItems.length - allItems.length;
 
-    if (excludedCount > 0 && typeof toastr !== 'undefined') {
+    if (!Array.isArray(preloadedItems) && excludedCount > 0 && typeof toastr !== 'undefined') {
         const label = activeProfile === ARCHITECTURAL_PROFILE ? 'Architectural' : 'Narrative';
         toastr.info(`${excludedCount} incompatible saved shard(s) were excluded from ${label} baseline selection.`);
     }
@@ -133,7 +137,7 @@ export async function openShardSelectionModal(settings) {
         return { confirmed: true, selectedShards: [] };
     }
 
-    if (settings?.autoIncludeShards === true) {
+    if (!Array.isArray(preloadedItems) && settings?.autoIncludeShards === true) {
         return {
             confirmed: true,
             selectedShards: parseSelectedShards(allItems, settings),

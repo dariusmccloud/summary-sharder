@@ -20,6 +20,7 @@ import {
 import { startUiOperation, endUiOperation } from './api-ui-helpers.js';
 import { log } from '../logger.js';
 import { ARCHITECTURAL_PROFILE, normalizeSharderProfile } from '../summarization/sharder-section-registry.js';
+import { prepareSharderHeadlessRun } from './sharder-run-selection.js';
 
 let isSharderRunning = false;
 
@@ -136,7 +137,7 @@ export async function runSharderHeadless(startIndex, endIndex, settings, selecte
  * @param {Object} settings
  * @param {Array<{content:string,type:string,identifier:string,parsedSections:Object,messageRangeStart?:number}>} selectedShards
  */
-export async function runSharder(startIndex, endIndex, settings, selectedShards = []) {
+export async function runSharder(startIndex, endIndex, settings, selectedShards = undefined) {
     if (isSharderRunning) {
         toastr.warning('Sharder is already running');
         return;
@@ -153,6 +154,26 @@ export async function runSharder(startIndex, endIndex, settings, selectedShards 
         const messages = getAllMessages();
         if (!messages || messages.length === 0) {
             toastr.warning('No messages to process');
+            return;
+        }
+
+        const { findSavedExtractions } = await import('../summarization/sharder-pipeline.js');
+        const { isSavedShardCompatibleWithProfile } = await import('../summarization/saved-shard-identity.js');
+        const { getActiveSharderProfile, shouldBypassShardSelectionForRag } = await import('../summarization/shard-selection-policy.js');
+        const { openShardSelectionModal, parseSelectedShards } = await import('../../ui/modals/summarization/shard-selection-modal.js');
+
+        const prepared = await prepareSharderHeadlessRun(startIndex, endIndex, settings, selectedShards, {
+            shouldBypassShardSelectionForRag,
+            getActiveSharderProfile,
+            findSavedExtractions,
+            isSavedShardCompatibleWithProfile,
+            parseSelectedShards,
+            openShardSelectionModal,
+            runSharderHeadless,
+        });
+
+        if (!prepared.confirmed) {
+            toastr.info('Sharder cancelled');
             return;
         }
 
@@ -173,7 +194,7 @@ export async function runSharder(startIndex, endIndex, settings, selectedShards 
             { timeOut: 0, extendedTimeOut: 0 }
         );
 
-        const headless = await runSharderHeadless(startIndex, endIndex, settings, selectedShards);
+        const headless = prepared.headless;
         throwIfAborted('sharder generation');
 
         const { openSharderReviewModal } = await import('../../ui/modals/summarization/single-pass-review-modal.js');
@@ -185,7 +206,7 @@ export async function runSharder(startIndex, endIndex, settings, selectedShards 
                 settings,
                 startIndex,
                 endIndex,
-                selectedShards,
+                prepared.selectedShards,
                 headless.extractKeywords
             );
             throwIfAborted('sharder regenerate');
