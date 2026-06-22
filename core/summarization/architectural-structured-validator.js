@@ -469,6 +469,54 @@ function validateDecisionLifecycle(records, baselineDecisions, diagnostics) {
     });
 }
 
+function validateBaselineDecisionPresence(records, baselineDecisions, diagnostics) {
+    const currentById = new Map();
+    records.forEach(({ record, itemIndex }) => {
+        const id = getDecisionField(record, 'ID');
+        if (id && DECISION_ID_PATTERN.test(id)) {
+            currentById.set(id, { record, itemIndex });
+        }
+    });
+
+    const baselineIds = Object.keys(baselineDecisions || {});
+    const currentNonBaselineCount = [...currentById.keys()].filter((id) => !baselineDecisions[id]).length;
+    const preservingAllBaselineWouldExceedCap = baselineIds.length + currentNonBaselineCount > ARCHITECTURAL_SECTION_CAPS.decisions;
+    let emittedCapConflict = false;
+
+    baselineIds.forEach((id) => {
+        const baseline = baselineDecisions[id];
+        if (currentById.has(id)) {
+            return;
+        }
+
+        diagnostics.push(buildDiagnostic(
+            'error',
+            'ARCH_BASELINE_DECISION_DROPPED',
+            `Baseline decision ${id} is missing from the current merged output.`,
+            {
+                sectionKey: 'decisions',
+                recordId: id,
+                baselineStatus: baseline?.status || null,
+            }
+        ));
+
+        if (preservingAllBaselineWouldExceedCap && !emittedCapConflict) {
+            diagnostics.push(buildDiagnostic(
+                'error',
+                'ARCH_BASELINE_DECISION_CAP_CONFLICT',
+                'Preserving baseline decision continuity exceeds the DECISIONS cap.',
+                {
+                    sectionKey: 'decisions',
+                    baselineCount: baselineIds.length,
+                    currentNonBaselineCount,
+                    cap: ARCHITECTURAL_SECTION_CAPS.decisions,
+                }
+            ));
+            emittedCapConflict = true;
+        }
+    });
+}
+
 function validateSupersession(records, baselineDecisions, diagnostics) {
     const currentById = new Map();
     records.forEach((entry) => {
@@ -592,6 +640,16 @@ function validateEventRecord(record, itemIndex, currentDecisionIds, diagnostics)
             error.message,
             { sectionKey: 'events', itemIndex }
         ));
+    });
+    record.warnings.forEach((warning) => {
+        if (warning.code === 'DEC_LIST_NORMALIZED') {
+            diagnostics.push(buildDiagnostic(
+                'warning',
+                'ARCH_EVENT_DEC_LIST_NORMALIZED',
+                warning.message,
+                { sectionKey: 'events', itemIndex, field: warning.field }
+            ));
+        }
     });
 
     if (!String(record.description || '').trim()) {
@@ -799,6 +857,7 @@ export function validateArchitecturalStructuredSections(sections, context = {}) 
     decisionRecords.forEach(({ record, itemIndex }) => validateDecisionRecord(record, itemIndex, diagnostics));
     validateDecisionDuplicates(decisionRecords, diagnostics);
     validateDecisionLifecycle(decisionRecords, baselineDecisions, diagnostics);
+    validateBaselineDecisionPresence(decisionRecords, baselineDecisions, diagnostics);
     validateSupersession(decisionRecords, baselineDecisions, diagnostics);
 
     const currentDecisionIds = new Set(

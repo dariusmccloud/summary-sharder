@@ -4,6 +4,7 @@ import {
     countStandaloneArchitecturalTerminators,
     normalizeArchitecturalResponse,
 } from './architectural-sharder-shell.js';
+import { parseArchitecturalEventRecord } from './architectural-record-parser.js';
 
 const WEIGHT_BY_EMOJI = new Map([
     ['🔴', 5],
@@ -220,10 +221,39 @@ export function reconstructArchitecturalExtraction(sections, registry) {
         const items = Array.isArray(sections?.[section.key]) ? sections[section.key] : [];
         items
             .filter((item) => item?.selected !== false)
-            .forEach((item) => lines.push(String(item?.content || '').trim()));
+            .forEach((item) => lines.push(reconstructArchitecturalItemContent(section.key, item)));
         lines.push('');
     });
 
     lines.push(registry.terminator || ARCHITECTURAL_TERMINATOR);
     return lines.join('\n').trim();
+}
+
+function reconstructArchitecturalItemContent(sectionKey, item) {
+    const raw = String(item?.content || '').trim();
+    if (!raw || sectionKey !== 'events') {
+        return raw;
+    }
+
+    const record = parseArchitecturalEventRecord(raw);
+    if (!record.sourceRefRaw || !String(record.description || '').trim()) {
+        return raw;
+    }
+
+    const head = [record.sourceRefRaw];
+    if (record.weightRaw) {
+        head.push(record.weightRaw);
+    }
+    head.push(String(record.description).trim());
+
+    const fields = [];
+    for (const field of record.rawFields) {
+        if (field.field === 'DEC') continue;
+        fields.push(String(field.raw || '').trim());
+    }
+    for (const ref of Array.isArray(record.decisionRefs) ? record.decisionRefs : []) {
+        fields.push(`DEC:${ref}`);
+    }
+
+    return fields.length > 0 ? `${head.join(' ')} | ${fields.join(' | ')}` : head.join(' ');
 }

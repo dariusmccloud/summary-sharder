@@ -384,6 +384,7 @@ export function parseArchitecturalEventRecord(text) {
     result.duplicateFields = [];
     result.malformedSegments = [];
     result.decisionRefs = [];
+    result.normalizedDecList = false;
 
     const valuesByField = {};
     for (const segment of segments) {
@@ -414,8 +415,51 @@ export function parseArchitecturalEventRecord(text) {
 
     Object.entries(valuesByField).forEach(([fieldName, values]) => {
         if (fieldName === 'DEC') {
-            result.fields.DEC = values;
-            result.decisionRefs = values.map((entry) => String(entry));
+            const normalizedRefs = [];
+            let normalizedList = false;
+
+            for (const entry of values) {
+                const parts = String(entry)
+                    .split(',')
+                    .map((part) => part.trim())
+                    .filter(Boolean);
+
+                if (parts.length <= 1) {
+                    normalizedRefs.push(String(entry));
+                    continue;
+                }
+
+                const safeParts = parts.map((part, index) => {
+                    const match = part.match(/^(?:DEC:)?([a-z0-9]+(?:-[a-z0-9]+)*)$/);
+                    if (!match) {
+                        return null;
+                    }
+                    if (index > 0 && !part.startsWith('DEC:')) {
+                        return null;
+                    }
+                    return match[1];
+                });
+
+                if (safeParts.every(Boolean)) {
+                    normalizedRefs.push(...safeParts);
+                    normalizedList = true;
+                    continue;
+                }
+
+                normalizedRefs.push(String(entry));
+            }
+
+            result.fields.DEC = normalizedRefs;
+            result.decisionRefs = normalizedRefs.map((entry) => String(entry));
+            result.normalizedDecList = normalizedList;
+            if (normalizedList) {
+                pushWarning(
+                    result,
+                    'DEC_LIST_NORMALIZED',
+                    'Comma-delimited DEC reference list was normalized to repeated DEC fields.',
+                    { field: 'DEC' },
+                );
+            }
             return;
         }
 

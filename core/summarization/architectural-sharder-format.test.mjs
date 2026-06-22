@@ -187,3 +187,21 @@ test('architectural dialogue parser preserves a two-line dialogue record as one 
     const blocked = validateArchitecturalStructuredSections(sections, { baselineDecisions: {} });
     assert.equal(blocked.some((entry) => entry.code === 'ARCH_DIALOGUE_TOO_MANY_LINES'), true);
 });
+
+test('architectural renderer canonicalizes repeated DEC fields for normalized event refs', () => {
+    const output = reconstructArchitecturalExtraction({
+        _metadata: {
+            keyLines: ['Sources: Messages 9-10'],
+        },
+        timeline: [],
+        decisions: [{ content: '[S9:1] 🔴 ID:first-id | TYPE:GOVERNANCE | DECISION:A | WHY:unstated | SCOPE:test | STATUS:ACCEPTED | EVIDENCE:"a"', selected: true }],
+        events: [{ content: '[S9:2] 🟠 Event description | DEC:first-id, DEC:second-id', selected: true }],
+        developments: [],
+        dialogue: [],
+        threads: [],
+        current: [{ content: 'Project|State|Focus|Pending|Blocked|Next', selected: true }],
+    }, registry);
+
+    assert.equal(output.includes('DEC:first-id, DEC:second-id'), false);
+    assert.equal(output.includes('| DEC:first-id | DEC:second-id'), true);
+});

@@ -103,6 +103,75 @@ test('supersession validation allows baseline-only targets and warns on unresolv
     assert.equal(codes(diagnostics).includes('ARCH_SUPERSESSION_HISTORICAL_UNRESOLVED'), false);
 });
 
+test('baseline decision retained unchanged passes continuity check', () => {
+    const baseline = buildArchitecturalBaselineFromShards([{ content: readFixture('architectural-lifecycle-baseline-01.txt'), identifier: 'baseline' }]);
+    const sections = parseFixture('architectural-lifecycle-baseline-01.txt');
+
+    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions: baseline.decisions });
+
+    assert.equal(codes(diagnostics).includes('ARCH_BASELINE_DECISION_DROPPED'), false);
+});
+
+test('baseline decision omitted yields blocking dropped diagnostic', () => {
+    const baseline = buildArchitecturalBaselineFromShards([{ content: readFixture('architectural-lifecycle-baseline-01.txt'), identifier: 'baseline' }]);
+    const sections = parseFixture('architectural-valid-minimal-01.txt');
+
+    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions: baseline.decisions });
+
+    assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_BASELINE_DECISION_DROPPED' && entry.recordId === 'decision-proposed'), true);
+});
+
+test('baseline decision retained as properly superseded with reciprocal replacement passes', () => {
+    const baseline = buildArchitecturalBaselineFromShards([{ content: readFixture('architectural-lifecycle-baseline-01.txt'), identifier: 'baseline' }]);
+    const sections = parseFixture('architectural-valid-minimal-01.txt');
+    sections.decisions = [
+        { content: '[S2:1] 🔴 ID:decision-proposed | TYPE:GOVERNANCE | DECISION:Baseline proposed decision | WHY:unstated | SCOPE:Lifecycle test | STATUS:ACCEPTED | EVIDENCE:"promoted"', selected: true },
+        { content: '[S2:2] 🔴 ID:decision-accepted | TYPE:IMPLEMENTATION | DECISION:Baseline accepted decision | WHY:unstated | SCOPE:Lifecycle test | STATUS:SUPERSEDED | SUPERSEDED-BY:decision-accepted-replacement | EVIDENCE:"superseded now"', selected: true },
+        { content: '[S2:3] 🔴 ID:decision-accepted-replacement | TYPE:REPLACEMENT | DECISION:Replacement decision established | WHY:unstated | SCOPE:Lifecycle test | STATUS:ACCEPTED | SUPERSEDES:decision-accepted | EVIDENCE:"replacement accepted"', selected: true },
+        { content: '[S2:4] 🔴 ID:decision-sealed | TYPE:COMMITMENT | DECISION:Baseline sealed decision | WHY:unstated | SCOPE:Lifecycle test | STATUS:SEALED | EVIDENCE:"still sealed"', selected: true },
+        { content: '[S2:5] 🔴 ID:legacy-replaced | TYPE:REPLACEMENT | DECISION:Baseline replaced decision | WHY:unstated | SCOPE:Lifecycle test | STATUS:SUPERSEDED | SUPERSEDED-BY:new-replacement | EVIDENCE:"baseline superseded"', selected: true },
+        { content: '[S2:6] 🔴 ID:new-replacement | TYPE:REPLACEMENT | DECISION:Replacement for historical superseded record | WHY:unstated | SCOPE:Lifecycle test | STATUS:ACCEPTED | SUPERSEDES:legacy-replaced | EVIDENCE:"historical replacement"', selected: true },
+    ];
+
+    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions: baseline.decisions });
+
+    assert.equal(codes(diagnostics).includes('ARCH_BASELINE_DECISION_DROPPED'), false);
+    assert.equal(codes(diagnostics).includes('ARCH_SUPERSESSION_RECIPROCAL_MISSING'), false);
+});
+
+test('baseline decision renamed without supersession yields blocking drop', () => {
+    const baseline = buildArchitecturalBaselineFromShards([{ content: readFixture('architectural-lifecycle-baseline-01.txt'), identifier: 'baseline' }]);
+    const sections = parseFixture('architectural-valid-minimal-01.txt');
+    sections.decisions = [
+        { content: '[S2:1] 🔴 ID:decision-proposed | TYPE:GOVERNANCE | DECISION:Baseline proposed decision | WHY:unstated | SCOPE:Lifecycle test | STATUS:ACCEPTED | EVIDENCE:"promoted"', selected: true },
+        { content: '[S2:2] 🔴 ID:renamed-accepted-decision | TYPE:IMPLEMENTATION | DECISION:Renamed without supersession | WHY:unstated | SCOPE:Lifecycle test | STATUS:ACCEPTED | EVIDENCE:"rename only"', selected: true },
+        { content: '[S2:3] 🔴 ID:decision-sealed | TYPE:COMMITMENT | DECISION:Baseline sealed decision | WHY:unstated | SCOPE:Lifecycle test | STATUS:SEALED | EVIDENCE:"still sealed"', selected: true },
+        { content: '[S2:4] 🔴 ID:legacy-replaced | TYPE:REPLACEMENT | DECISION:Baseline replaced decision | WHY:unstated | SCOPE:Lifecycle test | STATUS:SUPERSEDED | SUPERSEDED-BY:new-replacement | EVIDENCE:"baseline superseded"', selected: true },
+        { content: '[S2:5] 🔴 ID:new-replacement | TYPE:REPLACEMENT | DECISION:Replacement for historical superseded record | WHY:unstated | SCOPE:Lifecycle test | STATUS:ACCEPTED | SUPERSEDES:legacy-replaced | EVIDENCE:"historical replacement"', selected: true },
+    ];
+
+    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions: baseline.decisions });
+
+    assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_BASELINE_DECISION_DROPPED' && entry.recordId === 'decision-accepted'), true);
+});
+
+test('baseline continuity cap conflict emits explicit blocking error', () => {
+    const baselineDecisions = {};
+    for (let index = 0; index < ARCHITECTURAL_SECTION_CAPS.decisions; index++) {
+        baselineDecisions[`baseline-${index + 1}`] = { id: `baseline-${index + 1}`, status: 'ACCEPTED', source: 'baseline' };
+    }
+    const sections = parseFixture('architectural-valid-minimal-01.txt');
+    sections.decisions = Array.from({ length: ARCHITECTURAL_SECTION_CAPS.decisions }, (_, index) => ({
+        content: `[S3:${index + 1}] 🔴 ID:${index < ARCHITECTURAL_SECTION_CAPS.decisions - 1 ? `baseline-${index + 1}` : 'new-extra'} | TYPE:GOVERNANCE | DECISION:Decision ${index + 1} | WHY:unstated | SCOPE:Tests | STATUS:ACCEPTED | EVIDENCE:"fixture"`,
+        selected: true,
+    }));
+
+    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions });
+
+    assert.equal(codes(diagnostics).includes('ARCH_BASELINE_DECISION_CAP_CONFLICT'), true);
+    assert.equal(codes(diagnostics).includes('ARCH_BASELINE_DECISION_DROPPED'), true);
+});
+
 test('live fixture parses exact counts and surfaces expected errors without PROCEDURE false positives', () => {
     const sections = parseFixture('architectural-live-over-cap-01.txt');
     const diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions: {} });
@@ -306,6 +375,47 @@ test('ordinary accepted wording in events does not require DEC but explicit deci
 
     assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_EVENT_DEC_REQUIRED' && entry.itemIndex === 0), false);
     assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_EVENT_DEC_REQUIRED' && entry.itemIndex === 1), true);
+});
+
+test('repeated pipe-delimited DEC fields pass event validation', () => {
+    const sections = parseFixture('architectural-valid-minimal-01.txt');
+    sections.decisions = [
+        { content: '[S4:1] 🔴 ID:first-id | TYPE:GOVERNANCE | DECISION:First decision | WHY:unstated | SCOPE:Tests | STATUS:ACCEPTED | EVIDENCE:"one"', selected: true },
+        { content: '[S4:2] 🔴 ID:second-id | TYPE:GOVERNANCE | DECISION:Second decision | WHY:unstated | SCOPE:Tests | STATUS:ACCEPTED | EVIDENCE:"two"', selected: true },
+    ];
+    sections.events = [{ content: '[S4:3] 🟠 Event description | DEC:first-id | DEC:second-id', selected: true }];
+
+    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions: {} });
+
+    assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_EVENT_DEC_UNRESOLVED'), false);
+});
+
+test('comma-delimited explicit DEC list normalizes safely with warning', () => {
+    const sections = parseFixture('architectural-valid-minimal-01.txt');
+    sections.decisions = [
+        { content: '[S4:1] 🔴 ID:first-id | TYPE:GOVERNANCE | DECISION:First decision | WHY:unstated | SCOPE:Tests | STATUS:ACCEPTED | EVIDENCE:"one"', selected: true },
+        { content: '[S4:2] 🔴 ID:second-id | TYPE:GOVERNANCE | DECISION:Second decision | WHY:unstated | SCOPE:Tests | STATUS:ACCEPTED | EVIDENCE:"two"', selected: true },
+    ];
+    sections.events = [{ content: '[S4:3] 🟠 Event description | DEC:first-id, DEC:second-id', selected: true }];
+
+    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions: {} });
+
+    assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_EVENT_DEC_LIST_NORMALIZED'), true);
+    assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_EVENT_DEC_UNRESOLVED'), false);
+});
+
+test('event referencing dropped baseline decision remains unresolved', () => {
+    const baseline = buildArchitecturalBaselineFromShards([{ content: readFixture('architectural-lifecycle-baseline-01.txt'), identifier: 'baseline' }]);
+    const sections = parseFixture('architectural-valid-minimal-01.txt');
+    sections.decisions = [
+        { content: '[S4:1] 🔴 ID:renamed-accepted-decision | TYPE:IMPLEMENTATION | DECISION:Renamed without supersession | WHY:unstated | SCOPE:Lifecycle test | STATUS:ACCEPTED | EVIDENCE:"rename only"', selected: true },
+    ];
+    sections.events = [{ content: '[S4:2] 🟠 Event description | DEC:decision-accepted', selected: true }];
+
+    const diagnostics = validateArchitecturalStructuredSections(sections, { baselineDecisions: baseline.decisions });
+
+    assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_BASELINE_DECISION_DROPPED' && entry.recordId === 'decision-accepted'), true);
+    assert.equal(diagnostics.some((entry) => entry.code === 'ARCH_EVENT_DEC_UNRESOLVED' && entry.recordId === 'decision-accepted'), true);
 });
 
 test('event descriptions cannot be empty', () => {

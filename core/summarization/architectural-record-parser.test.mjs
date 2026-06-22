@@ -101,6 +101,16 @@ test('event parser captures description and multiple DEC references', () => {
     assert.deepEqual(record.decisionRefs, ['decision-sealed', 'decision-sealed-replacement']);
 });
 
+test('event parser safely normalizes comma-delimited DEC lists into repeated references', () => {
+    const record = parseArchitecturalEventRecord(
+        '[S5:3] 🟠 decision superseded by replacement record | DEC:decision-sealed, DEC:decision-sealed-replacement'
+    );
+
+    assert.deepEqual(record.decisionRefs, ['decision-sealed', 'decision-sealed-replacement']);
+    assert.equal(record.normalizedDecList, true);
+    assert.equal(record.warnings.some((entry) => entry.code === 'DEC_LIST_NORMALIZED'), true);
+});
+
 test('dialogue parser enforces quote, speaker, optional context, and line count structure', () => {
     const valid = parseArchitecturalDialogueRecord('[S1:1] "Exact quote" --Speaker | structural context');
     const validWithoutContext = parseArchitecturalDialogueRecord('[S1:1] "Exact quote" --Speaker');
