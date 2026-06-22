@@ -154,6 +154,29 @@ function decisionTypesAreCanonical(record) {
     return types.length > 0 && types.every((type) => ARCHITECTURAL_DECISION_TYPES.includes(type));
 }
 
+function hasValidBaselineSupersessionSemantics(record, id, status) {
+    const supersedes = getDecisionField(record, 'SUPERSEDES');
+    const supersededBy = getDecisionField(record, 'SUPERSEDED-BY');
+
+    if (supersedes && String(supersedes).trim() === id) {
+        return false;
+    }
+
+    if (supersededBy && String(supersededBy).trim() === id) {
+        return false;
+    }
+
+    if (status === 'SUPERSEDED' && !String(supersededBy || '').trim()) {
+        return false;
+    }
+
+    if (supersededBy && status !== 'SUPERSEDED') {
+        return false;
+    }
+
+    return true;
+}
+
 function parseSingleBaselineDecision(item, sourceLabel) {
     const record = parseArchitecturalDecisionRecord(item?.content || '');
     const id = getDecisionField(record, 'ID');
@@ -173,8 +196,11 @@ function parseSingleBaselineDecision(item, sourceLabel) {
         && ARCHITECTURAL_DECISION_STATUSES.includes(status)
         && (!hasSupersedes || DECISION_ID_PATTERN.test(String(hasSupersedes).trim()))
         && (!hasSupersededBy || DECISION_ID_PATTERN.test(String(hasSupersededBy).trim()));
+    const hasValidSupersessionSemantics = isValid
+        ? hasValidBaselineSupersessionSemantics(record, id, status)
+        : false;
 
-    if (!isValid) {
+    if (!isValid || !hasValidSupersessionSemantics) {
         return {
             ok: false,
             warning: buildDiagnostic(

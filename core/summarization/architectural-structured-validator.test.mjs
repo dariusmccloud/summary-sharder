@@ -200,6 +200,76 @@ Fixture | Bad history | Ignore record | None | None | Continue
     assert.equal(codes(baseline.diagnostics).includes('ARCH_BASELINE_DECISION_IGNORED'), true);
 });
 
+test('baseline builder ignores malformed historical supersession semantics', () => {
+    const missingSupersededBy = `
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+[S1:1] 🔴 ID:valid-id | TYPE:REPLACEMENT | DECISION:X | WHY:unstated | SCOPE:Y | STATUS:SUPERSEDED | EVIDENCE:"z"
+
+[CURRENT]
+Fixture | Bad history | Ignore record | None | None | Continue
+
+===END===
+`;
+    let baseline = buildArchitecturalBaselineFromShards([{ content: missingSupersededBy, identifier: 'missing-superseded-by', messageRangeStart: 1 }]);
+    assert.equal(baseline.decisions['valid-id'], undefined);
+    assert.equal(codes(baseline.diagnostics).includes('ARCH_BASELINE_DECISION_IGNORED'), true);
+
+    const supersededByOnAccepted = `
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+[S1:1] 🔴 ID:valid-id | TYPE:REPLACEMENT | DECISION:X | WHY:unstated | SCOPE:Y | STATUS:ACCEPTED | SUPERSEDED-BY:other-id | EVIDENCE:"z"
+
+[CURRENT]
+Fixture | Bad history | Ignore record | None | None | Continue
+
+===END===
+`;
+    baseline = buildArchitecturalBaselineFromShards([{ content: supersededByOnAccepted, identifier: 'superseded-by-on-accepted', messageRangeStart: 1 }]);
+    assert.equal(baseline.decisions['valid-id'], undefined);
+    assert.equal(codes(baseline.diagnostics).includes('ARCH_BASELINE_DECISION_IGNORED'), true);
+
+    const selfSupersedes = `
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+[S1:1] 🔴 ID:valid-id | TYPE:REPLACEMENT | DECISION:X | WHY:unstated | SCOPE:Y | STATUS:ACCEPTED | SUPERSEDES:valid-id | EVIDENCE:"z"
+
+[CURRENT]
+Fixture | Bad history | Ignore record | None | None | Continue
+
+===END===
+`;
+    baseline = buildArchitecturalBaselineFromShards([{ content: selfSupersedes, identifier: 'self-supersedes', messageRangeStart: 1 }]);
+    assert.equal(baseline.decisions['valid-id'], undefined);
+    assert.equal(codes(baseline.diagnostics).includes('ARCH_BASELINE_DECISION_IGNORED'), true);
+
+    const selfSupersededBy = `
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+[S1:1] 🔴 ID:valid-id | TYPE:REPLACEMENT | DECISION:X | WHY:unstated | SCOPE:Y | STATUS:SUPERSEDED | SUPERSEDED-BY:valid-id | EVIDENCE:"z"
+
+[CURRENT]
+Fixture | Bad history | Ignore record | None | None | Continue
+
+===END===
+`;
+    baseline = buildArchitecturalBaselineFromShards([{ content: selfSupersededBy, identifier: 'self-superseded-by', messageRangeStart: 1 }]);
+    assert.equal(baseline.decisions['valid-id'], undefined);
+    assert.equal(codes(baseline.diagnostics).includes('ARCH_BASELINE_DECISION_IGNORED'), true);
+});
+
 test('indexed selected items preserve original row indices after deselection', () => {
     const items = [
         { content: 'row 0', selected: false },
