@@ -4,7 +4,7 @@ import test from 'node:test';
 
 import { DEFAULT_ARCHITECTURAL_SHARDER_PROMPT } from './architectural-sharder-prompt.js';
 
-const EXPECTED_PROMPT_SHA256 = '33b14ae2361e79d9da7dfc2c88e56b02acf839320caf14850def3a9f9cc2e4fc';
+const EXPECTED_PROMPT_SHA256 = '4c372b8014baab4671679190ff7700a6b0628e0a683cc0b29bdb7ae860e9bc81';
 const CANONICAL_TYPES = [
     'GOVERNANCE',
     'JURISDICTION',
