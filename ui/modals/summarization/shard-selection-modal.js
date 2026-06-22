@@ -91,6 +91,7 @@ export function parseSelectedShards(selectedItems, settings) {
                 identifier: item.identifier,
                 parsedSections,
                 messageRangeStart: item.messageRangeStart,
+                projectionMetadata: item.projectionMetadata || null,
             });
         } catch (error) {
             skipped++;

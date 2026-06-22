@@ -18,6 +18,7 @@ import {
     SAVED_SHARD_CLASSIFICATIONS,
     classifySavedShardText,
 } from './saved-shard-identity.js';
+import { getArchitecturalProjectionMetadataForSavedItem } from './architectural-authority-runtime.js';
 export {
     ARCHITECTURAL_DISPLAY_NAME,
     ARCHITECTURAL_PROFILE,
@@ -771,6 +772,11 @@ export async function findSavedExtractions(settings, lorebookOverride = null) {
         }
     });
 
+    for (const extraction of extractions) {
+        if (extraction?.shardProfile !== ARCHITECTURAL_PROFILE) continue;
+        extraction.projectionMetadata = await getArchitecturalProjectionMetadataForSavedItem(extraction);
+    }
+
     // Check lorebook entries if enabled (either via override or settings)
     const shouldScanLorebooks = lorebookOverride
         ? true
@@ -828,6 +834,12 @@ export async function findSavedExtractions(settings, lorebookOverride = null) {
                     });
                 }
             });
+
+            for (const extraction of extractions) {
+                if (extraction?.source !== 'lorebook' || extraction?.shardProfile !== ARCHITECTURAL_PROFILE) continue;
+                if (extraction.projectionMetadata) continue;
+                extraction.projectionMetadata = await getArchitecturalProjectionMetadataForSavedItem(extraction);
+            }
         } catch (error) {
             log.warn('Could not scan lorebook entries:', error);
         }

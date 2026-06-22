@@ -99,6 +99,7 @@ function decisionEntryFromParsed(parsed) {
         content: String(parsed.item?.content || ''),
         item: cloneItem(parsed.item),
         record: parsed.record,
+        authority: parsed.item?.authority || null,
     };
 }
 
@@ -164,6 +165,20 @@ export function buildArchitecturalBaselineLedger(existingShards = []) {
                 if (prior && prior.content.trim() !== String(parsed.item?.content || '').trim()) {
                     duplicateConflicts.add(parsed.id);
                 }
+            }
+
+            const projectionRef = shard?.projectionMetadata;
+            const currentRecordVersion = projectionRef?.decisionVersionsById?.[parsed.id];
+            const canonicalHash = projectionRef?.canonicalHashesById?.[parsed.id] || null;
+            if (Number.isFinite(currentRecordVersion)) {
+                parsed.item = {
+                    ...parsed.item,
+                    authority: {
+                        memoryScopeId: projectionRef?.memoryScopeId || null,
+                        currentRecordVersion,
+                        canonicalHash,
+                    },
+                };
             }
 
             decisionsById[parsed.id] = decisionEntryFromParsed(parsed);

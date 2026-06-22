@@ -70,6 +70,7 @@ async function runPipelineWithAnalysis(chatText, settings, startIndex, endIndex,
             content: s.content,
             identifier: s.identifier,
             messageRangeStart: s.messageRangeStart,
+            projectionMetadata: s.projectionMetadata || null,
         })),
     });
 

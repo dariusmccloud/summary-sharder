@@ -2180,12 +2180,19 @@ export async function openSharderReviewModal(pipelineResult, settings, regenFn =
                 : applyRescues(baseOutput, state.rescuedItems),
             archiveOptions: state.archiveOptions,
             archivedItems: state.archivedItems,
-            resultMetadata: isArchitecturalState(state) && state.decisionCapacityOverride.enabled
+            resultMetadata: isArchitecturalState(state)
                 ? {
-                    architecturalDecisionCapacityOverride: {
-                        justification: String(state.decisionCapacityOverride.justification || '').trim(),
-                        decisionMetrics: state.decisionLedgerMetrics || null,
-                        timestamp: Date.now(),
+                    ...(state.decisionCapacityOverride.enabled
+                        ? {
+                            architecturalDecisionCapacityOverride: {
+                                justification: String(state.decisionCapacityOverride.justification || '').trim(),
+                                decisionMetrics: state.decisionLedgerMetrics || null,
+                                timestamp: Date.now(),
+                            },
+                        }
+                        : {}),
+                    architecturalAuthorityContext: {
+                        baselineLedger: state.metadata?.baselineLedger || null,
                     },
                 }
                 : null,

@@ -30,6 +30,7 @@ import { throwIfAborted } from '../api/abort-controller.js';
 import { ARCHITECTURAL_PROFILE } from './sharder-section-registry.js';
 import { isWarmArchiveEligible } from './architectural-sharder-shell.js';
 import { buildArchitecturalShardMetadata } from './saved-shard-identity.js';
+import { persistArchitecturalAuthorityProjection } from './architectural-authority-runtime.js';
 
 // World info metadata key
 const METADATA_KEY = 'world_info';
@@ -100,6 +101,24 @@ export async function handleSummaryResult(
                 endIndex,
                 resultMetadata.architecturalDecisionCapacityOverride
             );
+        }
+
+        if (settings?.sharderMode === true && settings?.sharderProfile === ARCHITECTURAL_PROFILE) {
+            try {
+                const authorityResult = await persistArchitecturalAuthorityProjection(summary, {
+                    chatId: SillyTavern.getContext()?.chatId || null,
+                    outputUID,
+                    mode,
+                    startIndex,
+                    endIndex,
+                    baselineLedger: resultMetadata?.architecturalAuthorityContext?.baselineLedger || null,
+                });
+                if (!authorityResult.committed && authorityResult.reason && typeof toastr !== 'undefined') {
+                    toastr.warning('Architectural scope authority was not updated because the saved shard did not match the current authoritative version.');
+                }
+            } catch (error) {
+                ragLog.warn('Failed to persist Architectural authority projection:', error?.message || error);
+            }
         }
 
         if (settings?.sharderMode === true) {
