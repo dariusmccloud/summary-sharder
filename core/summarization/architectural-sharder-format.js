@@ -4,7 +4,12 @@ import {
     countStandaloneArchitecturalTerminators,
     normalizeArchitecturalResponse,
 } from './architectural-sharder-shell.js';
-import { parseArchitecturalEventRecord } from './architectural-record-parser.js';
+import {
+    escapeArchitecturalFieldValue,
+    parseArchitecturalDecisionRecord,
+    parseArchitecturalEventRecord,
+    parseArchitecturalThreadRecord,
+} from './architectural-record-parser.js';
 
 const WEIGHT_BY_EMOJI = new Map([
     ['🔴', 5],
@@ -231,10 +236,122 @@ export function reconstructArchitecturalExtraction(sections, registry) {
 
 function reconstructArchitecturalItemContent(sectionKey, item) {
     const raw = String(item?.content || '').trim();
-    if (!raw || sectionKey !== 'events') {
+    if (!raw) {
         return raw;
     }
 
+    if (sectionKey === 'decisions') {
+        return reconstructArchitecturalDecisionContent(raw);
+    }
+    if (sectionKey === 'events') {
+        return reconstructArchitecturalEventContent(raw);
+    }
+    if (sectionKey === 'threads') {
+        return reconstructArchitecturalThreadContent(raw);
+    }
+    if (sectionKey === 'developments') {
+        return reconstructArchitecturalDevelopmentContent(raw);
+    }
+    if (sectionKey === 'current') {
+        return reconstructArchitecturalCurrentContent(raw);
+    }
+
+    return raw;
+}
+
+function splitPipeCells(text) {
+    const cells = [];
+    let current = '';
+    let inQuote = false;
+    let escapeNext = false;
+
+    for (const ch of String(text || '')) {
+        if (escapeNext) {
+            current += ch;
+            escapeNext = false;
+            continue;
+        }
+
+        if (ch === '\\') {
+            current += ch;
+            escapeNext = true;
+            continue;
+        }
+
+        if (ch === '"') {
+            current += ch;
+            inQuote = !inQuote;
+            continue;
+        }
+
+        if (!inQuote && ch === '|') {
+            cells.push(current.trim());
+            current = '';
+            continue;
+        }
+
+        current += ch;
+    }
+
+    cells.push(current.trim());
+    return cells;
+}
+
+function normalizePipeCell(cell) {
+    const trimmed = String(cell ?? '').trim();
+    if (!trimmed) return trimmed;
+
+    return trimmed.replace(/^([^:|()[\]{}]{1,40}):(?=\S)/, '$1: ');
+}
+
+function formatPipeRow(parts) {
+    return parts
+        .map((part) => String(part ?? '').trim())
+        .filter(Boolean)
+        .join(' | ');
+}
+
+function canonicalizeStructuredFieldValue(fieldName, value) {
+    const normalizedValue = String(value ?? '').trim();
+
+    if (fieldName === 'TYPE') {
+        return normalizedValue
+            .split(',')
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+            .join(', ');
+    }
+
+    return normalizedValue;
+}
+
+function formatStructuredField(fieldName, value) {
+    return `${fieldName}: ${canonicalizeStructuredFieldValue(fieldName, value)}`;
+}
+
+function formatThreadField(fieldName, value) {
+    return `${fieldName}: ${String(value ?? '').trim()}`;
+}
+
+function reconstructArchitecturalDecisionContent(raw) {
+    const record = parseArchitecturalDecisionRecord(raw);
+    if (!record.sourceRefRaw) {
+        return raw;
+    }
+
+    const head = [record.sourceRefRaw];
+    if (record.weightRaw) {
+        head.push(record.weightRaw);
+    }
+
+    const fields = record.rawFields.map((field) =>
+        formatStructuredField(field.field, field.value)
+    );
+
+    return fields.length > 0 ? `${head.join(' ')} ${fields.join(' | ')}` : head.join(' ');
+}
+
+function reconstructArchitecturalEventContent(raw) {
     const record = parseArchitecturalEventRecord(raw);
     if (!record.sourceRefRaw || !String(record.description || '').trim()) {
         return raw;
@@ -249,11 +366,63 @@ function reconstructArchitecturalItemContent(sectionKey, item) {
     const fields = [];
     for (const field of record.rawFields) {
         if (field.field === 'DEC') continue;
-        fields.push(String(field.raw || '').trim());
+        fields.push(formatStructuredField(field.field, field.value));
     }
     for (const ref of Array.isArray(record.decisionRefs) ? record.decisionRefs : []) {
-        fields.push(`DEC:${ref}`);
+        fields.push(formatStructuredField('DEC', ref));
     }
 
-    return fields.length > 0 ? `${head.join(' ')} | ${fields.join(' | ')}` : head.join(' ');
+    return fields.length > 0 ? formatPipeRow([head.join(' '), ...fields]) : head.join(' ');
+}
+
+function reconstructArchitecturalThreadContent(raw) {
+    const record = parseArchitecturalThreadRecord(raw);
+    if (!record.sourceRefRaw || !String(record.subject || '').trim()) {
+        return raw;
+    }
+
+    const parts = [`${record.sourceRefRaw} ${String(record.subject).trim()}`];
+
+    for (const fieldName of record.fieldOrder) {
+        const value = record.namedFields?.[fieldName];
+        if (value === undefined || value === null || String(value).trim() === '') continue;
+        parts.push(formatThreadField(fieldName, value));
+    }
+
+    if (String(record.notes || '').trim()) {
+        parts.push(escapeArchitecturalFieldValue(String(record.notes).trim()));
+    }
+
+    return formatPipeRow(parts);
+}
+
+function reconstructArchitecturalDevelopmentContent(raw) {
+    const text = String(raw || '').trim();
+    if (!text) {
+        return text;
+    }
+
+    const sourceMatch = text.match(/^((?:\[(?:S\d+:\d+)\]|\((?:S\d+:\d+)\)))\s*(.*)$/s);
+    const prefix = sourceMatch ? sourceMatch[1] : '';
+    const body = sourceMatch ? sourceMatch[2].trim() : text;
+
+    const colonIndex = body.indexOf(':');
+    if (colonIndex < 0) {
+        return text;
+    }
+
+    const subject = body.slice(0, colonIndex).trim();
+    const remainder = body.slice(colonIndex + 1).trim();
+    if (!subject || !remainder) {
+        return text;
+    }
+
+    const normalizedRemainder = remainder.replace(/^([^\s(]+)\(/, '$1 (');
+    const normalizedBody = `${subject}: ${normalizedRemainder}`;
+    return prefix ? `${prefix} ${normalizedBody}` : normalizedBody;
+}
+
+function reconstructArchitecturalCurrentContent(raw) {
+    const cells = splitPipeCells(raw).map(normalizePipeCell).filter(Boolean);
+    return formatPipeRow(cells);
 }

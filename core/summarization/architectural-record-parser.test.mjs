@@ -140,4 +140,17 @@ test('thread parser extracts canonical named fields and notes', () => {
     assert.equal(record.intro, 'S2:1');
     assert.equal(record.last, 'S2:2');
     assert.equal(record.notes, 'Notes include quoted "A | B" and escaped literal | content');
+    assert.deepEqual(record.fieldOrder, ['STATUS', 'INTRO', 'LAST']);
+});
+
+test('thread parser accepts canonical uppercase thread fields as well as legacy lowercase forms', () => {
+    const canonical = parseArchitecturalThreadRecord(
+        '[S2:1] parser-hardening | STATUS: ACTIVE | INTRO: S2:1 | LAST: S2:2 | pending normalization cleanup'
+    );
+
+    assert.equal(canonical.status, 'ACTIVE');
+    assert.equal(canonical.intro, 'S2:1');
+    assert.equal(canonical.last, 'S2:2');
+    assert.equal(canonical.notes, 'pending normalization cleanup');
+    assert.deepEqual(canonical.fieldOrder, ['STATUS', 'INTRO', 'LAST']);
 });

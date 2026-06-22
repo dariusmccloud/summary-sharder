@@ -10,6 +10,7 @@ import {
     getSharderSectionRegistry,
 } from './sharder-section-registry.js';
 import {
+    ARCHITECTURAL_KEY_LEGEND_LINES,
     countStandaloneArchitecturalTerminators,
     inspectCanonicalArchitecturalOutput,
     normalizeArchitecturalResponse,
@@ -109,6 +110,10 @@ test('architectural renderer owns canonical KEY metadata and terminator', () => 
     assert.equal(output.endsWith('===END==='), true);
     assert.equal(output.includes('Profile: wrong'), false);
     assert.equal(output.includes('Schema: wrong'), false);
+    assert.equal(/(?:^|\n)#=TIMELINE xref\b/m.test(output), false);
+    ARCHITECTURAL_KEY_LEGEND_LINES.forEach((line) => {
+        assert.equal(output.includes(line), true);
+    });
     assert.equal(output.includes('Sources: Messages 1-3'), true);
     assert.equal(output.includes('(S2:1) Event item'), false);
 });
@@ -203,5 +208,38 @@ test('architectural renderer canonicalizes repeated DEC fields for normalized ev
     }, registry);
 
     assert.equal(output.includes('DEC:first-id, DEC:second-id'), false);
-    assert.equal(output.includes('| DEC:first-id | DEC:second-id'), true);
+    assert.equal(output.includes('| DEC: first-id | DEC: second-id'), true);
+});
+
+test('architectural renderer canonicalizes decision, event, and thread structured field spacing and casing', () => {
+    const output = reconstructArchitecturalExtraction({
+        _metadata: {
+            keyLines: ['Sources: Messages 11-12'],
+        },
+        timeline: [],
+        decisions: [{
+            content: '[S11:1] 🔴 ID:test-id|TYPE:GOVERNANCE,PROCEDURE|DECISION:Decision text|WHY:unstated|SCOPE:Scope area|STATUS:ACCEPTED|EVIDENCE:"quoted"',
+            selected: true,
+        }],
+        events: [{
+            content: '[S11:2] 🟠 Event text | DEC:first-id, DEC:second-id',
+            selected: true,
+        }],
+        developments: [{
+            content: '[S11:4] Letters: confirmed(Chris correspondence inventory stabilized)',
+            selected: true,
+        }],
+        dialogue: [],
+        threads: [{
+            content: '[S11:3] thread subject|status:ACTIVE|intro:S11:1|last:S11:2|notes with escaped \\| pipe',
+            selected: true,
+        }],
+        current: [{ content: 'Project|Current State:active|Focus|Pending:follow-up|Blocked By:none|Next Action:ship', selected: true }],
+    }, registry);
+
+    assert.equal(output.includes('[S11:1] 🔴 ID: test-id | TYPE: GOVERNANCE, PROCEDURE | DECISION: Decision text | WHY: unstated | SCOPE: Scope area | STATUS: ACCEPTED | EVIDENCE: "quoted"'), true);
+    assert.equal(output.includes('[S11:2] 🟠 Event text | DEC: first-id | DEC: second-id'), true);
+    assert.equal(output.includes('[S11:3] thread subject | STATUS: ACTIVE | INTRO: S11:1 | LAST: S11:2 | notes with escaped \\| pipe'), true);
+    assert.equal(output.includes('[S11:4] Letters: confirmed (Chris correspondence inventory stabilized)'), true);
+    assert.equal(output.includes('Project | Current State: active | Focus | Pending: follow-up | Blocked By: none | Next Action: ship'), true);
 });

@@ -8,6 +8,7 @@ import { escapeHtml } from '../../common/ui-utils.js';
 import { archiveToWarm } from '../../../core/rag/archive.js';
 import { log } from '../../../core/logger.js';
 import {
+    ARCHITECTURAL_KEY_LEGEND_LINES,
     buildArchitecturalKeyLines,
     isWarmArchiveEligible,
     validateArchitecturalShellSections,
@@ -72,6 +73,37 @@ const ARCHITECTURAL_IMMUTABLE_DIAGNOSTIC_CODES = new Set([
     'ARCH_UNKNOWN_SECTION_IGNORED',
     'ARCH_BASELINE_DECISION_IGNORED',
 ]);
+
+const SUPPRESSED_REVIEW_DIAGNOSTIC_CODES = new Set([
+    'ARCH_KEY_RECOVERED',
+    'ARCH_KEY_PROFILE_RECOVERED',
+    'ARCH_KEY_SCHEMA_RECOVERED',
+    'ARCH_TERMINATOR_RECOVERED',
+    'ARCH_EVENT_DEC_LIST_NORMALIZED',
+]);
+
+const ARCHITECTURAL_REVIEW_LEGEND_ROWS = [
+    {
+        emoji: '🔴',
+        label: 'Foundational',
+        description: 'A governing principle, authority boundary, hierarchy, replacement, or systemic correction with broad downstream effect.',
+    },
+    {
+        emoji: '🟠',
+        label: 'Governing',
+        description: 'An accepted design, criterion, scope, classification, naming rule, or validated mechanism with continuing effect.',
+    },
+    {
+        emoji: '🟡',
+        label: 'Operational',
+        description: 'A provisional plan, implementation choice, local correction, test method, or discovery that future work must carry forward.',
+    },
+    {
+        emoji: '🟢',
+        label: 'Contextual',
+        description: 'A limited or reversible detail worth retaining because it helps interpret current work, but does not independently govern it.',
+    },
+];
 
 function reviewSections(stateOrRegistry = null) {
     const registry = stateOrRegistry?.sectionRegistry || stateOrRegistry;
@@ -222,6 +254,9 @@ function mergeDiagnostics(sourceDiagnostics, dynamicDiagnostics) {
     const seen = new Set();
 
     [...(sourceDiagnostics || []), ...(dynamicDiagnostics || [])].forEach((diagnostic) => {
+        if (SUPPRESSED_REVIEW_DIAGNOSTIC_CODES.has(diagnostic?.code)) {
+            return;
+        }
         const signature = diagnosticSignature(diagnostic);
         if (seen.has(signature)) return;
         seen.add(signature);
@@ -342,13 +377,36 @@ function architecturalKeyBlockHtml(state) {
 
     const keyLines = buildArchitecturalKeyLines(state.keyLines);
     const body = keyLines.map((line) => `<div>${escapeHtml(line)}</div>`).join('');
+    const expandedLegendRows = ARCHITECTURAL_REVIEW_LEGEND_ROWS.map((row) => `
+        <li>
+            <strong>${escapeHtml(`${row.emoji} ${row.label}:`)}</strong>
+            ${escapeHtml(row.description)}
+        </li>
+    `).join('');
 
     return `
-        <div class="ss-sp-panel" style="margin-bottom: 12px;">
-            <div class="ss-output-header">
-                <span>KEY Metadata</span>
+        <div class="ss-review-accordion" data-section="sp-key">
+            <div class="ss-accordion-header">
+                <span class="ss-accordion-toggle"><i class="fa-solid fa-chevron-right"></i></span>
+                <span class="ss-accordion-emoji">🗝️</span>
+                <span class="ss-accordion-title">KEY Metadata</span>
             </div>
-            <div class="ss-sp-key-metadata">${body}</div>
+            <div class="ss-accordion-content" style="display:none;">
+                <div class="ss-sp-panel" style="margin-bottom: 12px;">
+                    <div class="ss-sp-key-metadata">${body}</div>
+                    <details class="ss-sp-architectural-legend" style="margin-top: 10px;">
+                        <summary>Architectural Fidelity Legend</summary>
+                        <div class="ss-sp-architectural-legend-body" style="margin-top: 8px;">
+                            <p>Weights measure future continuity importance, not sentiment, quality, urgency, or emotional intensity.</p>
+                            <ul style="margin: 8px 0 8px 18px; padding: 0;">
+                                ${expandedLegendRows}
+                            </ul>
+                            <p>Omit chatter, praise, repetition, filler, redundant summaries, and wording changes that do not alter scope, authority, classification, behavior, or future continuity.</p>
+                            <p class="ss-hint" style="margin-bottom: 0;">Internal numeric weights remain unchanged. Saved shards show the compact legend only: ${escapeHtml(ARCHITECTURAL_KEY_LEGEND_LINES[2])}</p>
+                        </div>
+                    </details>
+                </div>
+            </div>
         </div>
     `;
 }
@@ -921,6 +979,8 @@ function addPrunedItemToReportAndUI(state, sectionKey, itemContent, sceneCodes =
 
 function setupAccordionHandlers() {
     document.querySelectorAll('.ss-accordion-header').forEach((header) => {
+        if (header.dataset.ssAccordionBound === 'true') return;
+        header.dataset.ssAccordionBound = 'true';
         header.addEventListener('click', (e) => {
             if (e.target.closest('button,input,textarea,label')) return;
             const accordion = header.closest('.ss-review-accordion');

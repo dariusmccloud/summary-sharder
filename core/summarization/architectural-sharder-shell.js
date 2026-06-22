@@ -9,8 +9,22 @@ export const ARCHITECTURAL_TERMINATOR = '===END===';
 
 const ARCHITECTURAL_PROFILE_LINE = `Profile: ${ARCHITECTURAL_PROFILE_MARKER}`;
 const ARCHITECTURAL_SCHEMA_LINE = `Schema: ${ARCHITECTURAL_SCHEMA_MARKER}`;
+export const ARCHITECTURAL_KEY_LEGEND_LINES = Object.freeze([
+    'Legend: #=TIMELINE xref | DEC=stable decision ID',
+    'Weight=continuity authority, not sentiment:',
+    '🔴 Foundational > 🟠 Governing > 🟡 Operational > 🟢 Contextual',
+    'Omit non-continuity material.',
+]);
 const PROFILE_LINE_REGEX = /^Profile\s*:/i;
 const SCHEMA_LINE_REGEX = /^Schema\s*:/i;
+const LEGEND_LINE_REGEXES = [
+    /^Legend\s*:/i,
+    /^Weight\s*=\s*continuity authority/i,
+    /^[# ]*=?TIMELINE xref\b/i,
+    /^🔴(?:\s*5)?\s*Foundational\b/i,
+    /^🔴\s*>\s*🟠\s*>\s*🟡\s*>\s*🟢(?:\s*>\s*⚪)?/i,
+    /^Omit non-continuity material\.?$/i,
+];
 
 export function countStandaloneArchitecturalTerminators(response) {
     return (String(response || '').replace(/\r\n/g, '\n').match(/^[ \t]*===END===[ \t]*$/gm) || []).length;
@@ -30,13 +44,15 @@ export function normalizeArchitecturalKeyLines(keyLines = []) {
     return (Array.isArray(keyLines) ? keyLines : [])
         .map((line) => String(line || '').trim())
         .filter(Boolean)
-        .filter((line) => !PROFILE_LINE_REGEX.test(line) && !SCHEMA_LINE_REGEX.test(line));
+        .filter((line) => !PROFILE_LINE_REGEX.test(line) && !SCHEMA_LINE_REGEX.test(line))
+        .filter((line) => !LEGEND_LINE_REGEXES.some((regex) => regex.test(line)));
 }
 
 export function buildArchitecturalKeyLines(keyLines = []) {
     return [
         ARCHITECTURAL_PROFILE_LINE,
         ARCHITECTURAL_SCHEMA_LINE,
+        ...ARCHITECTURAL_KEY_LEGEND_LINES,
         ...normalizeArchitecturalKeyLines(keyLines),
     ];
 }

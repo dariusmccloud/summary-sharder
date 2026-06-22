@@ -18,9 +18,9 @@ export const ARCHITECTURAL_DECISION_FIELDS = Object.freeze([
 ]);
 
 export const ARCHITECTURAL_THREAD_FIELDS = Object.freeze([
-    'status',
-    'intro',
-    'last',
+    'STATUS',
+    'INTRO',
+    'LAST',
 ]);
 
 export const ARCHITECTURAL_WEIGHT_BY_EMOJI = Object.freeze({
@@ -561,11 +561,12 @@ export function parseArchitecturalThreadRecord(text) {
     for (const segment of segments) {
         if (!segment) continue;
         const colonIndex = findTopLevelIndex(segment, ':');
-        const fieldName = colonIndex > 0 ? segment.slice(0, colonIndex).trim() : '';
+        const rawFieldName = colonIndex > 0 ? segment.slice(0, colonIndex).trim() : '';
+        const fieldName = rawFieldName.toUpperCase();
         if (colonIndex > 0 && ARCHITECTURAL_THREAD_FIELDS.includes(fieldName)) {
             const rawValue = segment.slice(colonIndex + 1).trim();
             result.fieldOrder.push(fieldName);
-            result.rawFields.push({ field: fieldName, value: rawValue, raw: segment });
+            result.rawFields.push({ field: fieldName, rawField: rawFieldName, value: rawValue, raw: segment });
 
             if (Object.prototype.hasOwnProperty.call(result.namedFields, fieldName)) {
                 result.duplicateFields.push(fieldName);
@@ -577,7 +578,7 @@ export function parseArchitecturalThreadRecord(text) {
 
         if (colonIndex > 0
             && !ARCHITECTURAL_THREAD_FIELDS.includes(fieldName)
-            && /^[a-z][a-z-]*$/i.test(fieldName)
+            && /^[a-z][a-z-]*$/i.test(rawFieldName)
             && !notesCaptured) {
             result.unknownFields.push(fieldName);
         }
@@ -604,9 +605,9 @@ export function parseArchitecturalThreadRecord(text) {
     }
 
     result.fields = { ...result.namedFields };
-    result.status = result.namedFields.status ?? null;
-    result.intro = result.namedFields.intro ?? null;
-    result.last = result.namedFields.last ?? null;
+    result.status = result.namedFields.STATUS ?? null;
+    result.intro = result.namedFields.INTRO ?? null;
+    result.last = result.namedFields.LAST ?? null;
 
     return result;
 }
