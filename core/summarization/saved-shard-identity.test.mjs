@@ -5,9 +5,11 @@ import { ARCHITECTURAL_PROFILE, NARRATIVE_PROFILE } from './sharder-section-regi
 import {
     SAVED_SHARD_CLASSIFICATIONS,
     SAVED_SHARD_FORMATS,
+    buildSavedShardCandidate,
     buildArchitecturalShardMetadata,
     classifySavedShardText,
     isSavedShardCompatibleWithProfile,
+    parseManagedMemoryShardComment,
 } from './saved-shard-identity.js';
 
 const WRAPPED_ARCHITECTURAL_SHARD = `[MEMORY SHARD: Messages 10-12]
@@ -151,4 +153,58 @@ test('narrative shard metadata remains unchanged by architectural metadata build
     const metadata = buildArchitecturalShardMetadata(WRAPPED_NARRATIVE_SHARD);
 
     assert.deepEqual(metadata, {});
+});
+
+test('managed memory shard comment parsing only accepts managed memory shard names', () => {
+    assert.deepEqual(parseManagedMemoryShardComment('Memory Shard 7-9'), {
+        startIndex: 7,
+        endIndex: 9,
+    });
+    assert.equal(parseManagedMemoryShardComment('Summary 7-9'), null);
+    assert.equal(parseManagedMemoryShardComment('Not a shard'), null);
+});
+
+test('comment fallback accepts compatible narrative and legacy lorebook bodies only in narrative mode', () => {
+    const narrativeCandidate = buildSavedShardCandidate(WRAPPED_NARRATIVE_SHARD.replace(/^\[MEMORY SHARD:[\s\S]*?\]\n\n/, ''), {
+        comment: 'Memory Shard 30-32',
+        activeProfile: NARRATIVE_PROFILE,
+    });
+    const legacyCandidate = buildSavedShardCandidate(WRAPPED_LEGACY_SHARD.replace(/^\[MEMORY SHARD:[\s\S]*?\]\n\n/, ''), {
+        comment: 'Memory Shard 40-42',
+        activeProfile: NARRATIVE_PROFILE,
+    });
+
+    assert.equal(narrativeCandidate.classification, SAVED_SHARD_CLASSIFICATIONS.NARRATIVE);
+    assert.equal(narrativeCandidate.startIndex, 30);
+    assert.equal(legacyCandidate.classification, SAVED_SHARD_CLASSIFICATIONS.LEGACY);
+    assert.equal(legacyCandidate.startIndex, 40);
+});
+
+test('comment fallback accepts only architectural lorebook bodies in architectural mode', () => {
+    const architecturalCandidate = buildSavedShardCandidate(RAW_ARCHITECTURAL_SHARD, {
+        comment: 'Memory Shard 20-22',
+        activeProfile: ARCHITECTURAL_PROFILE,
+    });
+    const narrativeCandidate = buildSavedShardCandidate(WRAPPED_NARRATIVE_SHARD.replace(/^\[MEMORY SHARD:[\s\S]*?\]\n\n/, ''), {
+        comment: 'Memory Shard 30-32',
+        activeProfile: ARCHITECTURAL_PROFILE,
+    });
+    const malformedCandidate = buildSavedShardCandidate(MALFORMED_ARCHITECTURAL_SHARD.replace(/^\[MEMORY SHARD:[\s\S]*?\]\n\n/, ''), {
+        comment: 'Memory Shard 50-52',
+        activeProfile: ARCHITECTURAL_PROFILE,
+    });
+
+    assert.equal(architecturalCandidate.classification, SAVED_SHARD_CLASSIFICATIONS.ARCHITECTURAL);
+    assert.equal(architecturalCandidate.startIndex, 20);
+    assert.equal(narrativeCandidate, null);
+    assert.equal(malformedCandidate, null);
+});
+
+test('managed memory shard comments never override unknown content identity', () => {
+    const candidate = buildSavedShardCandidate('Unclassified shard body', {
+        comment: 'Memory Shard 90-91',
+        activeProfile: NARRATIVE_PROFILE,
+    });
+
+    assert.equal(candidate, null);
 });

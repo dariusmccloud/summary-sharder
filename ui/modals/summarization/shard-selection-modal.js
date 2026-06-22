@@ -13,6 +13,7 @@ import {
 } from '../../../core/summarization/sharder-pipeline.js';
 import { parseConsolidatedShard } from '../../../core/summarization/shard-utils.js';
 import { isSavedShardCompatibleWithProfile } from '../../../core/summarization/saved-shard-identity.js';
+import { getActiveSharderProfile, shouldBypassShardSelectionForRag } from '../../../core/summarization/shard-selection-policy.js';
 import { log } from '../../../core/logger.js';
 
 function sortByRangeDesc(items) {
@@ -46,14 +47,10 @@ function buildRow(item, index) {
     `;
 }
 
-function getActiveProfile(settings) {
-    return settings?.sharderProfile === ARCHITECTURAL_PROFILE ? ARCHITECTURAL_PROFILE : NARRATIVE_PROFILE;
-}
-
 function parseSelectedShards(selectedItems, settings) {
     const parsed = [];
     let skipped = 0;
-    const activeProfile = getActiveProfile(settings);
+    const activeProfile = getActiveSharderProfile(settings);
 
     for (const item of selectedItems) {
         try {
@@ -117,12 +114,12 @@ export async function openShardSelectionModal(settings) {
     // In RAG mode, the vector store retrieves and assembles relevant chunks from all
     // shards automatically. Consolidating shards first collapses section-level
     // embeddings into a single blob, losing the granularity the pipeline depends on.
-    if (settings?.sharderMode === true && settings?.rag?.enabled === true) {
+    if (shouldBypassShardSelectionForRag(settings)) {
         return { confirmed: true, selectedShards: [] };
     }
 
     // Force lorebook scan for sharder shard selection regardless of output mode.
-    const activeProfile = getActiveProfile(settings);
+    const activeProfile = getActiveSharderProfile(settings);
     const discoveredItems = sortByRangeDesc(await findSavedExtractions(settings, settings?.lorebookSelection || null));
     const allItems = discoveredItems.filter((item) => isSavedShardCompatibleWithProfile(item, activeProfile));
     const excludedCount = discoveredItems.length - allItems.length;

@@ -95,6 +95,18 @@ function parseSavedMemoryShardWrapper(text) {
     };
 }
 
+export function parseManagedMemoryShardComment(comment) {
+    const match = String(comment || '').match(/memory\s+shard\s*(\d+)\s*[-–]\s*(\d+)/i);
+    if (!match) {
+        return null;
+    }
+
+    return {
+        startIndex: parseInt(match[1], 10),
+        endIndex: parseInt(match[2], 10),
+    };
+}
+
 function extractKeyBlockLines(body) {
     const lines = normalizeText(body).split('\n');
     let inKeyBlock = false;
@@ -263,6 +275,33 @@ export function isSavedShardCompatibleWithProfile(shardInfo, activeProfile = NAR
 
     return classification === SAVED_SHARD_CLASSIFICATIONS.NARRATIVE
         || classification === SAVED_SHARD_CLASSIFICATIONS.LEGACY;
+}
+
+export function buildSavedShardCandidate(content, options = {}) {
+    const {
+        comment = '',
+        activeProfile = NARRATIVE_PROFILE,
+    } = options;
+
+    const shardInfo = classifySavedShardText(content);
+    if (!isSavedShardCompatibleWithProfile(shardInfo, activeProfile)) {
+        return null;
+    }
+
+    const commentRange = parseManagedMemoryShardComment(comment);
+    const startIndex = shardInfo.startIndex ?? commentRange?.startIndex ?? null;
+    const endIndex = shardInfo.endIndex ?? commentRange?.endIndex ?? null;
+
+    if (!Number.isInteger(startIndex) || !Number.isInteger(endIndex)) {
+        return null;
+    }
+
+    return {
+        ...shardInfo,
+        startIndex,
+        endIndex,
+        text: shardInfo.body,
+    };
 }
 
 export function buildArchitecturalShardMetadata(text) {

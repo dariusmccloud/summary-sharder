@@ -42,6 +42,7 @@ import {
     stripLeadingSectionHeader,
     stripSectionByHeading,
 } from './retrieval-shared.js';
+import { excludeArchitecturalResults, filterResultsByOriginBoundary } from './architectural-rag-boundary.js';
 
 export const EXTENSION_PROMPT_TAG_SS = '5_summary_sharder_rag';
 
@@ -95,15 +96,13 @@ function buildScopedMetadataFilter(origin, base = {}) {
     return filter;
 }
 
-function filterResultsForOrigin(results, origin) {
-    const scoped = isSharedWriteTarget(origin, origin?.collectionId);
-    const list = Array.isArray(results) ? results : [];
-    const withoutArchitectural = list.filter(item => String(item?.metadata?.shardProfile || '').trim() !== 'architectural');
-    if (!scoped) return withoutArchitectural;
-
-    return withoutArchitectural.filter(item =>
-        String(item?.metadata?.originChatId || '').trim() === String(origin?.chatId || '').trim()
-    );
+export function filterResultsForOrigin(results, origin) {
+    return filterResultsByOriginBoundary(results, {
+        ...origin,
+        ownCollectionId: origin?.ownCollectionId,
+        collectionId: origin?.collectionId,
+        chatId: origin?.chatId,
+    });
 }
 
 /**
@@ -268,10 +267,11 @@ export async function fetchLatestSuperseding(collectionId, rag, origin = null) {
                 limit: 20,
                 metadataFilter: buildScopedMetadataFilter({ ...(origin || {}), collectionId: id }, { chunkBehavior: 'superseding' }),
             });
-            if (!Array.isArray(items) || items.length === 0) return null;
+            const filteredItems = filterResultsForOrigin(items || [], { ...(origin || {}), collectionId: id });
+            if (filteredItems.length === 0) return null;
 
-            items.sort((a, b) => getFreshnessEndIndex(b) - getFreshnessEndIndex(a));
-            return items[0];
+            filteredItems.sort((a, b) => getFreshnessEndIndex(b) - getFreshnessEndIndex(a));
+            return filteredItems[0];
         } catch (error) {
             ragLog.warn('Fallback superseding fetch failed:', error?.message || error);
             return null;
@@ -296,7 +296,7 @@ export async function fetchLatestRolling(collectionId, rag, limit = 50, origin =
                 metadataFilter: buildScopedMetadataFilter({ ...(origin || {}), collectionId: id }, { chunkBehavior: 'rolling' }),
             });
 
-            const safeItems = Array.isArray(items) ? items : [];
+            const safeItems = filterResultsForOrigin(items || [], { ...(origin || {}), collectionId: id });
             return {
                 items: dedupeLatestRolling(safeItems),
                 fetchedCount: safeItems.length,
@@ -329,7 +329,7 @@ export async function fetchLatestAnchors(collectionId, rag, limit = 50, origin =
                 metadataFilter: buildScopedMetadataFilter({ ...(origin || {}), collectionId: id }, { chunkBehavior: 'cumulative' }),
             });
 
-            const safeItems = Array.isArray(items) ? items : [];
+            const safeItems = filterResultsForOrigin(items || [], { ...(origin || {}), collectionId: id });
             return {
                 items: collectLatestAnchors(safeItems),
                 fetchedCount: safeItems.length,
@@ -362,7 +362,7 @@ export async function fetchLatestDevelopments(collectionId, rag, limit = 50, ori
                 metadataFilter: buildScopedMetadataFilter({ ...(origin || {}), collectionId: id }, { chunkBehavior: 'cumulative' }),
             });
 
-            const safeItems = Array.isArray(items) ? items : [];
+            const safeItems = filterResultsForOrigin(items || [], { ...(origin || {}), collectionId: id });
             return {
                 items: collectLatestDevelopments(safeItems),
                 fetchedCount: safeItems.length,
@@ -856,11 +856,20 @@ export async function rearrangeChat(chat, contextSize, abort, type) {
         const queryFn = useNativeHybrid ? hybridQuery : queryChunks;
 
         const querySettled = await Promise.allSettled(
-            collectionIds.map(id => queryFn(id, queryText, topK, threshold, rag))
+            collectionIds.map(async (id) => ({
+                collectionId: id,
+                response: await queryFn(id, queryText, topK, threshold, rag),
+            }))
         );
-        const shardResults = querySettled.flatMap(r =>
-            r.status === 'fulfilled' && Array.isArray(r.value?.results) ? r.value.results : []
-        );
+        const shardResults = querySettled.flatMap((result) => {
+            if (result.status !== 'fulfilled' || !Array.isArray(result.value?.response?.results)) {
+                return [];
+            }
+            return filterResultsForOrigin(
+                result.value.response.results,
+                { ...(origin || {}), collectionId: result.value.collectionId }
+            );
+        });
 
         if (collectionIds.length > 1) {
             ragLog.debug(`Multi-collection retrieval: queried ${collectionIds.length} collections, got ${shardResults.length} raw results`);
