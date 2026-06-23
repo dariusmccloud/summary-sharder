@@ -19,6 +19,7 @@ import {
     migrateArchitecturalBrowserStore,
     validateArchitecturalBrowserMigration,
 } from './architectural-authority-server-api.js';
+import { recordArchitecturalIntegrationEvent } from './architectural-authority-integration.js';
 
 const PROJECTION_METADATA_SCHEMA_VERSION = 1;
 
@@ -157,6 +158,16 @@ export async function persistArchitecturalAuthorityProjection(summary, options =
     }
 
     try {
+        recordArchitecturalIntegrationEvent('AUTHORITY_ADOPTION_STARTED', {
+            profile: ARCHITECTURAL_PROFILE,
+            mode,
+            memoryScopeId: binding.memoryScopeId,
+            chatInstanceId: binding.chatInstanceId,
+            decisionIds: authorityInputs.map((input) => input.decisionId),
+            expectedScopeVersion: baselineLedger?.scopeVersion ?? null,
+            expectedDecisionVersionsById,
+        });
+
         const authorityCommit = await commitArchitecturalAuthorityServerUpdate(binding.memoryScopeId, {
             scopeAlias: binding.scopeAlias || '',
             sourceChatInstanceId: binding.chatInstanceId,
@@ -194,6 +205,17 @@ export async function persistArchitecturalAuthorityProjection(summary, options =
         })] = projectionMetadata;
         await saveMetadata();
 
+        recordArchitecturalIntegrationEvent('AUTHORITY_ADOPTION_COMMITTED', {
+            profile: ARCHITECTURAL_PROFILE,
+            mode,
+            memoryScopeId: binding.memoryScopeId,
+            scopeVersion: authorityCommit.registry.scopeVersion,
+            currentScopeRun: authorityCommit.registry.currentScopeRun,
+            decisionVersionsById: projectionMetadata.decisionVersionsById,
+            canonicalHashesById: projectionMetadata.canonicalHashesById,
+            outputUID,
+        });
+
         return {
             committed: true,
             projectionMetadata,
@@ -218,6 +240,15 @@ export async function persistArchitecturalAuthorityProjection(summary, options =
             endIndex,
         })] = projectionMetadata;
         await saveMetadata();
+
+        recordArchitecturalIntegrationEvent('AUTHORITY_ADOPTION_BLOCKED', {
+            profile: ARCHITECTURAL_PROFILE,
+            mode,
+            memoryScopeId: binding.memoryScopeId,
+            outputUID,
+            code: String(error?.code || 'ARCH_AUTHORITY_COMMIT_BLOCKED'),
+            message: String(error?.message || 'Architectural authority commit was blocked.'),
+        });
 
         return {
             committed: false,

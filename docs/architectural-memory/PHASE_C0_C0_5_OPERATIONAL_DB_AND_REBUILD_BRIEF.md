@@ -1259,6 +1259,82 @@ Smoke and regression completion:
 
 The architecture is no longer blocked on substrate uncertainty.
 
+## Cross-Host Operational Store Semantics
+
+Separate SillyTavern and SillyBunny installations operate against separate user roots and therefore separate operational stores unless the same user-data corpus and `summary-sharder` store are intentionally transferred together.
+
+The operational manifest should reserve or emit the following deployment metadata:
+
+```js
+{
+  storeInstanceId,
+  corpusId,
+  lastCompiledCorpusHash,
+  lastCompiledAt,
+  hostFamily,
+  runtimeAdapter,
+}
+```
+
+`hostFamily` and `runtimeAdapter` are operational-only metadata. They must never alter semantic hashes, decision identity, scope identity, or canonical record comparison.
+
+### Same Corpus Transfer
+
+The user copies or restores the same recovery corpus together with the same operational store between hosts.
+
+Expected behavior:
+
+- `corpusId` remains the same
+- semantic hashes remain the same
+- scope identities remain the same
+- `hostFamily` and `runtimeAdapter` may change
+- the receiving host validates and continues the same authority history without semantic drift
+
+### Rebuild on Another Host
+
+The user restores only the recovery corpus on a different host and does not restore the operational store.
+
+Expected C0.5 behavior:
+
+- detect recoverable Architectural corpus
+- classify the store as rebuild-required
+- preserve or deterministically reconcile `corpusId`
+- reconstruct a new operational store from corpus checkpoints
+- surface recovery and conflict statuses instead of silently inventing empty authority
+
+### Independent Host Forks
+
+SillyTavern and SillyBunny each continue evolving separate copies of the same corpus or store.
+
+Expected behavior:
+
+- do not imply automatic synchronization
+- detect divergent corpus fingerprints when stores are later combined
+- surface fork reconciliation explicitly
+- never choose a semantic winner from timestamps alone
+
+Remote synchronization is out of scope for C0 and C0.5.
+
+## Fresh Install Versus Lost-Store Boundary
+
+The state marker correctly detects a lost store only when the marker itself survives. C0.5 must also handle the stronger loss boundary:
+
+```text
+no DB
+no snapshot
+no state marker
+but Architectural checkpoints exist in corpus
+```
+
+That state must not silently initialize an empty authoritative history.
+
+Expected C0.5 behavior:
+
+- detect recoverable Architectural corpus before normal authority writes
+- classify the operational store as rebuild-required
+- block ordinary authority adoption until reconstruction or explicit user action
+- allow empty-store initialization only when no recoverable Architectural corpus exists or the user explicitly starts a new scope
+
 What has been proved:
 
 - authenticated per-user user-root exists on both hosts

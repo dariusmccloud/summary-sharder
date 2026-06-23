@@ -30,6 +30,11 @@ import { throwIfAborted } from '../api/abort-controller.js';
 import { ARCHITECTURAL_PROFILE } from './sharder-section-registry.js';
 import { isWarmArchiveEligible } from './architectural-sharder-shell.js';
 import { buildArchitecturalShardMetadata } from './saved-shard-identity.js';
+import {
+    beginArchitecturalIntegrationTrace,
+    consumeDebugHostSaveFailure,
+    recordArchitecturalIntegrationEvent,
+} from './architectural-authority-integration.js';
 import { persistArchitecturalAuthorityProjection } from './architectural-authority-runtime.js';
 
 // World info metadata key
@@ -76,6 +81,23 @@ export async function handleSummaryResult(
     const architecturalMetadata = settings?.sharderMode === true && settings?.sharderProfile === ARCHITECTURAL_PROFILE
         ? buildArchitecturalShardMetadata(summary)
         : {};
+    const isArchitecturalAuthorityRun = settings?.sharderMode === true && settings?.sharderProfile === ARCHITECTURAL_PROFILE;
+
+    if (isArchitecturalAuthorityRun) {
+        beginArchitecturalIntegrationTrace({
+            profile: ARCHITECTURAL_PROFILE,
+            mode,
+            startIndex,
+            endIndex,
+            outputUID: null,
+        });
+        recordArchitecturalIntegrationEvent('SHARD_SAVE_REQUESTED', {
+            profile: ARCHITECTURAL_PROFILE,
+            mode,
+            startIndex,
+            endIndex,
+        });
+    }
 
     if (shouldInjectToContext) {
         const isSharder = settings?.sharderMode === true;
@@ -93,6 +115,16 @@ export async function handleSummaryResult(
 
     throwIfAborted('summary output');
     if (didInjectToContext) {
+        if (isArchitecturalAuthorityRun) {
+            recordArchitecturalIntegrationEvent('HOST_SAVE_CONFIRMED', {
+                profile: ARCHITECTURAL_PROFILE,
+                mode,
+                startIndex,
+                endIndex,
+                outputUID,
+            });
+        }
+
         if (resultMetadata?.architecturalDecisionCapacityOverride) {
             await persistArchitecturalDecisionCapacityOverride(
                 outputUID,
@@ -330,6 +362,17 @@ ${content}`;
 
     // Save the chat to persist the new message
     throwIfAborted('summary output');
+    const injectedFailure = consumeDebugHostSaveFailure('system');
+    if (injectedFailure) {
+        recordArchitecturalIntegrationEvent('HOST_SAVE_FAILED', {
+            mode: 'system',
+            injected: true,
+            reason: injectedFailure?.reason || 'debug-failure',
+        });
+        const error = new Error('Debug host save failure injected before system-message persistence.');
+        error.code = 'ARCH_DEBUG_HOST_SAVE_FAILURE';
+        throw error;
+    }
     await saveChatConditional();
 
     log.log(`Inserted system message at position ${insertionIndex} (after message ${insertionIndex - 1})`);
@@ -515,6 +558,18 @@ async function saveToSingleLorebook(lorebookName, summaryText, entryName, keywor
 
         // Save the lorebook
         throwIfAborted('summary output');
+        const injectedFailure = consumeDebugHostSaveFailure('lorebook');
+        if (injectedFailure) {
+            recordArchitecturalIntegrationEvent('HOST_SAVE_FAILED', {
+                mode: 'lorebook',
+                injected: true,
+                lorebookName,
+                reason: injectedFailure?.reason || 'debug-failure',
+            });
+            const error = new Error(`Debug host save failure injected before lorebook persistence: ${lorebookName}`);
+            error.code = 'ARCH_DEBUG_HOST_SAVE_FAILURE';
+            throw error;
+        }
         await saveWorldInfo(lorebookName, data, true);
 
         // Return the UID of the created entry
