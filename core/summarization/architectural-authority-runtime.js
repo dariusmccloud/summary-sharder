@@ -6,14 +6,19 @@ import {
 } from './sharder-section-registry.js';
 import { parseArchitecturalExtractionResponse } from './architectural-sharder-format.js';
 import {
-    attachChatBindingToScopeRegistry,
     bindChatToArchitecturalMemoryScope,
     buildArchitecturalDecisionAuthorityInput,
-    buildArchitecturalImportedProjectionDiagnostic,
-    commitArchitecturalScopeAuthorityUpdate,
-    loadArchitecturalScopeRegistry,
-    resolveProjectionAuthoritySet,
+    exportLegacyArchitecturalAuthorityPayload,
+    hasLegacyArchitecturalAuthorityData,
 } from './architectural-authority-store.js';
+import {
+    bindArchitecturalAuthorityChat,
+    commitArchitecturalAuthorityServerUpdate,
+    initArchitecturalAuthorityServer,
+    loadArchitecturalAuthorityCurrentDecisions,
+    migrateArchitecturalBrowserStore,
+    validateArchitecturalBrowserMigration,
+} from './architectural-authority-server-api.js';
 
 const PROJECTION_METADATA_SCHEMA_VERSION = 1;
 
@@ -41,6 +46,40 @@ function ensureProjectionStore(root = chat_metadata) {
     return ss.architecturalProjectionRegistry;
 }
 
+function ensureServerState(root = chat_metadata) {
+    const ss = getSummarySharderMetadataRoot(root);
+    if (!ss.architecturalAuthorityServerState || typeof ss.architecturalAuthorityServerState !== 'object') {
+        ss.architecturalAuthorityServerState = {};
+    }
+    return ss.architecturalAuthorityServerState;
+}
+
+async function ensureArchitecturalAuthorityServerReady() {
+    const response = await initArchitecturalAuthorityServer();
+    return response?.manifest || null;
+}
+
+async function migrateLegacyAuthorityStoreIfNeeded() {
+    const serverState = ensureServerState(chat_metadata);
+    if (serverState.browserStoreMigratedAt) {
+        return;
+    }
+
+    const hasLegacy = await hasLegacyArchitecturalAuthorityData();
+    if (!hasLegacy) {
+        serverState.browserStoreMigratedAt = null;
+        serverState.migrationSkippedAt = Date.now();
+        await saveMetadata();
+        return;
+    }
+
+    const payload = await exportLegacyArchitecturalAuthorityPayload();
+    await validateArchitecturalBrowserMigration(payload);
+    await migrateArchitecturalBrowserStore(payload);
+    serverState.browserStoreMigratedAt = Date.now();
+    await saveMetadata();
+}
+
 export function getArchitecturalProjectionMetadata(root, identity) {
     const registry = ensureProjectionStore(root);
     const key = projectionKeyFromIdentity(identity || {});
@@ -60,7 +99,15 @@ export async function ensureArchitecturalChatScopeBinding(chatId, options = {}) 
         requestedScopeAlias: options.scopeAlias || '',
         now: options.now,
     });
-    await attachChatBindingToScopeRegistry(binding, { now: options.now });
+    await ensureArchitecturalAuthorityServerReady();
+    await bindArchitecturalAuthorityChat(binding.memoryScopeId, {
+        chatInstanceId: binding.chatInstanceId,
+        chatLocator: binding.chatId,
+        scopeAlias: binding.scopeAlias || '',
+        branchedFromChatInstanceId: binding.branchedFromChatInstanceId || null,
+        importedFromChatInstanceId: binding.importedFromChatInstanceId || null,
+        now: options.now,
+    });
     await saveMetadata();
     return binding;
 }
@@ -87,8 +134,7 @@ export async function persistArchitecturalAuthorityProjection(summary, options =
     }
 
     const binding = await ensureArchitecturalChatScopeBinding(normalizedChatId, { now });
-    const scopeRegistry = await loadArchitecturalScopeRegistry(binding.memoryScopeId);
-    const importedProjectionDiagnostic = buildArchitecturalImportedProjectionDiagnostic(binding, scopeRegistry);
+    await migrateLegacyAuthorityStoreIfNeeded();
     const registry = getSharderSectionRegistry(ARCHITECTURAL_PROFILE);
     const sections = parseArchitecturalExtractionResponse(String(summary || ''), registry);
     const decisionItems = Array.isArray(sections?.decisions) ? sections.decisions : [];
@@ -111,13 +157,12 @@ export async function persistArchitecturalAuthorityProjection(summary, options =
     }
 
     try {
-        const authorityCommit = await commitArchitecturalScopeAuthorityUpdate({
-            memoryScopeId: binding.memoryScopeId,
+        const authorityCommit = await commitArchitecturalAuthorityServerUpdate(binding.memoryScopeId, {
             scopeAlias: binding.scopeAlias || '',
-            expectedScopeVersion: scopeRegistry?.scopeVersion ?? null,
+            sourceChatInstanceId: binding.chatInstanceId,
+            expectedScopeVersion: baselineLedger?.scopeVersion ?? null,
             expectedDecisionVersionsById,
             decisions: authorityInputs,
-            sourceChatId: normalizedChatId,
             now,
         });
 
@@ -152,7 +197,7 @@ export async function persistArchitecturalAuthorityProjection(summary, options =
         return {
             committed: true,
             projectionMetadata,
-            diagnostics: importedProjectionDiagnostic ? [importedProjectionDiagnostic] : [],
+            diagnostics: [],
         };
     } catch (error) {
         const projectionMetadata = {
@@ -201,7 +246,39 @@ export async function resolveArchitecturalProjectionContext(memoryScopeId, proje
         };
     }
 
-    return await resolveProjectionAuthoritySet(memoryScopeId, projectionState);
+    const response = await loadArchitecturalAuthorityCurrentDecisions(memoryScopeId, Object.keys(projectionState));
+    const resolved = {};
+    const diagnostics = [];
+
+    for (const [decisionId, projectionRef] of Object.entries(projectionState)) {
+        const authority = response?.decisions?.[decisionId] || null;
+        if (!authority?.pointer) {
+            continue;
+        }
+
+        const stale = String(authority.pointer.canonicalHash || '') !== String(projectionRef.canonicalHash || '')
+            || Number(authority.pointer.currentRecordVersion || 0) !== Number(projectionRef.currentRecordVersion || 0);
+
+        resolved[decisionId] = {
+            ...projectionRef,
+            authority: authority.pointer,
+            stale,
+        };
+
+        if (stale) {
+            diagnostics.push({
+                level: 'warning',
+                code: 'ARCH_SCOPE_PROJECTION_STALE',
+                message: `Projection for decision ${decisionId} is stale relative to current scope authority.`,
+                recordId: decisionId,
+            });
+        }
+    }
+
+    return {
+        projectionState: resolved,
+        diagnostics,
+    };
 }
 
 export async function getArchitecturalProjectionMetadataForSavedItem(item, options = {}) {
@@ -218,7 +295,19 @@ export async function getArchitecturalProjectionMetadataForSavedItem(item, optio
         return null;
     }
 
-    const authorityContext = await resolveArchitecturalProjectionContext(metadata.memoryScopeId, metadata);
+    let authorityContext;
+    try {
+        authorityContext = await resolveArchitecturalProjectionContext(metadata.memoryScopeId, metadata);
+    } catch (error) {
+        authorityContext = {
+            projectionState: {},
+            diagnostics: [{
+                level: 'warning',
+                code: String(error?.code || 'ARCH_AUTHORITY_CONTEXT_UNAVAILABLE'),
+                message: String(error?.message || 'Architectural authority context is unavailable.'),
+            }],
+        };
+    }
     return {
         ...metadata,
         authorityContext,

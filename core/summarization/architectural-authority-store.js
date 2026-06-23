@@ -81,6 +81,14 @@ function generateScopeId() {
     return `scope-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 }
 
+function generateChatInstanceId() {
+    const cryptoApi = globalThis?.crypto;
+    if (typeof cryptoApi?.randomUUID === 'function') {
+        return `chat_${cryptoApi.randomUUID().replace(/-/g, '')}`;
+    }
+    return `chat_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+}
+
 function registryKey(memoryScopeId) {
     return `${STORE_PREFIX}:scope:${memoryScopeId}:registry`;
 }
@@ -296,14 +304,28 @@ export async function bindChatToArchitecturalMemoryScope(chatBindingState, optio
         throw error;
     }
 
-    const binding = {
-        memoryScopeId: resolvedScopeId,
-        scopeAlias: resolvedAlias,
-        chatId: normalizedChatId,
-        boundAt: existingBinding?.boundAt || nowTimestamp(now),
-        updatedAt: nowTimestamp(now),
-        imported: existingBinding?.imported === true,
-    };
+    const chatIdChanged = existingBinding?.chatId && existingBinding.chatId !== normalizedChatId;
+    const binding = chatIdChanged
+        ? {
+            memoryScopeId: resolvedScopeId,
+            scopeAlias: resolvedAlias,
+            chatId: normalizedChatId,
+            chatInstanceId: generateChatInstanceId(),
+            branchedFromChatInstanceId: existingBinding?.chatInstanceId || null,
+            boundAt: nowTimestamp(now),
+            updatedAt: nowTimestamp(now),
+            imported: existingBinding?.imported === true,
+        }
+        : {
+            memoryScopeId: resolvedScopeId,
+            scopeAlias: resolvedAlias,
+            chatId: normalizedChatId,
+            chatInstanceId: existingBinding?.chatInstanceId || generateChatInstanceId(),
+            branchedFromChatInstanceId: existingBinding?.branchedFromChatInstanceId || null,
+            boundAt: existingBinding?.boundAt || nowTimestamp(now),
+            updatedAt: nowTimestamp(now),
+            imported: existingBinding?.imported === true,
+        };
 
     root.summary_sharder.architecturalMemoryBinding = binding;
     return binding;
@@ -327,8 +349,10 @@ export async function attachChatBindingToScopeRegistry(binding, options = {}) {
             ...(registry.chatBindings || {}),
             [binding.chatId]: {
                 chatId: binding.chatId,
+                chatInstanceId: binding.chatInstanceId || binding.chatId,
                 memoryScopeId: binding.memoryScopeId,
                 scopeAlias: binding.scopeAlias || '',
+                branchedFromChatInstanceId: binding.branchedFromChatInstanceId || null,
                 boundAt: registry.chatBindings?.[binding.chatId]?.boundAt || binding.boundAt || timestamp,
                 updatedAt: timestamp,
             },
@@ -727,4 +751,97 @@ export async function materializeArchivedCurrentPointer(options = {}) {
         await persistArchitecturalStubRecord(stubRecord);
     }
     return pointer;
+}
+
+function parseExportRecordKey(key) {
+    const scopeMatch = key.match(/^summary-sharder:architectural-memory:scope:([^:]+):registry$/);
+    if (scopeMatch) {
+        return { type: 'registry', memoryScopeId: scopeMatch[1] };
+    }
+
+    const currentMatch = key.match(/^summary-sharder:architectural-memory:scope:([^:]+):decision:([^:]+):current$/);
+    if (currentMatch) {
+        return { type: 'current', memoryScopeId: currentMatch[1], decisionId: currentMatch[2] };
+    }
+
+    const recordMatch = key.match(/^summary-sharder:architectural-memory:scope:([^:]+):decision:([^:]+):record:(\d+)$/);
+    if (recordMatch) {
+        return {
+            type: 'record',
+            memoryScopeId: recordMatch[1],
+            decisionId: recordMatch[2],
+            recordVersion: Number(recordMatch[3]),
+        };
+    }
+
+    const stubMatch = key.match(/^summary-sharder:architectural-memory:scope:([^:]+):decision:([^:]+):stub$/);
+    if (stubMatch) {
+        return { type: 'stub', memoryScopeId: stubMatch[1], decisionId: stubMatch[2] };
+    }
+
+    const movementMatch = key.match(/^summary-sharder:architectural-memory:scope:([^:]+):movement:([^:]+)$/);
+    if (movementMatch) {
+        return { type: 'movement', memoryScopeId: movementMatch[1], movementId: movementMatch[2] };
+    }
+
+    const referenceMatch = key.match(/^summary-sharder:architectural-memory:scope:([^:]+):reference-index$/);
+    if (referenceMatch) {
+        return { type: 'reference-index', memoryScopeId: referenceMatch[1] };
+    }
+
+    return null;
+}
+
+export async function hasLegacyArchitecturalAuthorityData() {
+    const keys = await getBackend().list(`${STORE_PREFIX}:scope:`);
+    return keys.length > 0;
+}
+
+export async function exportLegacyArchitecturalAuthorityPayload() {
+    const backend = getBackend();
+    const keys = await backend.list(`${STORE_PREFIX}:scope:`);
+    const payload = {
+        registries: [],
+        decisionRecords: [],
+        currentPointers: [],
+        stubs: [],
+        movementRecords: [],
+        referenceSnapshots: [],
+    };
+
+    for (const key of keys) {
+        const descriptor = parseExportRecordKey(key);
+        if (!descriptor) {
+            continue;
+        }
+        const value = await backend.get(key);
+        if (!value) {
+            continue;
+        }
+
+        switch (descriptor.type) {
+            case 'registry':
+                payload.registries.push(value);
+                break;
+            case 'record':
+                payload.decisionRecords.push(value);
+                break;
+            case 'current':
+                payload.currentPointers.push(value);
+                break;
+            case 'stub':
+                payload.stubs.push(value);
+                break;
+            case 'movement':
+                payload.movementRecords.push(value);
+                break;
+            case 'reference-index':
+                payload.referenceSnapshots.push(value);
+                break;
+            default:
+                break;
+        }
+    }
+
+    return payload;
 }

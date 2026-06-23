@@ -1,381 +1,398 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import crypto from 'node:crypto';
 
-export const PLUGIN_ID = 'summary-sharder-memory';
-export const PROTOTYPE_VERSION = '1B0';
-export const ARTIFACT_KIND = 'architectural-authority-journal';
-export const ARTIFACT_SCHEMA_VERSION = 1;
-export const RECEIPT_SCHEMA_VERSION = 1;
-export const HASH_ALGORITHM = 'SHA-256';
+import { JOURNAL_MODE, PLUGIN_ID, SCHEMA_VERSION, SERVICE_VERSION, schemaStatements } from './schema.js';
+let createNodeSqliteAdapter = null;
+let createBunSqliteAdapter = null;
+
+if (typeof process?.versions?.bun === 'string') {
+    ({ createBunSqliteAdapter } = await import('./sqlite-bun.js'));
+} else {
+    ({ createNodeSqliteAdapter } = await import('./sqlite-node.js'));
+}
+
+export {
+    JOURNAL_MODE,
+    PLUGIN_ID,
+    SCHEMA_VERSION,
+    SERVICE_VERSION,
+};
+
+export const CAPABILITIES = Object.freeze({
+    phase: 'c0',
+    rebuildAvailable: false,
+    browserMigration: true,
+    projectionRegistry: true,
+    ordinaryChatPatching: false,
+    c0_5: false,
+    c1: false,
+    c2: false,
+});
 
 export function createId(prefix) {
     return `${prefix}_${crypto.randomUUID().replace(/-/g, '')}`;
 }
 
-export function stableStringify(value) {
-    return JSON.stringify(sortValue(value));
+export function nowTimestamp(value = Date.now()) {
+    return Number.isFinite(value) ? Number(value) : Date.now();
 }
 
-function sortValue(value) {
+export function cloneJson(value) {
+    return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+export function stableStringify(value) {
     if (Array.isArray(value)) {
-        return value.map(sortValue);
+        return `[${value.map((entry) => stableStringify(entry)).join(',')}]`;
     }
-
     if (value && typeof value === 'object') {
-        const output = {};
-        for (const key of Object.keys(value).sort()) {
-            output[key] = sortValue(value[key]);
+        const keys = Object.keys(value).sort();
+        return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+    }
+    return JSON.stringify(value);
+}
+
+export function sanitizeIdentifier(value, fieldName = 'identifier') {
+    const normalized = String(value || '').trim();
+    if (!normalized) {
+        throw createError(400, `${fieldName} is required`, 'ARCH_INVALID_IDENTIFIER');
+    }
+    if (!/^[A-Za-z0-9._:-]+$/.test(normalized)) {
+        throw createError(400, `${fieldName} contains illegal characters`, 'ARCH_INVALID_IDENTIFIER');
+    }
+    return normalized;
+}
+
+export function normalizeChatLocator(value) {
+    return String(value || '').trim().replace(/\.jsonl$/i, '').replace(/\.json$/i, '').trim();
+}
+
+export function createError(status, message, code, extra = {}) {
+    const error = new Error(message);
+    error.status = status;
+    error.code = code;
+    Object.assign(error, extra);
+    return error;
+}
+
+export function getAuthenticatedUserRoot(request) {
+    const root = request?.user?.directories?.root;
+    if (root && typeof root === 'string') {
+        return path.resolve(root);
+    }
+    const chats = request?.user?.directories?.chats;
+    if (chats && typeof chats === 'string') {
+        return path.resolve(chats, '..');
+    }
+    throw createError(500, 'Authenticated user root is unavailable', 'ARCH_USER_ROOT_UNAVAILABLE');
+}
+
+export function getStoragePaths(userRoot) {
+    const storageRoot = path.join(userRoot, 'summary-sharder');
+    const dbPath = path.join(storageRoot, 'architectural-memory.db');
+    const snapshotPath = path.join(storageRoot, 'architectural-memory.snapshot.db');
+    const statePath = path.join(storageRoot, 'architectural-memory.state.json');
+    return {
+        storageRoot,
+        dbPath,
+        snapshotPath,
+        statePath,
+    };
+}
+
+export function ensureStorageRoot(storageRoot) {
+    fs.mkdirSync(storageRoot, { recursive: true });
+}
+
+export function atomicWriteFile(targetPath, content) {
+    const tempPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tempPath, content);
+    fs.renameSync(tempPath, targetPath);
+}
+
+export function quarantinePath(filePath, reason = 'invalid') {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    return `${filePath}.quarantine.${reason}.${stamp}`;
+}
+
+function writeOperationalStateMarker(paths, adapter, now = Date.now()) {
+    const marker = {
+        schemaVersion: SCHEMA_VERSION,
+        serviceVersion: SERVICE_VERSION,
+        runtimeAdapter: adapter.runtime,
+        journalMode: JOURNAL_MODE,
+        adoptedAt: nowTimestamp(now),
+    };
+    atomicWriteFile(paths.statePath, JSON.stringify(marker, null, 2));
+}
+
+function hasOperationalStateMarker(paths) {
+    return fs.existsSync(paths.statePath);
+}
+
+export function createAdapter(dbPath) {
+    if (typeof process?.versions?.bun === 'string') {
+        if (typeof createBunSqliteAdapter !== 'function') {
+            throw createError(500, 'Bun SQLite adapter is unavailable', 'ARCH_SQLITE_ADAPTER_UNAVAILABLE');
         }
-        return output;
+        return createBunSqliteAdapter(dbPath);
+    }
+    if (typeof createNodeSqliteAdapter !== 'function') {
+        throw createError(500, 'Node SQLite adapter is unavailable', 'ARCH_SQLITE_ADAPTER_UNAVAILABLE');
+    }
+    return createNodeSqliteAdapter(dbPath);
+}
+
+export function initializeDatabase(adapter, now = Date.now()) {
+    for (const statement of schemaStatements()) {
+        adapter.exec(statement);
     }
 
+    adapter.exec(`PRAGMA journal_mode=${JOURNAL_MODE}`);
+    const manifest = adapter.get('SELECT * FROM manifest WHERE id = 1');
+    if (!manifest) {
+        const timestamp = nowTimestamp(now);
+        adapter.run(
+            `INSERT INTO manifest (
+                id, schema_version, service_version, runtime_adapter, journal_mode,
+                migration_state, rebuild_state, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                1,
+                SCHEMA_VERSION,
+                SERVICE_VERSION,
+                adapter.runtime,
+                JOURNAL_MODE,
+                'ready',
+                'idle',
+                timestamp,
+                timestamp,
+            ],
+        );
+    } else if (Number(manifest.schema_version) !== SCHEMA_VERSION) {
+        throw createError(500, `Unsupported schema version ${manifest.schema_version}`, 'ARCH_SCHEMA_VERSION_UNSUPPORTED');
+    }
+}
+
+export function loadManifest(adapter) {
+    const manifest = adapter.get('SELECT * FROM manifest WHERE id = 1');
+    if (!manifest) {
+        throw createError(500, 'Manifest is missing after initialization', 'ARCH_MANIFEST_MISSING');
+    }
+    return {
+        schemaVersion: Number(manifest.schema_version),
+        serviceVersion: String(manifest.service_version),
+        runtimeAdapter: String(manifest.runtime_adapter),
+        journalMode: String(manifest.journal_mode),
+        migrationState: String(manifest.migration_state),
+        rebuildState: String(manifest.rebuild_state),
+        createdAt: Number(manifest.created_at),
+        updatedAt: Number(manifest.updated_at),
+    };
+}
+
+function openSnapshotForVerification(snapshotPath) {
+    if (!fs.existsSync(snapshotPath)) {
+        return { ok: false, reason: 'missing' };
+    }
+
+    const adapter = createAdapter(snapshotPath);
+    try {
+        initializeDatabase(adapter);
+        if (!adapter.verifyIntegrity()) {
+            return { ok: false, reason: 'integrity-failed' };
+        }
+        return {
+            ok: true,
+            manifest: loadManifest(adapter),
+        };
+    } catch (error) {
+        return { ok: false, reason: String(error?.code || 'open-failed').toLowerCase() };
+    } finally {
+        adapter.close();
+    }
+}
+
+function restoreFromSnapshot(paths) {
+    const verification = openSnapshotForVerification(paths.snapshotPath);
+    if (!verification.ok) {
+        if (fs.existsSync(paths.snapshotPath)) {
+            fs.renameSync(paths.snapshotPath, quarantinePath(paths.snapshotPath, verification.reason));
+        }
+        throw createError(503, 'Operational database requires rebuild; no verified snapshot is available.', 'ARCH_REBUILD_REQUIRED');
+    }
+
+    if (fs.existsSync(paths.dbPath)) {
+        fs.renameSync(paths.dbPath, quarantinePath(paths.dbPath, 'corrupt'));
+    }
+    if (fs.existsSync(`${paths.dbPath}-wal`)) {
+        fs.renameSync(`${paths.dbPath}-wal`, quarantinePath(`${paths.dbPath}-wal`, 'wal'));
+    }
+    if (fs.existsSync(`${paths.dbPath}-shm`)) {
+        fs.renameSync(`${paths.dbPath}-shm`, quarantinePath(`${paths.dbPath}-shm`, 'shm'));
+    }
+    fs.copyFileSync(paths.snapshotPath, paths.dbPath);
+}
+
+export function openOperationalDatabase(paths, options = {}) {
+    ensureStorageRoot(paths.storageRoot);
+
+    if (!fs.existsSync(paths.dbPath)) {
+        if (fs.existsSync(paths.snapshotPath)) {
+            restoreFromSnapshot(paths);
+        } else if (hasOperationalStateMarker(paths)) {
+            throw createError(503, 'Operational database requires rebuild; both primary and snapshot copies are unavailable.', 'ARCH_REBUILD_REQUIRED');
+        }
+    }
+
+    let adapter = createAdapter(paths.dbPath);
+    try {
+        initializeDatabase(adapter, options.now);
+        writeOperationalStateMarker(paths, adapter, options.now);
+        if (!adapter.verifyIntegrity()) {
+            adapter.close();
+            restoreFromSnapshot(paths);
+            adapter = createAdapter(paths.dbPath);
+            initializeDatabase(adapter, options.now);
+            writeOperationalStateMarker(paths, adapter, options.now);
+            if (!adapter.verifyIntegrity()) {
+                throw createError(503, 'Operational database requires rebuild after failed snapshot restore.', 'ARCH_REBUILD_REQUIRED');
+            }
+        }
+        return adapter;
+    } catch (error) {
+        try {
+            adapter.close();
+        } catch {
+            // ignore close failures during error unwind
+        }
+        const hasDbFile = fs.existsSync(paths.dbPath);
+        const canAttemptRestore = hasDbFile && String(error?.code || '').includes('SQLITE');
+        if (canAttemptRestore) {
+            restoreFromSnapshot(paths);
+            const restored = createAdapter(paths.dbPath);
+            try {
+                initializeDatabase(restored, options.now);
+                writeOperationalStateMarker(paths, restored, options.now);
+                if (!restored.verifyIntegrity()) {
+                    throw createError(503, 'Operational database requires rebuild after failed snapshot restore.', 'ARCH_REBUILD_REQUIRED');
+                }
+                return restored;
+            } catch (restoreError) {
+                try {
+                    restored.close();
+                } catch {
+                    // ignore close failures during restore unwind
+                }
+                throw restoreError;
+            }
+        }
+        throw error;
+    }
+}
+
+export function snapshotOperationalDatabase(adapter, paths) {
+    adapter.createManagedSnapshot(paths.snapshotPath);
+    writeOperationalStateMarker(paths, adapter);
+    const verification = openSnapshotForVerification(paths.snapshotPath);
+    if (!verification.ok) {
+        if (fs.existsSync(paths.snapshotPath)) {
+            fs.renameSync(paths.snapshotPath, quarantinePath(paths.snapshotPath, verification.reason));
+        }
+        throw createError(500, 'Managed snapshot verification failed', 'ARCH_SNAPSHOT_VERIFICATION_FAILED');
+    }
+    return verification.manifest;
+}
+
+export function readCurrentDecision(adapter, memoryScopeId, decisionId) {
+    const pointer = adapter.get(
+        'SELECT * FROM current_decisions WHERE memory_scope_id = ? AND decision_id = ?',
+        [memoryScopeId, decisionId],
+    );
+    if (!pointer) {
+        return null;
+    }
+    const record = adapter.get(
+        'SELECT * FROM decision_records WHERE memory_scope_id = ? AND decision_id = ? AND record_version = ?',
+        [memoryScopeId, decisionId, Number(pointer.current_record_version)],
+    );
+    const stub = adapter.get(
+        'SELECT * FROM decision_stubs WHERE memory_scope_id = ? AND decision_id = ?',
+        [memoryScopeId, decisionId],
+    );
+    return {
+        pointer: pointer && {
+            memoryScopeId: pointer.memory_scope_id,
+            decisionId: pointer.decision_id,
+            currentRecordVersion: Number(pointer.current_record_version),
+            canonicalHash: pointer.canonical_hash,
+            canonicalHashVersion: Number(pointer.canonical_hash_version),
+            hashAlgorithm: pointer.hash_algorithm,
+            authorityLocation: pointer.authority_location,
+            archivePointer: parseNullableJson(pointer.archive_pointer_json),
+            stubPointer: parseNullableJson(pointer.stub_pointer_json),
+            updatedAt: Number(pointer.updated_at),
+        },
+        record: record && hydrateDecisionRecord(record),
+        stub: stub ? JSON.parse(stub.payload_json) : null,
+    };
+}
+
+export function hydrateDecisionRecord(row) {
+    return {
+        memoryScopeId: row.memory_scope_id,
+        decisionId: row.decision_id,
+        recordVersion: Number(row.record_version),
+        canonicalHash: row.canonical_hash,
+        canonicalHashVersion: Number(row.canonical_hash_version),
+        hashAlgorithm: row.hash_algorithm,
+        semanticPayload: row.semantic_payload,
+        fields: JSON.parse(row.fields_json),
+        status: row.status,
+        priorVersion: row.prior_version === null ? null : Number(row.prior_version),
+        sourceChatInstanceId: row.source_chat_instance_id,
+        lastUpdatingChatInstanceId: row.last_updating_chat_instance_id,
+        provenance: JSON.parse(row.provenance_json),
+        createdAt: Number(row.created_at),
+        updatedAt: Number(row.updated_at),
+    };
+}
+
+export function parseNullableJson(value) {
+    if (!value) return null;
+    return JSON.parse(value);
+}
+
+export function buildHealthResponse(adapter, manifest) {
+    return {
+        ok: true,
+        pluginId: PLUGIN_ID,
+        serviceVersion: SERVICE_VERSION,
+        runtime: adapter.runtime,
+        db: {
+            healthy: true,
+            schemaVersion: manifest.schemaVersion,
+            migrationState: manifest.migrationState,
+            rebuildState: manifest.rebuildState,
+            journalMode: manifest.journalMode,
+        },
+    };
+}
+
+export function validateArray(value, fieldName) {
+    if (!Array.isArray(value)) {
+        throw createError(400, `${fieldName} must be an array`, 'ARCH_INVALID_PAYLOAD');
+    }
     return value;
 }
 
-export function sha256Text(text) {
-    return `sha256:${crypto.createHash('sha256').update(text).digest('hex')}`;
-}
-
-export function computeRevisionHash(text) {
-    return sha256Text(String(text ?? ''));
-}
-
-export function computeCanonicalHash(record) {
-    return sha256Text(stableStringify(record));
-}
-
-export function buildPrototypeMetadata(extra = {}) {
-    return {
-        prototypeVersion: PROTOTYPE_VERSION,
-        ...extra,
-    };
-}
-
-export function buildAnchorArtifactHeader(memoryScopeId, createdAt = Date.now()) {
-    const artifact = {
-        kind: ARTIFACT_KIND,
-        schemaVersion: ARTIFACT_SCHEMA_VERSION,
-        prototypeVersion: PROTOTYPE_VERSION,
-        memoryScopeId,
-        createdAt,
-    };
-
-    return {
-        name: 'Summary Sharder System',
-        is_user: false,
-        is_system: true,
-        send_date: new Date(createdAt).toISOString(),
-        mes: '',
-        extra: {
-            summarySharderArtifact: artifact,
-            summarySharderPrototype: buildPrototypeMetadata({
-                hiddenArtifact: true,
-            }),
-        },
-        chat_metadata: {
-            summarySharderPrototype: {
-                artifact,
-            },
-        },
-        user_name: 'Summary Sharder',
-        character_name: 'Summary Sharder System',
-    };
-}
-
-export function getAnchorArtifactFromHeader(header) {
-    const fromMetadata = header?.chat_metadata?.summarySharderPrototype?.artifact;
-    const fromExtra = header?.extra?.summarySharderArtifact;
-    return fromMetadata ?? fromExtra ?? null;
-}
-
-export function validateAnchorArtifact(artifact, expectedScopeId = null) {
-    if (!artifact || typeof artifact !== 'object') {
-        return { valid: false, reason: 'missing-artifact-header' };
-    }
-
-    if (artifact.kind !== ARTIFACT_KIND) {
-        return { valid: false, reason: 'invalid-kind' };
-    }
-
-    if (artifact.schemaVersion !== ARTIFACT_SCHEMA_VERSION) {
-        return { valid: false, reason: 'invalid-schema-version' };
-    }
-
-    if (artifact.prototypeVersion !== PROTOTYPE_VERSION) {
-        return { valid: false, reason: 'invalid-prototype-version' };
-    }
-
-    if (typeof artifact.memoryScopeId !== 'string' || !artifact.memoryScopeId) {
-        return { valid: false, reason: 'missing-memory-scope-id' };
-    }
-
-    if (expectedScopeId && artifact.memoryScopeId !== expectedScopeId) {
-        return { valid: false, reason: 'memory-scope-mismatch' };
-    }
-
-    return { valid: true, reason: null };
-}
-
-export function buildAnchorEvent({
-    memoryScopeId,
-    decisionId,
-    expectedHead,
-    priorJournalHash,
-    canonicalRecord,
-    originChatInstanceId,
-    originShardId = null,
-    sourceRefs = [],
-    sequence,
-    createdAt = Date.now(),
-    eventId = createId('evt'),
-}) {
-    const canonicalHash = computeCanonicalHash(canonicalRecord);
-    const payload = {
-        eventId,
-        sequence,
-        memoryScopeId,
-        decisionId,
-        expectedHead,
-        priorJournalHash,
-        canonicalHash,
-        canonicalHashVersion: 1,
-        hashAlgorithm: HASH_ALGORITHM,
-        payload: {
-            recordType: 'prototype-decision-event',
-            recordVersion: 1,
-            canonicalRecord,
-        },
-        originChatInstanceId,
-        originShardId,
-        sourceRefs,
-        createdAt,
-    };
-    const eventHash = sha256Text(stableStringify(payload));
-
-    return {
-        name: 'Summary Sharder System',
-        is_user: false,
-        is_system: true,
-        send_date: new Date(createdAt).toISOString(),
-        mes: '',
-        extra: {
-            summarySharderEvent: {
-                ...payload,
-                eventHash,
-            },
-            summarySharderPrototype: buildPrototypeMetadata({
-                hiddenArtifact: true,
-            }),
-        },
-    };
-}
-
-export function getAnchorEvent(line) {
-    return line?.extra?.summarySharderEvent ?? null;
-}
-
-export function buildReceipt({
-    event,
-    originChatInstanceId,
-    originShardId = null,
-    createdAt = Date.now(),
-}) {
-    return {
-        receiptSchemaVersion: RECEIPT_SCHEMA_VERSION,
-        prototypeVersion: PROTOTYPE_VERSION,
-        eventId: event.eventId,
-        sequence: event.sequence,
-        memoryScopeId: event.memoryScopeId,
-        decisionId: event.decisionId,
-        expectedHead: event.expectedHead,
-        canonicalHash: event.canonicalHash,
-        canonicalHashVersion: event.canonicalHashVersion,
-        hashAlgorithm: event.hashAlgorithm,
-        originChatInstanceId,
-        originShardId,
-        canonicalRecord: event.payload?.canonicalRecord ?? {},
-        createdAt,
-    };
-}
-
-export function buildHiddenReceiptRecord(receipt, createdAt = Date.now()) {
-    return {
-        name: 'Summary Sharder System',
-        is_user: false,
-        is_system: true,
-        send_date: new Date(createdAt).toISOString(),
-        mes: '',
-        extra: {
-            summarySharderReceipt: receipt,
-            summarySharderPrototype: buildPrototypeMetadata({
-                hiddenReceipt: true,
-            }),
-        },
-    };
-}
-
-export function getHiddenReceiptRecord(message) {
-    return message?.extra?.summarySharderReceipt ?? null;
-}
-
-export function ensureRuntimeMetadata(chatMetadata, defaults = {}) {
-    const next = chatMetadata && typeof chatMetadata === 'object' ? { ...chatMetadata } : {};
-    const current = next.summarySharderRuntime && typeof next.summarySharderRuntime === 'object'
-        ? { ...next.summarySharderRuntime }
-        : {};
-
-    next.summarySharderRuntime = {
-        prototypeVersion: PROTOTYPE_VERSION,
-        ...defaults,
-        ...current,
-    };
-
-    return next;
-}
-
-export function collectMetadataReceipts(chatMetadata, memoryScopeId = null) {
-    const receipts = Array.isArray(chatMetadata?.summarySharderPrototypeReceipts)
-        ? chatMetadata.summarySharderPrototypeReceipts
-        : [];
-
-    return receipts.filter(receipt => !memoryScopeId || receipt?.memoryScopeId === memoryScopeId);
-}
-
-export function appendMetadataReceipt(chatMetadata, receipt) {
-    const next = chatMetadata && typeof chatMetadata === 'object' ? { ...chatMetadata } : {};
-    const receipts = Array.isArray(next.summarySharderPrototypeReceipts)
-        ? [...next.summarySharderPrototypeReceipts]
-        : [];
-
-    if (!receipts.some(existing => existing?.eventId === receipt.eventId)) {
-        receipts.push(receipt);
-    }
-
-    next.summarySharderPrototypeReceipts = receipts;
-    return next;
-}
-
-export function detectDuplicateChatInstanceIds(entries) {
-    const seen = new Map();
-    const duplicates = [];
-
-    for (const entry of entries) {
-        const chatInstanceId = entry?.chatInstanceId;
-        if (!chatInstanceId) {
-            continue;
-        }
-
-        if (seen.has(chatInstanceId)) {
-            duplicates.push({
-                chatInstanceId,
-                first: seen.get(chatInstanceId),
-                second: entry,
-            });
-            continue;
-        }
-
-        seen.set(chatInstanceId, entry);
-    }
-
-    return duplicates;
-}
-
-export function classifyReplay(anchorEvents, receiptRecords) {
-    const sortedAnchor = [...anchorEvents].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
-    const coverage = {
-        anchorEventCount: sortedAnchor.length,
-        uniqueReceiptEventCount: 0,
-        duplicateReceiptCount: 0,
-        missingEventIds: [],
-        versionGaps: [],
-        competingChildren: [],
-        unavailableOriginChats: [],
-        finalReconstructedHead: null,
-        finalReconstructedHash: null,
-        classification: 'invalid',
-    };
-
-    const receiptsByEventId = new Map();
-    const receiptsByExpectedHead = new Map();
-    for (const receipt of receiptRecords) {
-        const bucket = receiptsByEventId.get(receipt.eventId) ?? [];
-        bucket.push(receipt);
-        receiptsByEventId.set(receipt.eventId, bucket);
-
-        const headKey = receipt.expectedHead ?? '__root__';
-        const headBucket = receiptsByExpectedHead.get(headKey) ?? [];
-        headBucket.push(receipt);
-        receiptsByExpectedHead.set(headKey, headBucket);
-    }
-
-    coverage.uniqueReceiptEventCount = receiptsByEventId.size;
-    for (const bucket of receiptsByEventId.values()) {
-        if (bucket.length > 1) {
-            coverage.duplicateReceiptCount += bucket.length - 1;
-        }
-    }
-
-    for (const [expectedHead, bucket] of receiptsByExpectedHead.entries()) {
-        const childIds = [...new Set(bucket.map(receipt => receipt.eventId))];
-        if (childIds.length > 1) {
-            coverage.competingChildren.push({
-                expectedHead: expectedHead === '__root__' ? null : expectedHead,
-                eventIds: childIds,
-            });
-        }
-    }
-
-    if (sortedAnchor.length === 0) {
-        coverage.classification = coverage.uniqueReceiptEventCount > 0 ? 'incomplete' : 'invalid';
-        return coverage;
-    }
-
-    let previousSequence = 0;
-    let previousEventHash = null;
-
-    for (const event of sortedAnchor) {
-        if (typeof event.sequence !== 'number') {
-            coverage.classification = 'invalid';
-            return coverage;
-        }
-
-        if (event.sequence !== previousSequence + 1) {
-            coverage.versionGaps.push({
-                expectedSequence: previousSequence + 1,
-                actualSequence: event.sequence,
-            });
-        }
-
-        previousSequence = event.sequence;
-        previousEventHash = event.eventHash ?? previousEventHash;
-
-        const matchingReceipts = receiptsByEventId.get(event.eventId) ?? [];
-        if (matchingReceipts.length === 0) {
-            coverage.missingEventIds.push(event.eventId);
-            continue;
-        }
-
-        const canonicalHashes = new Set(matchingReceipts.map(receipt => receipt.canonicalHash));
-        if (canonicalHashes.size > 1) {
-            coverage.competingChildren.push({
-                eventId: event.eventId,
-                canonicalHashes: [...canonicalHashes],
-            });
-        }
-    }
-
-    coverage.finalReconstructedHead = previousEventHash;
-    coverage.finalReconstructedHash = previousEventHash;
-
-    if (coverage.competingChildren.length > 0) {
-        coverage.classification = 'conflicted';
-        return coverage;
-    }
-
-    if (coverage.versionGaps.length > 0 || coverage.missingEventIds.length > 0) {
-        coverage.classification = 'incomplete';
-        return coverage;
-    }
-
-    coverage.classification = 'exact';
-    return coverage;
+export function handleError(response, error) {
+    const status = Number(error?.status) || 500;
+    console.error(`[${PLUGIN_ID}]`, error);
+    return response.status(status).send({
+        ok: false,
+        code: String(error?.code || 'ARCH_INTERNAL_ERROR'),
+        error: String(error?.message || 'Internal error'),
+    });
 }

@@ -10,9 +10,11 @@ import {
     commitArchitecturalScopeAuthorityUpdate,
     createInMemoryArchitecturalAuthorityBackend,
     ensureArchitecturalScopeRegistry,
+    exportLegacyArchitecturalAuthorityPayload,
     loadArchitecturalCurrentAuthority,
     loadArchitecturalReferenceIndexSnapshot,
     loadArchitecturalScopeRegistry,
+    hasLegacyArchitecturalAuthorityData,
     materializeArchivedCurrentPointer,
     persistArchitecturalReferenceIndexSnapshot,
     persistArchitecturalStubRecord,
@@ -223,6 +225,23 @@ test('memory-scope reassignment remains blocked', async () => {
     );
 });
 
+test('chat binding creates a stable chat instance id and branches on chat id change', async () => {
+    const root = {};
+    const first = await bindChatToArchitecturalMemoryScope(root, {
+        chatId: 'chat-a',
+        requestedScopeId: 'scope-a',
+    });
+    const second = await bindChatToArchitecturalMemoryScope(root, {
+        chatId: 'chat-b',
+        requestedScopeId: 'scope-a',
+    });
+
+    assert.equal(first.memoryScopeId, 'scope-a');
+    assert.equal(typeof first.chatInstanceId, 'string');
+    assert.notEqual(second.chatInstanceId, first.chatInstanceId);
+    assert.equal(second.branchedFromChatInstanceId, first.chatInstanceId);
+});
+
 test('archive records survive backend reload', async () => {
     const backend = createInMemoryArchitecturalAuthorityBackend();
     setArchitecturalAuthorityBackend(backend);
@@ -271,6 +290,22 @@ test('scope registry persists current scope run and bindings', async () => {
 
     assert.equal(registry.memoryScopeId, 'scope-a');
     assert.equal(registry.currentScopeRun, 0);
+});
+
+test('legacy authority payload export groups persisted records by type', async () => {
+    await commitArchitecturalScopeAuthorityUpdate({
+        memoryScopeId: 'scope-a',
+        decisions: [decisionContent('alpha')],
+        sourceChatId: 'chat-a',
+    });
+
+    const hasLegacy = await hasLegacyArchitecturalAuthorityData();
+    const payload = await exportLegacyArchitecturalAuthorityPayload();
+
+    assert.equal(hasLegacy, true);
+    assert.equal(payload.registries.length, 1);
+    assert.equal(payload.currentPointers.length, 1);
+    assert.equal(payload.decisionRecords.length, 1);
 });
 
 test('reference index snapshots persist as rebuildable cache metadata', async () => {

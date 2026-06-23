@@ -1,167 +1,144 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import {
-    ARTIFACT_KIND,
-    PROTOTYPE_VERSION,
-    appendMetadataReceipt,
-    buildAnchorArtifactHeader,
-    buildAnchorEvent,
-    buildReceipt,
-    classifyReplay,
-    computeCanonicalHash,
-    detectDuplicateChatInstanceIds,
-    ensureRuntimeMetadata,
-    getAnchorArtifactFromHeader,
-    getAnchorEvent,
-    validateAnchorArtifact,
+    JOURNAL_MODE,
+    SCHEMA_VERSION,
+    SERVICE_VERSION,
+    getStoragePaths,
+    loadManifest,
+    openOperationalDatabase,
+    snapshotOperationalDatabase,
 } from './core.js';
 
-test('anchor header round-trips and validates', () => {
-    const header = buildAnchorArtifactHeader('scope_test');
-    const artifact = getAnchorArtifactFromHeader(header);
+function makeTempRoot() {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'summary-sharder-memory-'));
+}
 
-    assert.equal(artifact.kind, ARTIFACT_KIND);
-    assert.equal(artifact.prototypeVersion, PROTOTYPE_VERSION);
-    assert.deepEqual(validateAnchorArtifact(artifact, 'scope_test'), { valid: true, reason: null });
+test('operational database initializes manifest and journal mode', () => {
+    const root = makeTempRoot();
+    const paths = getStoragePaths(root);
+    const adapter = openOperationalDatabase(paths);
+
+    try {
+        const manifest = loadManifest(adapter);
+        assert.equal(manifest.schemaVersion, SCHEMA_VERSION);
+        assert.equal(manifest.serviceVersion, SERVICE_VERSION);
+        assert.equal(manifest.journalMode, JOURNAL_MODE);
+        assert.equal(adapter.getJournalMode(), JOURNAL_MODE);
+        assert.equal(fs.existsSync(paths.statePath), true);
+    } finally {
+        adapter.close();
+    }
 });
 
-test('canonical hash ignores object key order', () => {
-    const a = computeCanonicalHash({ b: 2, a: 1, nested: { y: 2, x: 1 } });
-    const b = computeCanonicalHash({ nested: { x: 1, y: 2 }, a: 1, b: 2 });
-    assert.equal(a, b);
+test('managed snapshot is created and verified', () => {
+    const root = makeTempRoot();
+    const paths = getStoragePaths(root);
+    const adapter = openOperationalDatabase(paths);
+
+    try {
+        const manifest = snapshotOperationalDatabase(adapter, paths);
+        assert.equal(manifest.schemaVersion, SCHEMA_VERSION);
+        assert.equal(fs.existsSync(paths.snapshotPath), true);
+    } finally {
+        adapter.close();
+    }
 });
 
-test('anchor event produces deterministic event payload and hash', () => {
-    const eventRecord = buildAnchorEvent({
-        memoryScopeId: 'scope_test',
-        decisionId: 'decision-a',
-        expectedHead: null,
-        priorJournalHash: null,
-        canonicalRecord: { decision: 'alpha' },
-        originChatInstanceId: 'chat_a',
-        sequence: 1,
-        eventId: 'evt_fixed',
-        createdAt: 123,
-    });
-    const event = getAnchorEvent(eventRecord);
+test('corrupt operational database restores from verified snapshot', () => {
+    const root = makeTempRoot();
+    const paths = getStoragePaths(root);
 
-    assert.equal(event.eventId, 'evt_fixed');
-    assert.equal(event.sequence, 1);
-    assert.equal(event.originChatInstanceId, 'chat_a');
-    assert.match(event.eventHash, /^sha256:/);
+    {
+        const adapter = openOperationalDatabase(paths);
+        try {
+            snapshotOperationalDatabase(adapter, paths);
+        } finally {
+            adapter.close();
+        }
+    }
+
+    fs.writeFileSync(paths.dbPath, Buffer.from('corrupt-db'));
+
+    const restored = openOperationalDatabase(paths);
+    try {
+        const manifest = loadManifest(restored);
+        assert.equal(manifest.schemaVersion, SCHEMA_VERSION);
+        const quarantineFiles = fs.readdirSync(paths.storageRoot).filter((name) => name.includes('.quarantine.'));
+        assert.equal(quarantineFiles.length > 0, true);
+    } finally {
+        restored.close();
+    }
 });
 
-test('metadata receipts deduplicate by event id', () => {
-    const eventRecord = buildAnchorEvent({
-        memoryScopeId: 'scope_test',
-        decisionId: 'decision-a',
-        expectedHead: null,
-        priorJournalHash: null,
-        canonicalRecord: { decision: 'alpha' },
-        originChatInstanceId: 'chat_a',
-        sequence: 1,
-        eventId: 'evt_fixed',
-    });
-    const event = getAnchorEvent(eventRecord);
-    const receipt = buildReceipt({ event, originChatInstanceId: 'chat_a' });
+test('missing valid snapshot after corruption reaches rebuild boundary', () => {
+    const root = makeTempRoot();
+    const paths = getStoragePaths(root);
 
-    const first = appendMetadataReceipt({}, receipt);
-    const second = appendMetadataReceipt(first, receipt);
+    {
+        const adapter = openOperationalDatabase(paths);
+        try {
+            snapshotOperationalDatabase(adapter, paths);
+        } finally {
+            adapter.close();
+        }
+    }
 
-    assert.equal(first.summarySharderPrototypeReceipts.length, 1);
-    assert.equal(second.summarySharderPrototypeReceipts.length, 1);
-});
+    fs.writeFileSync(paths.dbPath, Buffer.from('corrupt-db'));
+    fs.writeFileSync(paths.snapshotPath, Buffer.from('corrupt-snapshot'));
 
-test('runtime metadata preserves existing ids', () => {
-    const metadata = ensureRuntimeMetadata({
-        summarySharderRuntime: {
-            prototypeVersion: PROTOTYPE_VERSION,
-            chatInstanceId: 'chat_existing',
-        },
-    }, {
-        chatInstanceId: 'chat_new',
-        memoryScopeId: 'scope_a',
-    });
-
-    assert.equal(metadata.summarySharderRuntime.chatInstanceId, 'chat_existing');
-    assert.equal(metadata.summarySharderRuntime.memoryScopeId, 'scope_a');
-});
-
-test('duplicate chat instance detection reports collisions', () => {
-    const duplicates = detectDuplicateChatInstanceIds([
-        { filePath: 'a', chatInstanceId: 'chat_1' },
-        { filePath: 'b', chatInstanceId: 'chat_2' },
-        { filePath: 'c', chatInstanceId: 'chat_1' },
-    ]);
-
-    assert.equal(duplicates.length, 1);
-    assert.equal(duplicates[0].chatInstanceId, 'chat_1');
-});
-
-test('replay classification is exact when all anchor events are covered', () => {
-    const first = getAnchorEvent(buildAnchorEvent({
-        memoryScopeId: 'scope_test',
-        decisionId: 'decision-a',
-        expectedHead: null,
-        priorJournalHash: null,
-        canonicalRecord: { decision: 'alpha' },
-        originChatInstanceId: 'chat_a',
-        sequence: 1,
-        eventId: 'evt_1',
-    }));
-    const second = getAnchorEvent(buildAnchorEvent({
-        memoryScopeId: 'scope_test',
-        decisionId: 'decision-b',
-        expectedHead: first.eventHash,
-        priorJournalHash: first.eventHash,
-        canonicalRecord: { decision: 'beta' },
-        originChatInstanceId: 'chat_a',
-        sequence: 2,
-        eventId: 'evt_2',
-    }));
-
-    const coverage = classifyReplay(
-        [first, second],
-        [
-            buildReceipt({ event: first, originChatInstanceId: 'chat_a' }),
-            buildReceipt({ event: second, originChatInstanceId: 'chat_a' }),
-        ],
+    assert.throws(
+        () => openOperationalDatabase(paths),
+        /requires rebuild/i,
     );
-
-    assert.equal(coverage.classification, 'exact');
-    assert.equal(coverage.anchorEventCount, 2);
-    assert.equal(coverage.uniqueReceiptEventCount, 2);
-    assert.equal(coverage.finalReconstructedHead, second.eventHash);
 });
 
-test('replay classification is incomplete when receipts are missing', () => {
-    const first = getAnchorEvent(buildAnchorEvent({
-        memoryScopeId: 'scope_test',
-        decisionId: 'decision-a',
-        expectedHead: null,
-        priorJournalHash: null,
-        canonicalRecord: { decision: 'alpha' },
-        originChatInstanceId: 'chat_a',
-        sequence: 1,
-        eventId: 'evt_1',
-    }));
-    const second = getAnchorEvent(buildAnchorEvent({
-        memoryScopeId: 'scope_test',
-        decisionId: 'decision-b',
-        expectedHead: first.eventHash,
-        priorJournalHash: first.eventHash,
-        canonicalRecord: { decision: 'beta' },
-        originChatInstanceId: 'chat_a',
-        sequence: 2,
-        eventId: 'evt_2',
-    }));
+test('missing operational database restores from verified snapshot', () => {
+    const root = makeTempRoot();
+    const paths = getStoragePaths(root);
 
-    const coverage = classifyReplay(
-        [first, second],
-        [buildReceipt({ event: first, originChatInstanceId: 'chat_a' })],
+    {
+        const adapter = openOperationalDatabase(paths);
+        try {
+            snapshotOperationalDatabase(adapter, paths);
+        } finally {
+            adapter.close();
+        }
+    }
+
+    fs.rmSync(paths.dbPath, { force: true });
+
+    const restored = openOperationalDatabase(paths);
+    try {
+        const manifest = loadManifest(restored);
+        assert.equal(manifest.schemaVersion, SCHEMA_VERSION);
+    } finally {
+        restored.close();
+    }
+});
+
+test('missing operational database and snapshot fail closed after adoption', () => {
+    const root = makeTempRoot();
+    const paths = getStoragePaths(root);
+
+    {
+        const adapter = openOperationalDatabase(paths);
+        try {
+            snapshotOperationalDatabase(adapter, paths);
+        } finally {
+            adapter.close();
+        }
+    }
+
+    fs.rmSync(paths.dbPath, { force: true });
+    fs.rmSync(paths.snapshotPath, { force: true });
+
+    assert.throws(
+        () => openOperationalDatabase(paths),
+        /requires rebuild/i,
     );
-
-    assert.equal(coverage.classification, 'incomplete');
-    assert.deepEqual(coverage.missingEventIds, ['evt_2']);
 });
