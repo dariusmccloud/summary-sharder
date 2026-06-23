@@ -125,6 +125,16 @@ export async function handleSummaryResult(
             });
         }
 
+        if (settings?.sharderMode === true) {
+            recordArchitecturalIntegrationEvent('AUTHORITY_ADOPTION_GATE_EVALUATED', {
+                mode,
+                outputUID,
+                sharderMode: settings?.sharderMode === true,
+                sharderProfile: settings?.sharderProfile || null,
+                isArchitecturalAuthorityRun,
+            });
+        }
+
         if (resultMetadata?.architecturalDecisionCapacityOverride) {
             await persistArchitecturalDecisionCapacityOverride(
                 outputUID,
@@ -137,8 +147,16 @@ export async function handleSummaryResult(
 
         if (settings?.sharderMode === true && settings?.sharderProfile === ARCHITECTURAL_PROFILE) {
             try {
+                const activeChatId = SillyTavern.getContext()?.chatId || null;
+                recordArchitecturalIntegrationEvent('AUTHORITY_ADOPTION_CALL_PREPARED', {
+                    profile: ARCHITECTURAL_PROFILE,
+                    mode,
+                    outputUID,
+                    activeChatId,
+                    hasBaselineLedger: !!resultMetadata?.architecturalAuthorityContext?.baselineLedger,
+                });
                 const authorityResult = await persistArchitecturalAuthorityProjection(summary, {
-                    chatId: SillyTavern.getContext()?.chatId || null,
+                    chatId: activeChatId,
                     outputUID,
                     mode,
                     startIndex,
@@ -149,6 +167,13 @@ export async function handleSummaryResult(
                     toastr.warning('Architectural scope authority was not updated because the saved shard did not match the current authoritative version.');
                 }
             } catch (error) {
+                recordArchitecturalIntegrationEvent('AUTHORITY_ADOPTION_CALL_FAILED', {
+                    profile: ARCHITECTURAL_PROFILE,
+                    mode,
+                    outputUID,
+                    code: String(error?.code || 'ARCH_AUTHORITY_CALL_FAILED'),
+                    message: String(error?.message || 'Architectural authority call failed before persistence execution.'),
+                });
                 ragLog.warn('Failed to persist Architectural authority projection:', error?.message || error);
             }
         }

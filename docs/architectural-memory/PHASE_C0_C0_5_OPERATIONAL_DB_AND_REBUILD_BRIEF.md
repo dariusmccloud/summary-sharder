@@ -15,6 +15,41 @@ It does not authorize:
 - Phase C2 archive movement, stable windows, or reference indexing
 - any return to out-of-band ordinary-chat receipt writes
 
+## C0 Outcome
+
+Phase C0 is now complete.
+
+The operational SQLite substrate was implemented and live-smoked on both hosts:
+
+- SillyTavern using `Node v24.16.0` and `node:sqlite`
+- SillyBunny using `Bun 1.3.14` and `bun:sqlite`
+
+Confirmed outcome:
+
+- per-user operational DB works on both hosts
+- managed snapshot and fail-closed recovery behavior work
+- architectural authority adoption occurs only after confirmed host save
+- failed host save does not update authority state
+- full-user backup captures the operational DB, snapshot, and state marker
+- extracted backups preserve readable authority state
+- built-in SillyBunny ZIP import restores portable corpus but does not replace `data/default-user/summary-sharder`
+- Narrative save flow remains isolated from architectural authority state
+
+This means the storage substrate is no longer the blocker.
+
+The next correct boundary is:
+
+- `C0.25` for corpus identity, archive semantics, and shard/source integrity
+
+not:
+
+- broader authority expansion
+- archive movement
+- vector retrieval
+- reconstruction-first work on mutable positional source identity
+
+See `C0_COMPLETION_REPORT.md` for the detailed closeout evidence.
+
 ## Governing Result from 1B0
 
 The `1B0` feasibility spike established a negative substrate fact that now governs all subsequent storage design:

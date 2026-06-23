@@ -126,6 +126,15 @@ export async function persistArchitecturalAuthorityProjection(summary, options =
 
     const normalizedChatId = normalizeChatId(chatId);
     if (!normalizedChatId) {
+        recordArchitecturalIntegrationEvent('AUTHORITY_ADOPTION_BLOCKED', {
+            profile: ARCHITECTURAL_PROFILE,
+            mode,
+            memoryScopeId: null,
+            outputUID,
+            code: 'ARCH_AUTHORITY_MISSING_CHAT_ID',
+            message: 'Architectural authority commit was skipped because no active chat id was available after host save.',
+            stage: 'binding',
+        });
         return {
             committed: false,
             reason: 'missing-chat-id',
@@ -134,30 +143,39 @@ export async function persistArchitecturalAuthorityProjection(summary, options =
         };
     }
 
-    const binding = await ensureArchitecturalChatScopeBinding(normalizedChatId, { now });
-    await migrateLegacyAuthorityStoreIfNeeded();
-    const registry = getSharderSectionRegistry(ARCHITECTURAL_PROFILE);
-    const sections = parseArchitecturalExtractionResponse(String(summary || ''), registry);
-    const decisionItems = Array.isArray(sections?.decisions) ? sections.decisions : [];
-    const authorityInputs = [];
-
-    for (const item of decisionItems) {
-        if (item?.selected === false) continue;
-        const authorityInput = await buildArchitecturalDecisionAuthorityInput(item);
-        if (!authorityInput.decisionId || authorityInput.parserErrors.length > 0) continue;
-        authorityInputs.push(authorityInput);
-    }
-
-    const expectedDecisionVersionsById = {};
-    const baselineDecisions = baselineLedger?.decisionsById || baselineLedger || {};
-    for (const [decisionId, entry] of Object.entries(baselineDecisions || {})) {
-        const version = entry?.authority?.currentRecordVersion;
-        if (Number.isFinite(version)) {
-            expectedDecisionVersionsById[decisionId] = version;
-        }
-    }
+    let stage = 'binding';
+    let binding = null;
 
     try {
+        binding = await ensureArchitecturalChatScopeBinding(normalizedChatId, { now });
+        stage = 'migration';
+        await migrateLegacyAuthorityStoreIfNeeded();
+
+        stage = 'parse-sections';
+        const registry = getSharderSectionRegistry(ARCHITECTURAL_PROFILE);
+        const sections = parseArchitecturalExtractionResponse(String(summary || ''), registry);
+        const decisionItems = Array.isArray(sections?.decisions) ? sections.decisions : [];
+        const authorityInputs = [];
+
+        stage = 'build-authority-inputs';
+        for (const item of decisionItems) {
+            if (item?.selected === false) continue;
+            const authorityInput = await buildArchitecturalDecisionAuthorityInput(item);
+            if (!authorityInput.decisionId || authorityInput.parserErrors.length > 0) continue;
+            authorityInputs.push(authorityInput);
+        }
+
+        stage = 'baseline-version-map';
+        const expectedDecisionVersionsById = {};
+        const baselineDecisions = baselineLedger?.decisionsById || baselineLedger || {};
+        for (const [decisionId, entry] of Object.entries(baselineDecisions || {})) {
+            const version = entry?.authority?.currentRecordVersion;
+            if (Number.isFinite(version)) {
+                expectedDecisionVersionsById[decisionId] = version;
+            }
+        }
+
+        stage = 'commit-start';
         recordArchitecturalIntegrationEvent('AUTHORITY_ADOPTION_STARTED', {
             profile: ARCHITECTURAL_PROFILE,
             mode,
@@ -168,6 +186,7 @@ export async function persistArchitecturalAuthorityProjection(summary, options =
             expectedDecisionVersionsById,
         });
 
+        stage = 'commit-request';
         const authorityCommit = await commitArchitecturalAuthorityServerUpdate(binding.memoryScopeId, {
             scopeAlias: binding.scopeAlias || '',
             sourceChatInstanceId: binding.chatInstanceId,
@@ -177,6 +196,7 @@ export async function persistArchitecturalAuthorityProjection(summary, options =
             now,
         });
 
+        stage = 'projection-metadata';
         const projectionMetadata = {
             schemaVersion: PROJECTION_METADATA_SCHEMA_VERSION,
             source: mode === 'lorebook' ? 'lorebook' : 'system',
@@ -197,6 +217,7 @@ export async function persistArchitecturalAuthorityProjection(summary, options =
             savedAt: Number.isFinite(now) ? now : Date.now(),
         };
 
+        stage = 'projection-save';
         ensureProjectionStore(chat_metadata)[projectionKeyFromIdentity({
             source: projectionMetadata.source,
             uid: projectionMetadata.uid,
@@ -222,15 +243,25 @@ export async function persistArchitecturalAuthorityProjection(summary, options =
             diagnostics: [],
         };
     } catch (error) {
+        const failureStage = String(error?.stage || stage || 'unknown');
+        recordArchitecturalIntegrationEvent('AUTHORITY_ADOPTION_FAILED', {
+            profile: ARCHITECTURAL_PROFILE,
+            mode,
+            stage: failureStage,
+            code: String(error?.code || 'ARCH_AUTHORITY_ADOPTION_FAILED'),
+            message: String(error?.message || 'Architectural authority adoption failed before commit completion.'),
+            outputUID,
+        });
         const projectionMetadata = {
             schemaVersion: PROJECTION_METADATA_SCHEMA_VERSION,
             source: mode === 'lorebook' ? 'lorebook' : 'system',
             uid: outputUID || null,
             startIndex,
             endIndex,
-            memoryScopeId: binding.memoryScopeId,
+            memoryScopeId: binding?.memoryScopeId || getArchitecturalChatBinding(chat_metadata)?.memoryScopeId || null,
             authorityCommitBlocked: true,
             authorityBlockCode: String(error?.code || 'ARCH_AUTHORITY_COMMIT_BLOCKED'),
+            authorityFailureStage: failureStage,
             savedAt: Number.isFinite(now) ? now : Date.now(),
         };
         ensureProjectionStore(chat_metadata)[projectionKeyFromIdentity({
@@ -244,12 +275,12 @@ export async function persistArchitecturalAuthorityProjection(summary, options =
         recordArchitecturalIntegrationEvent('AUTHORITY_ADOPTION_BLOCKED', {
             profile: ARCHITECTURAL_PROFILE,
             mode,
-            memoryScopeId: binding.memoryScopeId,
+            memoryScopeId: projectionMetadata.memoryScopeId,
             outputUID,
             code: String(error?.code || 'ARCH_AUTHORITY_COMMIT_BLOCKED'),
             message: String(error?.message || 'Architectural authority commit was blocked.'),
+            stage: failureStage,
         });
-
         return {
             committed: false,
             reason: error?.code || 'authority-commit-blocked',

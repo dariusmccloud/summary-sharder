@@ -73,7 +73,10 @@ export async function loadArchitecturalAuthorityCapabilities() {
 
 export async function initArchitecturalAuthorityServer() {
     if (!initPromise) {
-        initPromise = fetchJson('/init')
+        initPromise = fetchJson('/init', {
+            method: 'POST',
+            body: {},
+        })
             .then((data) => {
                 manifestCache = data?.manifest || null;
                 return data;
