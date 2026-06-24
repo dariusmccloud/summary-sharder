@@ -21,6 +21,43 @@ export const VISIBILITY_CSS = `
     color: var(--ss-text-primary);
 }
 
+.ss-archive-btn {
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    border-radius: 3px;
+    color: var(--ss-text-muted);
+    font-size: 0.8em;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background-color var(--ss-transition), color var(--ss-transition);
+    user-select: none;
+    line-height: 1;
+}
+
+.ss-archive-btn:hover {
+    background: var(--ss-highlight);
+    color: var(--ss-text-primary);
+}
+
+.ss-archive-btn::before { content: '🗄'; }
+.ss-archive-btn[data-archived='true']::before { content: '↩'; }
+
+.mes.ss-archived-message {
+    border-left: 2px solid var(--ss-border);
+}
+
+.mes.ss-archived-visible {
+    opacity: 0.82;
+}
+
+.mes.ss-archived-hidden {
+    display: none !important;
+}
+
 /* Arrow glyphs via CSS content — no Font Awesome dependency */
 .mes.ss-collapsed .ss-fold-btn::before { content: '▶'; }
 .mes.ss-expanded  .ss-fold-btn::before { content: '▼'; }

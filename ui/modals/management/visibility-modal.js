@@ -4,6 +4,12 @@
 
 import { getChatRanges, saveChatRanges, saveSettings } from '../../../core/settings.js';
 import { applyVisibilitySettings } from '../../../core/chat/visibility-manager.js';
+import {
+    archiveMessagesInRanges,
+    getArchivedMessageCount,
+    refreshArchiveDecorations,
+    restoreAllArchivedMessages,
+} from '../../../core/chat/archive-manager.js';
 import { Popup, POPUP_RESULT, POPUP_TYPE } from '../../../../../../popup.js';
 import { getAllMessages } from '../../../core/chat/chat-state.js';
 import { chat } from '../../../../../../../script.js';
@@ -324,11 +330,14 @@ async function handleClearAllRanges(modalState, container) {
  * Open the visibility management modal
  */
 export async function openVisibilityModal(settings) {
+    const originalShowArchived = settings.showArchivedMessages || false;
+
     // Create a deep copy of current state for cancel functionality
     const modalState = {
         ranges: JSON.parse(JSON.stringify(getChatRanges())),
         hideAllSummarized: settings.hideAllSummarized || false,
         collapseAll: settings.collapseAll || settings.makeAllInvisible || false,
+        showArchivedMessages: originalShowArchived,
         globalIgnoreNames: settings.globalIgnoreNames || ''
     };
 
@@ -369,8 +378,19 @@ export async function openVisibilityModal(settings) {
                         Messages from these senders will remain visible regardless of hide/collapse settings
                     </p>
                 </div>
+                <div class="ss-global-toggle-row">
+                    <label class="checkbox_label">
+                        <input id="ss-modal-show-archived" type="checkbox" ${modalState.showArchivedMessages ? 'checked' : ''} />
+                        <span>Show archived messages</span>
+                    </label>
+                    <p class="ss-global-hint ss-global-hint-indented" id="ss-modal-archived-count">
+                        ${getArchivedMessageCount(chat)} archived message(s). Archived messages remain prompt-hidden.
+                    </p>
+                </div>
                 <div class="ss-global-actions-row">
                     <input id="ss-modal-detect-ranges" class="menu_button" type="button" value="Detect Hidden Ranges" />
+                    <input id="ss-modal-archive-ranges" class="menu_button" type="button" value="Archive Saved Ranges" />
+                    <input id="ss-modal-restore-archived" class="menu_button" type="button" value="Restore All Archived" />
                     <input id="ss-modal-clear-all" class="menu_button" type="button" value="Clear All Ranges" />
                 </div>
             </div>
@@ -409,6 +429,12 @@ export async function openVisibilityModal(settings) {
     // Use requestAnimationFrame instead of setTimeout to avoid blocking main thread
     requestAnimationFrame(() => {
         const rangesListContainer = document.getElementById('ss-modal-ranges-list');
+        const archivedCountEl = document.getElementById('ss-modal-archived-count');
+        const updateArchivedCount = () => {
+            if (archivedCountEl) {
+                archivedCountEl.textContent = `${getArchivedMessageCount(chat)} archived message(s). Archived messages remain prompt-hidden.`;
+            }
+        };
         if (rangesListContainer) {
             renderRangesList(modalState.ranges, rangesListContainer, modalState);
         }
@@ -425,6 +451,14 @@ export async function openVisibilityModal(settings) {
         if (collapseAllCheckbox) {
             collapseAllCheckbox.addEventListener('change', (e) => {
                 modalState.collapseAll = e.target.checked;
+            });
+        }
+
+        const showArchivedCheckbox = document.getElementById('ss-modal-show-archived');
+        if (showArchivedCheckbox) {
+            showArchivedCheckbox.addEventListener('change', (e) => {
+                modalState.showArchivedMessages = e.target.checked;
+                refreshArchiveDecorations({ ...settings, showArchivedMessages: modalState.showArchivedMessages });
             });
         }
 
@@ -492,6 +526,44 @@ export async function openVisibilityModal(settings) {
             });
         }
 
+        const archiveRangesBtn = document.getElementById('ss-modal-archive-ranges');
+        if (archiveRangesBtn) {
+            archiveRangesBtn.addEventListener('click', async () => {
+                const archiveableRanges = modalState.ranges.filter(range => range.hidden !== false);
+                if (archiveableRanges.length === 0) {
+                    toastr.info('No saved hidden ranges to archive');
+                    return;
+                }
+
+                const result = await archiveMessagesInRanges(archiveableRanges, {
+                    ...settings,
+                    showArchivedMessages: modalState.showArchivedMessages,
+                });
+                if (result.changed) {
+                    updateArchivedCount();
+                    toastr.success('Saved ranges archived');
+                } else {
+                    toastr.info('No new messages were archived');
+                }
+            });
+        }
+
+        const restoreArchivedBtn = document.getElementById('ss-modal-restore-archived');
+        if (restoreArchivedBtn) {
+            restoreArchivedBtn.addEventListener('click', async () => {
+                const result = await restoreAllArchivedMessages({
+                    ...settings,
+                    showArchivedMessages: modalState.showArchivedMessages,
+                });
+                if (result.changed) {
+                    updateArchivedCount();
+                    toastr.success('Archived messages restored');
+                } else {
+                    toastr.info('No archived messages to restore');
+                }
+            });
+        }
+
         // Clear all button
         const clearAllBtn = document.getElementById('ss-modal-clear-all');
         if (clearAllBtn) {
@@ -513,7 +585,7 @@ export async function openVisibilityModal(settings) {
     const result = await showPromise;
 
     // If user clicked "Save & Exit", persist changes
-    if (result === POPUP_RESULT.AFFIRMATIVE) {
+        if (result === POPUP_RESULT.AFFIRMATIVE) {
         // DEBUG: Log what we're about to save
         log.debug('Visibility modal saving. Ranges:',
             JSON.stringify(modalState.ranges.map(r => ({ start: r.start, end: r.end, hidden: r.hidden }))));
@@ -524,17 +596,20 @@ export async function openVisibilityModal(settings) {
         // Save global settings
         settings.hideAllSummarized = modalState.hideAllSummarized;
         settings.collapseAll = modalState.collapseAll;
+        settings.showArchivedMessages = modalState.showArchivedMessages;
         settings.globalIgnoreNames = modalState.globalIgnoreNames;
         saveSettings(settings);
 
         // Apply visibility immediately
         log.debug('Calling applyVisibilitySettings...');
         await applyVisibilitySettings(settings);
+        refreshArchiveDecorations(settings);
         log.debug('applyVisibilitySettings completed');
 
         toastr.success('Visibility settings saved');
     } else {
         // User cancelled, no changes made
+        refreshArchiveDecorations({ ...settings, showArchivedMessages: originalShowArchived });
         log.debug('Visibility modal cancelled');
     }
 }

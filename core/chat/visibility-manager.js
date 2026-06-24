@@ -5,36 +5,16 @@
 import { getChatRanges, saveChatRanges } from '../settings.js';
 import { chat, saveChatConditional, refreshSwipeButtons } from '../../../../../../script.js';
 import { log } from '../logger.js';
+import { isArchivedMessage } from './archive-policy.js';
+import {
+    buildDesiredVisibilityState,
+    detectHiddenRangesFromMessages,
+    parseIgnoreNames,
+    shouldIgnoreMessage,
+} from './visibility-policy.js';
 
 // Import flag setter and timer control to prevent MutationObserver cascade
 import { setApplyingVisibility, clearPendingVisibilityTimers } from './visibility-state.js';
-
-/**
- * Parse and normalize a comma-separated list of names
- * @param {string} namesStr - Comma-separated names
- * @returns {Array<string>} Array of lowercase, trimmed names
- */
-function parseIgnoreNames(namesStr) {
-    if (!namesStr || typeof namesStr !== 'string') {
-        return [];
-    }
-    return namesStr.split(',')
-        .map(name => name.trim().toLowerCase())
-        .filter(name => name.length > 0);
-}
-
-/**
- * Check if a message should be ignored based on sender name
- * @param {Object} message - Chat message object
- * @param {Array<string>} ignoreNames - Array of lowercase names to ignore
- * @returns {boolean} True if message should be ignored (kept visible)
- */
-function shouldIgnoreMessage(message, ignoreNames) {
-    if (!message || !message.name || ignoreNames.length === 0) {
-        return false;
-    }
-    return ignoreNames.includes(message.name.toLowerCase());
-}
 
 /** Inject the fold button into the name row before .name_text (idempotent). */
 function ensureFoldBtn(el) {
@@ -140,66 +120,24 @@ export async function applyVisibilitySettings(settings) {
             if (mesid !== null) elementMap.set(parseInt(mesid, 10), el);
         });
 
-        const globalIgnoreNames = settings.globalIgnoreNames || '';
-        const globalNames = parseIgnoreNames(globalIgnoreNames);
-        const shouldCollapse = settings.collapseAll || settings.makeAllInvisible;
-
         // --- PHASE 1: Compute desired state (no DOM access) ---
-        const desiredState = new Map(); // mesid -> { isSystem: bool, collapsed: bool }
-        for (let i = 0; i < chat.length; i++) {
-            desiredState.set(i, { isSystem: false, collapsed: false });
-        }
-
-        // Track which messages are in ignoreCollapse ranges
-        const ignoreCollapseSet = new Set();
-
+        const desiredState = buildDesiredVisibilityState(chat, ranges, settings);
         for (const range of ranges) {
             if (range.start < 0 || range.end < range.start || range.start >= chat.length) {
                 log.warn(`Skipping invalid range ${range.start}-${range.end} (chat length: ${chat.length})`);
-                continue;
-            }
-
-            const effectiveHidden = range.hidden !== undefined ? range.hidden : settings.hideAllSummarized;
-            const rangeNames = parseIgnoreNames(range.ignoreNames || '');
-            const allIgnoreNames = [...new Set([...globalNames, ...rangeNames])];
-            const rangeIgnoreCollapse = range.ignoreCollapse || false;
-
-            for (let i = range.start; i <= range.end && i < chat.length; i++) {
-                const message = chat[i];
-                if (!message) continue;
-                const state = desiredState.get(i);
-
-                if (effectiveHidden) {
-                    state.isSystem = !shouldIgnoreMessage(message, allIgnoreNames);
-                } else {
-                    state.isSystem = false;
-                }
-
-                if (rangeIgnoreCollapse) {
-                    ignoreCollapseSet.add(i);
-                    state.collapsed = false;
-                }
-            }
-        }
-
-        // Apply collapse for hidden messages not in ignoreCollapse ranges
-        if (shouldCollapse) {
-            for (const [i, state] of desiredState) {
-                if (state.isSystem && !ignoreCollapseSet.has(i)) {
-                    state.collapsed = true;
-                }
             }
         }
 
         // --- PHASE 2: Apply all changes in a single DOM pass ---
         // Update chat data model
-        for (const [i, state] of desiredState) {
+        for (let i = 0; i < desiredState.length; i++) {
+            const state = desiredState[i];
             if (chat[i]) chat[i].is_system = state.isSystem;
         }
 
         // Update DOM elements
         for (const [mesid, el] of elementMap) {
-            const state = desiredState.get(mesid);
+            const state = desiredState[mesid];
             if (!state) continue;
 
             // Reset classes
@@ -251,6 +189,12 @@ export function applyCollapseToHiddenMessages(settings) {
         const index = parseInt(mesid, 10);
         const message = chat[index];
         if (!message || message.is_system !== true) continue;
+        if (isArchivedMessage(message)) {
+            el.classList.remove('ss-collapsed', 'ss-expanded');
+            el.querySelector('.mes_text')?.classList.remove('ss-text-hidden');
+            removeFoldBtn(el);
+            continue;
+        }
         if (shouldIgnoreMessage(message, ignoreNames)) continue;
 
         el.classList.add('ss-collapsed');
@@ -274,6 +218,13 @@ export function expandUnhiddenMessages() {
 
         const index = parseInt(mesid, 10);
         const message = chat[index];
+
+        if (isArchivedMessage(message)) {
+            el.classList.remove('ss-collapsed', 'ss-expanded');
+            el.querySelector('.mes_text')?.classList.remove('ss-text-hidden');
+            removeFoldBtn(el);
+            continue;
+        }
 
         // If message is not hidden but has collapse/expand styling or fold button, clean it up
         if (message && message.is_system !== true &&
@@ -304,49 +255,7 @@ export async function applyHideSummarized(settings) {
  * @returns {Array} Array of range objects representing hidden message ranges
  */
 export function detectHiddenRanges() {
-    if (!chat || chat.length === 0) {
-        return [];
-    }
-
-    const ranges = [];
-    let rangeStart = null;
-
-    for (let i = 0; i < chat.length; i++) {
-        const message = chat[i];
-        if (!message) continue;
-
-        if (message.is_system) {
-            // Start new range or continue existing
-            if (rangeStart === null) {
-                rangeStart = i;
-            }
-        } else {
-            // End of hidden range
-            if (rangeStart !== null) {
-                ranges.push({
-                    start: rangeStart,
-                    end: i - 1,
-                    hidden: true,
-                    ignoreCollapse: false,
-                    ignoreNames: ''
-                });
-                rangeStart = null;
-            }
-        }
-    }
-
-    // Handle range that extends to end of chat
-    if (rangeStart !== null) {
-        ranges.push({
-            start: rangeStart,
-            end: chat.length - 1,
-            hidden: true,
-            ignoreCollapse: false,
-            ignoreNames: ''
-        });
-    }
-
-    return ranges;
+    return detectHiddenRangesFromMessages(chat || []);
 }
 
 /**

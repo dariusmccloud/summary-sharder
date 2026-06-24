@@ -23,6 +23,8 @@ import { runSharder } from './core/api/single-pass-api.js';
 import { cacheCurrentChatState, findDeletedIndex, getCachedLength } from './core/chat/chat-state.js';
 import { validateAllRanges } from './core/chat/range-manager.js';
 import { shiftRangesOnDelete, shiftRangesOnInsert, buildRangesFromIndices, rangesMatch } from './core/chat/range-operations.js';
+import { enforceArchivedPromptExclusion, initArchiveHandler, refreshArchiveDecorations } from './core/chat/archive-manager.js';
+import { isArchivedMessage } from './core/chat/archive-policy.js';
 import { reconcileCurrentChatMessageIdentity } from './core/summarization/message-identity-runtime.js';
 
 // UI modules
@@ -79,6 +81,11 @@ export function setLastSummarizedIndex(index) {
 }
 
 export { runSummarization, getActivePrompt, applyHideSummarized, applyVisibilitySettings, saveSettings };
+
+async function syncArchivePresentation() {
+    await enforceArchivedPromptExclusion(settings);
+    refreshArchiveDecorations(settings);
+}
 
 /**
  * Setup MutationObserver to watch for SillyTavern hide/unhide changes
@@ -147,10 +154,12 @@ async function onExternalVisibilityChange() {
         return;
     }
 
+    await syncArchivePresentation();
+
     // Detect current hidden state from chat data
     const actuallyHidden = new Set();
     for (let i = 0; i < context.chat.length; i++) {
-        if (context.chat[i]?.is_system === true) {
+        if (context.chat[i]?.is_system === true && !isArchivedMessage(context.chat[i])) {
             actuallyHidden.add(i);
         }
     }
@@ -176,6 +185,7 @@ async function onExternalVisibilityChange() {
     expandUnhiddenMessages();
 
     // Don't recompute visibility - SillyTavern already did it
+    refreshArchiveDecorations(settings);
 }
 
 /**
@@ -236,6 +246,7 @@ async function onNewMessage(messageId, messageType, sourceEventType = event_type
     await reconcileCurrentChatMessageIdentity({
         reason: 'message-received',
     });
+    await syncArchivePresentation();
 
     if (settings.mode !== 'auto') {
         return;
@@ -290,6 +301,7 @@ async function onMessageEdited(eventData) {
     await reconcileCurrentChatMessageIdentity({
         reason: 'message-edited',
     });
+    await syncArchivePresentation();
     cacheCurrentChatState();
 }
 
@@ -308,6 +320,7 @@ async function onMessageDeleted(newChatLength) {
             reason: 'message-deleted',
             recordDeletion: true,
         });
+        await syncArchivePresentation();
         cacheCurrentChatState();
         return;
     }
@@ -335,6 +348,7 @@ async function onMessageDeleted(newChatLength) {
         reason: 'message-deleted',
         recordDeletion: true,
     });
+    await syncArchivePresentation();
 
     // Update cache for next deletion
     cacheCurrentChatState();
@@ -357,6 +371,7 @@ async function onMessageInserted(insertedIndex) {
     await reconcileCurrentChatMessageIdentity({
         reason: 'message-inserted',
     });
+    await syncArchivePresentation();
 
     // Update cache
     cacheCurrentChatState();
@@ -367,6 +382,7 @@ async function onMessageSwiped(eventData) {
     await reconcileCurrentChatMessageIdentity({
         reason: 'message-swiped',
     });
+    await syncArchivePresentation();
     cacheCurrentChatState();
 }
 
@@ -375,6 +391,7 @@ async function onMessageUpdated(eventData) {
     await reconcileCurrentChatMessageIdentity({
         reason: 'message-updated',
     });
+    await syncArchivePresentation();
     cacheCurrentChatState();
 }
 
@@ -443,6 +460,7 @@ function onChatChanged() {
         await reconcileCurrentChatMessageIdentity({
             reason: 'chat-changed',
         });
+        await syncArchivePresentation();
 
         // Cache chat state for deletion tracking (after visibility is fully applied)
         cacheCurrentChatState();
@@ -550,6 +568,7 @@ jQuery(async () => {
     // Initialize delegated collapse click handler
     initCollapseHandler();
     initEditUnfoldHandler();
+    initArchiveHandler(() => settings);
 
     // Render settings UI
     renderSettingsUI(settings, {
@@ -727,6 +746,7 @@ jQuery(async () => {
         await reconcileCurrentChatMessageIdentity({
             reason: 'initial-load',
         });
+        await syncArchivePresentation();
         cacheCurrentChatState();
     }, 1000);
 

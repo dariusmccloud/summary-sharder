@@ -45,6 +45,7 @@ export function getDefaultSettings() {
         hideAllSummarized: false,   // Global toggle for hiding all ranges
         makeAllInvisible: false,    // DEPRECATED: kept for backward compatibility (renamed to collapseAll)
         collapseAll: false,         // Global toggle for collapsing all ranges
+        showArchivedMessages: false, // Reveal archived messages in chat while keeping them prompt-hidden
         globalIgnoreNames: '',      // Global comma-separated list of names to ignore
         summaryLengthControl: false,    // Enable/disable summary length control
         summaryLengthPercent: 10,       // Target summary length as percentage of input (1-30)
