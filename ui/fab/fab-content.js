@@ -4,6 +4,7 @@ import { escapeHtml } from '../common/ui-utils.js';
 import { getFabActionVisibility, renderFabActionButton } from './fab-action-state.js';
 import {
     getActiveApiFeature,
+    getPipelineLabel,
     getStatusMode
 } from '../common/active-mode-state.js';
 
@@ -56,6 +57,7 @@ function createSnapshot(settings, isGenerating, lastSummarizedIndex = -1) {
         isGenerating,
         statusMode,
         sharderMode,
+        pipelineLabel: getPipelineLabel(settings),
         outputMode,
         runMode: settings.mode === 'manual' ? 'manual' : 'auto',
         autoInterval: Number(settings.autoInterval) || 20,
@@ -117,7 +119,6 @@ function buildConfigPanel(snapshot) {
     const modeLabel = snapshot.runMode === 'auto'
         ? `Auto (${snapshot.autoInterval}s)`
         : 'Manual';
-    const summaryModeLabel = snapshot.sharderMode ? 'Sharder' : 'Regular';
     const ragStatusLabel = snapshot.ragEnabled
         ? (snapshot.ragAutoVectorize ? 'Enabled(Auto)' : 'Enabled')
         : 'disabled';
@@ -134,7 +135,7 @@ function buildConfigPanel(snapshot) {
                     </div>
                     <div class="ss-fab-info-row">
                         <span class="ss-fab-info-label">Mode:</span>
-                        <span class="ss-fab-info-value">${escapeHtml(summaryModeLabel)}</span>
+                        <span class="ss-fab-info-value">${escapeHtml(snapshot.pipelineLabel)}</span>
                     </div>
                     <div class="ss-fab-info-row">
                         <span class="ss-fab-info-label">RAG:</span>
