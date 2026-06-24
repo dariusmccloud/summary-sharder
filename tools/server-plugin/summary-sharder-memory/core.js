@@ -25,9 +25,26 @@ export const CAPABILITIES = Object.freeze({
     browserMigration: true,
     projectionRegistry: true,
     ordinaryChatPatching: false,
+    c0_25a: Object.freeze({
+        readOnlyScanner: true,
+        nestedMetadataPreferred: true,
+        corpusMutation: false,
+        persistedChatInspection: true,
+    }),
     c0_5: false,
     c1: false,
     c2: false,
+});
+
+export const MESSAGE_IDENTITY_SCAN_SCHEMA = Object.freeze({
+    namespace: 'summary_sharder',
+    messageIdentityPath: 'extra.summary_sharder.messageIdentity',
+    archivePath: 'extra.summary_sharder.archive',
+    evidencePolicyPath: 'extra.summary_sharder.evidencePolicy',
+    speakerIdentityPath: 'extra.summary_sharder.speakerIdentity',
+    chatIdentityStatusPath: 'chat_metadata.summary_sharder.messageIdentity',
+    promptVisibilityField: 'is_system',
+    evidencePolicyDefault: 'include',
 });
 
 export function createId(prefix) {
@@ -385,6 +402,213 @@ export function validateArray(value, fieldName) {
         throw createError(400, `${fieldName} must be an array`, 'ARCH_INVALID_PAYLOAD');
     }
     return value;
+}
+
+function sanitizeChatFileStem(value) {
+    const normalized = String(value || '').trim().replace(/\.jsonl$/i, '').replace(/\.json$/i, '').trim();
+    if (!normalized) {
+        throw createError(400, 'chatLocator is required', 'ARCH_INVALID_CHAT_LOCATOR');
+    }
+    if (normalized.includes('/') || normalized.includes('\\')) {
+        throw createError(400, 'chatLocator must not contain path separators', 'ARCH_INVALID_CHAT_LOCATOR');
+    }
+    if (path.basename(normalized) !== normalized) {
+        throw createError(400, 'chatLocator is invalid', 'ARCH_INVALID_CHAT_LOCATOR');
+    }
+    return normalized;
+}
+
+function sanitizeAvatarUrl(value) {
+    const normalized = String(value || '').trim();
+    if (!normalized) {
+        throw createError(400, 'avatarUrl is required for character chats', 'ARCH_INVALID_CHAT_LOCATOR');
+    }
+    if (normalized.includes('/') || normalized.includes('\\')) {
+        throw createError(400, 'avatarUrl must not contain path separators', 'ARCH_INVALID_CHAT_LOCATOR');
+    }
+    const basename = path.basename(normalized);
+    if (basename !== normalized) {
+        throw createError(400, 'avatarUrl is invalid', 'ARCH_INVALID_CHAT_LOCATOR');
+    }
+    return basename.replace(/\.png$/i, '');
+}
+
+export function resolveChatJsonlPath(request, locator = {}) {
+    const isGroup = locator?.isGroup === true;
+    const chatFileStem = sanitizeChatFileStem(locator?.chatLocator);
+    const chatFileName = `${chatFileStem}.jsonl`;
+
+    if (isGroup) {
+        const groupId = sanitizeIdentifier(locator?.groupId, 'groupId');
+        const filePath = path.join(request.user.directories.groupChats, sanitizeChatFileStem(groupId) + '.jsonl');
+        return {
+            kind: 'group',
+            locator: {
+                isGroup: true,
+                groupId,
+                chatLocator: chatFileStem,
+            },
+            chatFilePath: filePath,
+        };
+    }
+
+    const avatarDir = sanitizeAvatarUrl(locator?.avatarUrl);
+    const chatDirectory = path.join(request.user.directories.chats, avatarDir);
+    const filePath = path.join(chatDirectory, chatFileName);
+    if (!path.resolve(filePath).startsWith(path.resolve(request.user.directories.chats))) {
+        throw createError(400, 'Resolved chat path escaped chats root', 'ARCH_INVALID_CHAT_LOCATOR');
+    }
+
+    return {
+        kind: 'character',
+        locator: {
+            isGroup: false,
+            avatarUrl: locator?.avatarUrl,
+            chatLocator: chatFileStem,
+        },
+        chatFilePath: filePath,
+    };
+}
+
+export function parseJsonlRecords(jsonlText) {
+    const records = [];
+    const invalidLines = [];
+    const lines = String(jsonlText || '').split(/\r?\n/u);
+    for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index].trim();
+        if (!line) continue;
+        try {
+            records.push(JSON.parse(line));
+        } catch (error) {
+            invalidLines.push({
+                lineNumber: index + 1,
+                error: String(error?.message || 'Invalid JSON'),
+            });
+        }
+    }
+    return { records, invalidLines };
+}
+
+export function summarizePersistedChatMetadata(records = [], invalidLines = []) {
+    const summary = {
+        schema: cloneJson(MESSAGE_IDENTITY_SCAN_SCHEMA),
+        headerPresent: false,
+        recordCount: Array.isArray(records) ? records.length : 0,
+        invalidLineCount: Array.isArray(invalidLines) ? invalidLines.length : 0,
+        invalidLines: Array.isArray(invalidLines) ? invalidLines : [],
+        messageCount: 0,
+        promptHiddenCount: 0,
+        swipeCarrierCount: 0,
+        identity: {
+            presentCount: 0,
+            missingCount: 0,
+            malformedCount: 0,
+            duplicateIds: [],
+        },
+        archive: {
+            archivedCount: 0,
+            promptVisibilityBeforeArchiveCount: 0,
+        },
+        evidencePolicy: {
+            includeCount: 0,
+            excludeCount: 0,
+            unexpectedValues: [],
+        },
+        speakerIdentityCount: 0,
+        chatIdentityStatus: null,
+    };
+
+    const duplicateIds = new Set();
+    const seenIds = new Set();
+    const unexpectedValues = new Set();
+
+    const header = Array.isArray(records) ? records[0] : null;
+    if (header?.chat_metadata && typeof header.chat_metadata === 'object') {
+        summary.headerPresent = true;
+        const chatIdentityStatus = header.chat_metadata?.summary_sharder?.messageIdentity;
+        if (chatIdentityStatus && typeof chatIdentityStatus === 'object') {
+            summary.chatIdentityStatus = cloneJson(chatIdentityStatus);
+        }
+    }
+
+    const messages = Array.isArray(records) ? records.slice(summary.headerPresent ? 1 : 0) : [];
+    summary.messageCount = messages.length;
+
+    for (const message of messages) {
+        if (message?.is_system === true) {
+            summary.promptHiddenCount += 1;
+        }
+        if (Array.isArray(message?.swipes) || message?.swipe_id !== undefined || message?.swipe_info !== undefined) {
+            summary.swipeCarrierCount += 1;
+        }
+
+        const ss = message?.extra?.summary_sharder && typeof message.extra.summary_sharder === 'object'
+            ? message.extra.summary_sharder
+            : null;
+
+        const identity = ss?.messageIdentity;
+        if (identity && typeof identity === 'object') {
+            const messageId = String(identity.messageId || '').trim();
+            const initFingerprint = String(identity.initFingerprint || '').trim();
+            const revisionHash = String(identity.revisionHash || '').trim();
+            if (messageId && initFingerprint && revisionHash) {
+                summary.identity.presentCount += 1;
+                if (seenIds.has(messageId)) {
+                    duplicateIds.add(messageId);
+                } else {
+                    seenIds.add(messageId);
+                }
+            } else {
+                summary.identity.malformedCount += 1;
+            }
+        } else {
+            summary.identity.missingCount += 1;
+        }
+
+        const archive = ss?.archive;
+        if (archive?.isArchived === true) {
+            summary.archive.archivedCount += 1;
+            if (archive.promptVisibilityBeforeArchive !== undefined && archive.promptVisibilityBeforeArchive !== null) {
+                summary.archive.promptVisibilityBeforeArchiveCount += 1;
+            }
+        }
+
+        const evidencePolicy = ss?.evidencePolicy;
+        if (evidencePolicy === 'exclude') {
+            summary.evidencePolicy.excludeCount += 1;
+        } else {
+            summary.evidencePolicy.includeCount += 1;
+            if (evidencePolicy !== undefined && evidencePolicy !== null && evidencePolicy !== 'include') {
+                unexpectedValues.add(String(evidencePolicy));
+            }
+        }
+
+        if (ss?.speakerIdentity && typeof ss.speakerIdentity === 'object') {
+            summary.speakerIdentityCount += 1;
+        }
+    }
+
+    summary.identity.duplicateIds = [...duplicateIds].sort();
+    summary.evidencePolicy.unexpectedValues = [...unexpectedValues].sort();
+    return summary;
+}
+
+export function scanPersistedChatMetadata(request, locator = {}) {
+    const resolution = resolveChatJsonlPath(request, locator);
+    if (!fs.existsSync(resolution.chatFilePath)) {
+        throw createError(404, `Chat file was not found for ${resolution.locator.chatLocator}`, 'ARCH_CHAT_FILE_NOT_FOUND');
+    }
+    const raw = fs.readFileSync(resolution.chatFilePath, 'utf8');
+    const { records, invalidLines } = parseJsonlRecords(raw);
+    return {
+        locator: resolution.locator,
+        file: {
+            kind: resolution.kind,
+            exists: true,
+            fileName: path.basename(resolution.chatFilePath),
+        },
+        summary: summarizePersistedChatMetadata(records, invalidLines),
+    };
 }
 
 export function handleError(response, error) {

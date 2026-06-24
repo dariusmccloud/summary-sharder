@@ -71,6 +71,17 @@ export async function loadArchitecturalAuthorityCapabilities() {
     return await fetchJson('/capabilities');
 }
 
+export async function loadArchitecturalMessageIdentitySchema() {
+    return await fetchJson('/c0-25a/schema');
+}
+
+export async function scanArchitecturalPersistedChatMetadata(locator) {
+    return await fetchJson('/c0-25a/scan-chat', {
+        method: 'POST',
+        body: locator,
+    });
+}
+
 export async function initArchitecturalAuthorityServer() {
     if (!initPromise) {
         initPromise = fetchJson('/init', {

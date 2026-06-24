@@ -15,11 +15,17 @@ import {
     bindArchitecturalAuthorityChat,
     commitArchitecturalAuthorityServerUpdate,
     initArchitecturalAuthorityServer,
+    loadArchitecturalMessageIdentitySchema,
     loadArchitecturalAuthorityCurrentDecisions,
     migrateArchitecturalBrowserStore,
+    scanArchitecturalPersistedChatMetadata,
     validateArchitecturalBrowserMigration,
 } from './architectural-authority-server-api.js';
 import { recordArchitecturalIntegrationEvent } from './architectural-authority-integration.js';
+import {
+    getMessageIdentitySchemaDescriptor,
+    summarizeMessageIdentitySurface,
+} from './message-identity-schema.js';
 
 const PROJECTION_METADATA_SCHEMA_VERSION = 1;
 
@@ -384,4 +390,93 @@ export async function loadArchitecturalLorebookContent(entry) {
     } catch {
         return null;
     }
+}
+
+export function buildArchitecturalMessageIdentityScanLocator(options = {}) {
+    const context = options.context || globalThis.SillyTavern?.getContext?.() || {};
+    const chatLocator = normalizeChatId(options.chatId ?? context.chatId ?? '');
+    if (!chatLocator) {
+        return null;
+    }
+
+    const groupId = String(options.groupId ?? context.groupId ?? context.group_id ?? '').trim();
+    if (groupId) {
+        return {
+            isGroup: true,
+            groupId,
+            chatLocator,
+        };
+    }
+
+    const avatarUrl = String(
+        options.avatarUrl
+        || context.characters?.[context.characterId]?.avatar
+        || ''
+    ).trim();
+
+    if (!avatarUrl) {
+        return null;
+    }
+
+    return {
+        isGroup: false,
+        avatarUrl,
+        chatLocator,
+    };
+}
+
+export async function scanArchitecturalMessageIdentityReadiness(options = {}) {
+    const context = options.context || globalThis.SillyTavern?.getContext?.() || {};
+    const chatState = Array.isArray(options.messages) ? options.messages : (Array.isArray(context.chat) ? context.chat : []);
+    const metadata = options.chatMetadata || context.chat_metadata || chat_metadata || {};
+    const schema = getMessageIdentitySchemaDescriptor();
+    const live = summarizeMessageIdentitySurface(chatState, metadata);
+    const locator = options.locator || buildArchitecturalMessageIdentityScanLocator({
+        context,
+        chatId: options.chatId,
+        avatarUrl: options.avatarUrl,
+        groupId: options.groupId,
+    });
+
+    const diagnostics = [];
+    let persisted = null;
+    let serverSchema = null;
+
+    try {
+        serverSchema = await loadArchitecturalMessageIdentitySchema();
+    } catch (error) {
+        diagnostics.push({
+            level: 'warning',
+            code: String(error?.code || 'ARCH_MESSAGE_IDENTITY_SCHEMA_UNAVAILABLE'),
+            message: String(error?.message || 'Message identity schema endpoint is unavailable.'),
+        });
+    }
+
+    if (locator) {
+        try {
+            persisted = await scanArchitecturalPersistedChatMetadata(locator);
+        } catch (error) {
+            diagnostics.push({
+                level: 'warning',
+                code: String(error?.code || 'ARCH_PERSISTED_CHAT_SCAN_UNAVAILABLE'),
+                message: String(error?.message || 'Persisted chat metadata scan is unavailable.'),
+            });
+        }
+    } else {
+        diagnostics.push({
+            level: 'warning',
+            code: 'ARCH_CHAT_SCAN_LOCATOR_UNAVAILABLE',
+            message: 'A persisted chat scan locator could not be derived from the active context.',
+        });
+    }
+
+    return {
+        phase: 'c0.25a',
+        schema,
+        serverSchema,
+        locator,
+        live,
+        persisted,
+        diagnostics,
+    };
 }

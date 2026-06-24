@@ -13,11 +13,13 @@ import {
     handleError,
     hydrateDecisionRecord,
     loadManifest,
+    MESSAGE_IDENTITY_SCAN_SCHEMA,
     normalizeChatLocator,
     nowTimestamp,
     openOperationalDatabase,
     parseNullableJson,
     readCurrentDecision,
+    scanPersistedChatMetadata,
     sanitizeIdentifier,
     snapshotOperationalDatabase,
     validateArray,
@@ -53,6 +55,33 @@ export async function init(router) {
             schemaVersion: SCHEMA_VERSION,
             capabilities: CAPABILITIES,
         });
+    });
+
+    router.get('/c0-25a/schema', async (_request, response) => {
+        return response.send({
+            ok: true,
+            phase: 'c0.25a',
+            schema: cloneJson(MESSAGE_IDENTITY_SCAN_SCHEMA),
+            capabilities: CAPABILITIES.c0_25a,
+        });
+    });
+
+    router.post('/c0-25a/scan-chat', async (request, response) => {
+        try {
+            const result = scanPersistedChatMetadata(request, {
+                isGroup: request.body?.isGroup === true,
+                groupId: request.body?.groupId || null,
+                avatarUrl: request.body?.avatarUrl || null,
+                chatLocator: request.body?.chatLocator || null,
+            });
+            return response.send({
+                ok: true,
+                phase: 'c0.25a',
+                ...result,
+            });
+        } catch (error) {
+            return handleError(response, error);
+        }
     });
 
     router.post('/init', async (request, response) => {
