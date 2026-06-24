@@ -6,9 +6,13 @@ Phase `C0.25` is complete at the implementation boundary.
 
 This report captures the committed slice history, the live host findings that materially changed the design, and the remaining boundary before `C0.5`.
 
-Current repo head during closeout:
+C0.25 implementation head:
 
 - `eee9ed1` - `feat: add c0.25d shard integrity and load stabilization`
+
+C0.25 closeout documentation head:
+
+- `0e44bd8` - `docs: add c0.25 completion report`
 
 ## Commit Series
 
@@ -19,6 +23,7 @@ Implemented in this sequence:
 - `8cd833a` - `feat: adopt c0.25b message identities`
 - `f8bf513` - `feat: add c0.25c message archive controls`
 - `eee9ed1` - `feat: add c0.25d shard integrity and load stabilization`
+- `0e44bd8` - `docs: add c0.25 completion report`
 
 ## Scope Completed
 
@@ -78,15 +83,22 @@ C0.25 introduced or materially exercised:
   - `identity-complete`
   - `identity-partial`
   - `identity-conflicted`
-- shard health states:
+- shard content-health states:
   - `INTACT`
-  - `VISIBILITY_CHANGED`
   - `DEGRADED`
   - `STALE`
   - `ORPHANED`
   - `CONFLICTED`
+- shard exposure-health states:
+  - `EXPOSURE_OK`
+  - `SOURCE_AND_ARTIFACT_VISIBLE`
+  - `SOURCE_VISIBLE_ARTIFACT_HIDDEN`
+  - `SOURCE_HIDDEN_ARTIFACT_HIDDEN`
+  - `VISIBILITY_POLICY_UNKNOWN`
 
-The validator now distinguishes source drift, missing covered messages, missing shard outputs, and replace-source exposure conflicts instead of silently accepting positional range drift.
+Content integrity and prompt exposure are independent dimensions in the implementation.
+
+The validator now distinguishes source drift, missing covered messages, missing shard outputs, and replace-source exposure conflicts instead of silently accepting positional range drift or treating a visibility problem as degraded semantic evidence.
 
 ## Load and Save Stabilization Result
 
@@ -95,6 +107,16 @@ The most consequential late-stage fix was the passive-load persistence boundary:
 - identity/integrity reconciliation during `chat-changed` and `initial-load` now stays in memory
 - no full chat save is triggered solely by passive load
 - explicit save paths remain responsible for durable corpus mutation
+
+Durability now follows this sequence:
+
+- passive load
+  - reconcile identity/integrity state in memory
+  - do not write the corpus
+- next explicit native host save or explicit adoption path
+  - persist reconciled identity/integrity metadata
+  - verify the write through the normal host save boundary
+  - then update the operational projection from the persisted corpus state
 
 This change closed the observed SillyBunny `EPERM` rename/fallback pattern that was being triggered by load-time Summary Sharder saves against chats still under host activity.
 
@@ -130,14 +152,15 @@ Most important live outcomes:
 
 Detailed profiling evidence remains in:
 
-- [C0_25D_LOAD_PROFILING_EVIDENCE.md](C:\Users\chris\OneDrive\Documents\Personal\Projects\summary-sharder\docs\architectural-memory\C0_25D_LOAD_PROFILING_EVIDENCE.md)
+- [C0_25D_LOAD_PROFILING_EVIDENCE.md](C0_25D_LOAD_PROFILING_EVIDENCE.md)
 
 ## Documentation Updated
 
 C0.25 closeout is governed by:
 
-- [PHASE_C0_25_CORPUS_IDENTITY_AND_INTEGRITY_BRIEF.md](C:\Users\chris\OneDrive\Documents\Personal\Projects\summary-sharder\docs\architectural-memory\PHASE_C0_25_CORPUS_IDENTITY_AND_INTEGRITY_BRIEF.md)
-- [C0_25D_LOAD_PROFILING_EVIDENCE.md](C:\Users\chris\OneDrive\Documents\Personal\Projects\summary-sharder\docs\architectural-memory\C0_25D_LOAD_PROFILING_EVIDENCE.md)
+- [PHASE_C0_25_CORPUS_IDENTITY_AND_INTEGRITY_BRIEF.md](PHASE_C0_25_CORPUS_IDENTITY_AND_INTEGRITY_BRIEF.md)
+
+- [C0_25D_LOAD_PROFILING_EVIDENCE.md](C0_25D_LOAD_PROFILING_EVIDENCE.md)
 
 ## Remaining Limits
 
