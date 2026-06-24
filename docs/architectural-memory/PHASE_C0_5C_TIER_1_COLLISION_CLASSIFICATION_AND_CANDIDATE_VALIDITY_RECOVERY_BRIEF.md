@@ -2,11 +2,18 @@
 
 ## Status
 
-STATUS: ACTIVE C0.5C IMPLEMENTATION CONTRACT
+STATUS: IMPLEMENTED AND VERIFIED
 
 `C0.5B` is complete.
 
-`C0.5C` is the next reconstruction boundary.
+`C0.5C` is complete.
+
+This document remains the governing record of the collision-classification and candidate-validity-recovery boundary implemented in:
+
+- `10ad53e46c8518032b8219f8ff1a73724315545e` - `feat: add c0.5c1 tier-1 collision classification`
+- `6e3a7ecd0e63a7eafd467fb8bd600ce5533541cf` - `fix: stabilize c0.5c persisted candidate hashing`
+
+The next phase boundary is beyond `C0.5C`.
 
 This phase does not expand evidence tiers.
 
