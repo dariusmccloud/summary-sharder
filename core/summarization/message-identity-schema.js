@@ -3,12 +3,12 @@ export const MESSAGE_IDENTITY_SCHEMA_VERSION = 1;
 export const CHAT_IDENTITY_STATUS_SCHEMA_VERSION = 1;
 export const EVIDENCE_POLICY_INCLUDE = 'include';
 export const EVIDENCE_POLICY_EXCLUDE = 'exclude';
-export const IDENTITY_STATUS_VALUES = Object.freeze([
-    'IDENTITY_COMPLETE',
-    'IDENTITY_PARTIAL',
-    'IDENTITY_AMBIGUOUS',
-    'IDENTITY_UNRECOVERABLE',
-]);
+export const IDENTITY_STATUS_VALUES = Object.freeze({
+    COMPLETE: 'IDENTITY_COMPLETE',
+    PARTIAL: 'IDENTITY_PARTIAL',
+    AMBIGUOUS: 'IDENTITY_AMBIGUOUS',
+    UNRECOVERABLE: 'IDENTITY_UNRECOVERABLE',
+});
 
 export function getMessageIdentitySchemaDescriptor() {
     return {
@@ -49,7 +49,7 @@ export function getMessageIdentitySchemaDescriptor() {
         chatIdentityStatus: {
             path: `chat_metadata.${SUMMARY_SHARDER_NAMESPACE}.messageIdentity`,
             schemaVersion: CHAT_IDENTITY_STATUS_SCHEMA_VERSION,
-            allowedValues: [...IDENTITY_STATUS_VALUES],
+            allowedValues: Object.values(IDENTITY_STATUS_VALUES),
         },
         promptVisibility: {
             hostField: 'is_system',

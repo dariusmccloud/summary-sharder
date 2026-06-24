@@ -23,6 +23,7 @@ import { runSharder } from './core/api/single-pass-api.js';
 import { cacheCurrentChatState, findDeletedIndex, getCachedLength } from './core/chat/chat-state.js';
 import { validateAllRanges } from './core/chat/range-manager.js';
 import { shiftRangesOnDelete, shiftRangesOnInsert, buildRangesFromIndices, rangesMatch } from './core/chat/range-operations.js';
+import { reconcileCurrentChatMessageIdentity } from './core/summarization/message-identity-runtime.js';
 
 // UI modules
 import { renderSettingsUI, runManualSummarizeUI } from './ui/ui-manager.js';
@@ -232,6 +233,10 @@ async function onNewMessage(messageId, messageType, sourceEventType = event_type
     // Update cache after new message
     cacheCurrentChatState();
 
+    await reconcileCurrentChatMessageIdentity({
+        reason: 'message-received',
+    });
+
     if (settings.mode !== 'auto') {
         return;
     }
@@ -282,7 +287,10 @@ async function onNewMessage(messageId, messageType, sourceEventType = event_type
  */
 async function onMessageEdited(eventData) {
     void eventData;
-    return;
+    await reconcileCurrentChatMessageIdentity({
+        reason: 'message-edited',
+    });
+    cacheCurrentChatState();
 }
 
 /**
@@ -296,6 +304,10 @@ async function onMessageDeleted(newChatLength) {
     // If cache is stale or no deletion occurred, just validate
     if (cachedLength === 0 || newChatLength >= cachedLength) {
         validateAllRanges();
+        await reconcileCurrentChatMessageIdentity({
+            reason: 'message-deleted',
+            recordDeletion: true,
+        });
         cacheCurrentChatState();
         return;
     }
@@ -319,6 +331,11 @@ async function onMessageDeleted(newChatLength) {
         validateAllRanges();
     }
 
+    await reconcileCurrentChatMessageIdentity({
+        reason: 'message-deleted',
+        recordDeletion: true,
+    });
+
     // Update cache for next deletion
     cacheCurrentChatState();
 }
@@ -337,7 +354,27 @@ async function onMessageInserted(insertedIndex) {
         lastSummarizedIndex++;
     }
 
+    await reconcileCurrentChatMessageIdentity({
+        reason: 'message-inserted',
+    });
+
     // Update cache
+    cacheCurrentChatState();
+}
+
+async function onMessageSwiped(eventData) {
+    void eventData;
+    await reconcileCurrentChatMessageIdentity({
+        reason: 'message-swiped',
+    });
+    cacheCurrentChatState();
+}
+
+async function onMessageUpdated(eventData) {
+    void eventData;
+    await reconcileCurrentChatMessageIdentity({
+        reason: 'message-updated',
+    });
     cacheCurrentChatState();
 }
 
@@ -402,6 +439,10 @@ function onChatChanged() {
 
         // Reapply visibility for THIS chat's ranges (must await to ensure completion before caching)
         await applyVisibilitySettings(settings);
+
+        await reconcileCurrentChatMessageIdentity({
+            reason: 'chat-changed',
+        });
 
         // Cache chat state for deletion tracking (after visibility is fully applied)
         cacheCurrentChatState();
@@ -683,6 +724,10 @@ jQuery(async () => {
     // Apply visibility on load (use async to properly await)
     setTimeout(async () => {
         await applyVisibilitySettings(settings);
+        await reconcileCurrentChatMessageIdentity({
+            reason: 'initial-load',
+        });
+        cacheCurrentChatState();
     }, 1000);
 
     // Register event handlers
@@ -692,6 +737,15 @@ jQuery(async () => {
     eventSource.on(event_types.MESSAGE_INSERTED, onMessageInserted);
     if (event_types.MESSAGE_EDITED) {
         eventSource.on(event_types.MESSAGE_EDITED, onMessageEdited);
+    }
+    if (event_types.MESSAGE_SENT) {
+        eventSource.on(event_types.MESSAGE_SENT, (messageId, messageType) => onNewMessage(messageId, messageType, event_types.MESSAGE_SENT));
+    }
+    if (event_types.MESSAGE_SWIPED) {
+        eventSource.on(event_types.MESSAGE_SWIPED, onMessageSwiped);
+    }
+    if (event_types.MESSAGE_UPDATED) {
+        eventSource.on(event_types.MESSAGE_UPDATED, onMessageUpdated);
     }
 
     // Initialize RAG collection lifecycle (cleanup on chat delete)
