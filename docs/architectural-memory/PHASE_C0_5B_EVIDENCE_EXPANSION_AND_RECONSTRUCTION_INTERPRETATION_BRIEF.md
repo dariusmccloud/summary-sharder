@@ -2,13 +2,21 @@
 
 ## Status
 
-STATUS: ACTIVE C0.5B IMPLEMENTATION CONTRACT
+STATUS: IMPLEMENTED AND VERIFIED
 
-`C0.5A` is complete.
+`C0.5B` is closed.
 
-`C0.5B` is the next reconstruction boundary.
+This document remains the governing record of the deterministic Tier-2 reconstruction boundary.
 
-This phase expands candidate reconstruction beyond already-structured Architectural shards and into explicit Tier-2 dialogue evidence, while remaining fully isolated from live authority.
+`C0.5B` expanded candidate reconstruction beyond already-structured Architectural shards and into explicit Tier-2 dialogue evidence, while remaining fully isolated from live authority.
+
+Implementation closeout is recorded in:
+
+- [C0_5B_COMPLETION_REPORT.md](C:\Users\chris\OneDrive\Documents\Personal\Projects\summary-sharder\docs\architectural-memory\C0_5B_COMPLETION_REPORT.md)
+
+The next implementation boundary is:
+
+- [PHASE_C0_5C_TIER_1_COLLISION_CLASSIFICATION_AND_CANDIDATE_VALIDITY_RECOVERY_BRIEF.md](C:\Users\chris\OneDrive\Documents\Personal\Projects\summary-sharder\docs\architectural-memory\PHASE_C0_5C_TIER_1_COLLISION_CLASSIFICATION_AND_CANDIDATE_VALIDITY_RECOVERY_BRIEF.md)
 
 It does not authorize:
 
