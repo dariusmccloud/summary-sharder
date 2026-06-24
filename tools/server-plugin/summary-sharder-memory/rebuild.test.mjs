@@ -11,9 +11,11 @@ import {
 } from './core.js';
 import {
     cleanupCandidateRebuildArtifacts as cleanupCandidateArtifacts,
+    computePersistedCanonicalCandidateState,
     initCandidateRebuildRun,
     listCandidateRebuildRuns as listCandidateRuns,
     loadCandidateRebuildReport,
+    normalizeComparableDumpForHash,
     runCandidateRebuild,
     setCandidateRebuildPinned,
 } from './rebuild.js';
@@ -357,8 +359,15 @@ test('candidate run compiles admitted artifacts into isolated candidate state an
     assert.equal(result.report.outputSummary.candidateAuthorityRecordCount, 1);
     assert.equal(result.report.determinism.attempted, true);
     assert.equal(result.report.determinism.equivalent, true);
+    assert.equal(result.report.determinism.canonicalHashFinal, true);
     assert.equal(loaded.report.reconstructionRunId, init.manifest.reconstructionRunId);
     assert.match(result.report.candidateRelativePath, /^summary-sharder\/candidates\//);
+    const candidateDbPath = path.join(root, result.report.candidateRelativePath);
+    const persistedHash = computePersistedCanonicalCandidateState(candidateDbPath);
+    const persistedHashSecondRead = computePersistedCanonicalCandidateState(candidateDbPath);
+    assert.equal(result.report.determinism.canonicalCandidateHash, persistedHash.canonicalCandidateHash);
+    assert.equal(persistedHashSecondRead.canonicalCandidateHash, persistedHash.canonicalCandidateHash);
+    assert.equal(result.report.determinism.canonicalByteLength, persistedHash.canonicalByteLength);
     assert.equal(fs.existsSync(livePaths.dbPath), false);
     assert.equal(fs.existsSync(livePaths.snapshotPath), false);
     assert.equal(fs.existsSync(livePaths.statePath), false);
@@ -384,6 +393,8 @@ test('candidate run invalidates when the frozen corpus file changes before compi
     assert.equal(result.ok, false);
     assert.equal(result.report.status, 'invalidated_source_mutation');
     assert.equal(result.report.promotionAvailable, false);
+    assert.equal(result.report.determinism.canonicalCandidateHash, null);
+    assert.equal(result.report.determinism.canonicalHashFinal, false);
 });
 
 test('live schema bootstrap does not create candidate-only reconstruction tables', () => {
@@ -499,6 +510,10 @@ test('invalid candidate build leaves live DB artifacts unchanged and rejects rer
     assert.equal(result.report.candidateValidity.valid, false);
     assert.equal(result.report.candidateValidity.structuralBlockers.some((entry) => entry.code === 'REBUILD_UNRESOLVED_SEMANTIC_CONFLICT'), true);
     assert.equal(result.report.occurrenceGroups.some((entry) => entry.occurrenceClassification === 'UNRESOLVED_SEMANTIC_CONFLICT'), true);
+    const candidateDbPath = path.join(root, result.report.candidateRelativePath);
+    const persistedHash = computePersistedCanonicalCandidateState(candidateDbPath);
+    assert.equal(result.report.determinism.canonicalHashFinal, true);
+    assert.equal(result.report.determinism.canonicalCandidateHash, persistedHash.canonicalCandidateHash);
     assert.deepEqual(after, before);
     await assert.rejects(
         runCandidateRebuild(request, {
@@ -584,6 +599,100 @@ Schema: architectural-memory/v1
     assert.equal(secondRun.report.occurrenceGroups.length, 1);
     assert.equal(firstRun.report.occurrenceGroups[0].collisionEvidenceGroupId, secondRun.report.occurrenceGroups[0].collisionEvidenceGroupId);
     assert.equal(firstRun.report.occurrenceGroups[0].canonicalRecordId, secondRun.report.occurrenceGroups[0].canonicalRecordId);
+});
+
+test('duplicate copied evidence collapses into one member row without changing candidate validity', async () => {
+    const root = makeTempRoot();
+    const duplicateShard = {
+        name: 'System',
+        is_user: false,
+        is_system: true,
+        send_date: '2026-06-24T10:12:00.000Z',
+        mes: `[MEMORY SHARD: Messages 0-0]
+
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+[S1:1] | STATUS: PROPOSED | ID: duplicate-copied-evidence | DECISION: Collapse copied stable evidence without duplicating authority.
+
+===END===`,
+        extra: {
+            summary_sharder: {
+                messageIdentity: {
+                    schemaVersion: 1,
+                    messageId: makeMessageId('dup1'),
+                    initFingerprint: 'sha256:init-dup1',
+                    revisionHash: 'sha256:rev-dup1',
+                },
+                speakerIdentity: {
+                    speakerEntityId: 'system:system',
+                    sourceType: 'system',
+                },
+            },
+        },
+    };
+
+    await writeArchitecturalChatWithShardMessages(root, [duplicateShard], {
+        memoryScopeId: 'scope_duplicate_copy',
+        chatInstanceId: 'chat_duplicate_copy',
+        chatFileName: 'Duplicate Copy A',
+        sourceMes: 'Duplicate copy source.',
+    });
+    await writeArchitecturalChatWithShardMessages(root, [duplicateShard], {
+        memoryScopeId: 'scope_duplicate_copy',
+        chatInstanceId: 'chat_duplicate_copy',
+        chatFileName: 'Duplicate Copy B',
+        sourceMes: 'Duplicate copy source.',
+    });
+
+    const request = buildRequest(root);
+    const init = await initCandidateRebuildRun(request, { memoryScopeId: 'scope_duplicate_copy', requestKey: 'duplicate-copy', now: Date.now() });
+    const result = await runCandidateRebuild(request, { reconstructionRunId: init.manifest.reconstructionRunId, now: Date.now() });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.report.occurrenceGroups.length, 1);
+    assert.equal(result.report.occurrenceGroups[0].occurrenceClassification, 'DUPLICATE_OCCURRENCE');
+    assert.equal(result.report.occurrenceGroups[0].members.length, 1);
+    assert.equal(result.report.occurrenceGroups[0].details.rawMemberCount, 2);
+    assert.equal(result.report.occurrenceGroups[0].details.uniqueMemberCount, 1);
+    assert.equal(result.report.occurrenceGroups[0].members[0].details.duplicateSourceCount, 2);
+    assert.equal('sourceId' in result.report.occurrenceGroups[0].members[0].details.duplicateCopies[0], false);
+    assert.equal(result.report.outputSummary.candidateAuthorityRecordCount, 1);
+});
+
+test('comparable dump normalization ignores runtime-only duplicate copy source ids', () => {
+    const left = normalizeComparableDumpForHash({
+        reconstruction_occurrence_group_members: [{
+            member_evidence_id: 'evidencev1:sha256:left',
+            details_json: JSON.stringify({
+                duplicateSourceCount: 1,
+                duplicateCopies: [{
+                    sourceId: 'src_left',
+                    sourceManifestId: 'manifest:system-shard:a',
+                    artifactMessageId: 'msg_a',
+                    chatInstanceId: 'chat_a',
+                }],
+            }),
+        }],
+    });
+    const right = normalizeComparableDumpForHash({
+        reconstruction_occurrence_group_members: [{
+            member_evidence_id: 'evidencev1:sha256:left',
+            details_json: JSON.stringify({
+                duplicateSourceCount: 1,
+                duplicateCopies: [{
+                    sourceId: 'src_right',
+                    sourceManifestId: 'manifest:system-shard:a',
+                    artifactMessageId: 'msg_a',
+                    chatInstanceId: 'chat_a',
+                }],
+            }),
+        }],
+    });
+
+    assert.deepEqual(left, right);
 });
 
 test('malformed same-version member blocks canonicalization while preserving occurrence evidence', async () => {
@@ -998,6 +1107,35 @@ test('successful candidate report includes artifact admissions, candidate record
     assert.deepEqual(result.report.retention.retainedBecause, ['latest_success']);
 });
 
+test('meaningful persisted candidate mutation changes the canonical hash', async () => {
+    const root = makeTempRoot();
+    const { memoryScopeId } = await writeArchitecturalChat(root);
+    const request = buildRequest(root);
+    const init = await initCandidateRebuildRun(request, {
+        memoryScopeId,
+        requestKey: 'req-j-hash-mutation',
+        now: Date.now(),
+    });
+
+    const result = await runCandidateRebuild(request, {
+        reconstructionRunId: init.manifest.reconstructionRunId,
+        now: Date.now(),
+    });
+    const candidateDbPath = path.join(root, result.report.candidateRelativePath);
+    const before = computePersistedCanonicalCandidateState(candidateDbPath);
+    const adapter = createNodeSqliteAdapter(candidateDbPath);
+    try {
+        adapter.run(
+            'UPDATE decision_records SET status = ? WHERE memory_scope_id = ? AND decision_id = ?',
+            ['ACCEPTED', memoryScopeId, 'gain-modulation-boundary'],
+        );
+    } finally {
+        adapter.close();
+    }
+    const after = computePersistedCanonicalCandidateState(candidateDbPath);
+    assert.notEqual(before.canonicalCandidateHash, after.canonicalCandidateHash);
+});
+
 test('failed candidate run emits a retrievable failed report', async () => {
     const root = makeTempRoot();
     const { memoryScopeId, chatFilePath } = await writeArchitecturalChat(root);
@@ -1024,6 +1162,8 @@ test('failed candidate run emits a retrievable failed report', async () => {
     assert.equal(loaded.report.failure.code.length > 0, true);
     assert.equal(loaded.report.retention.cleanupEligible, false);
     assert.deepEqual(loaded.report.retention.retainedBecause, ['latest_non_success']);
+    assert.equal(loaded.report.determinism.canonicalCandidateHash, null);
+    assert.equal(loaded.report.determinism.canonicalHashFinal, false);
 });
 
 test('older candidate reports load without C0.5C arrays and preserve historical blockers verbatim', () => {

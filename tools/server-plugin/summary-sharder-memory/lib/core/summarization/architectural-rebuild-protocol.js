@@ -108,6 +108,15 @@ export function stableStringify(value) {
     return JSON.stringify(value);
 }
 
+export function compareCanonicalText(left, right) {
+    const a = String(left ?? '');
+    const b = String(right ?? '');
+    if (a === b) {
+        return 0;
+    }
+    return a < b ? -1 : 1;
+}
+
 export function sha256Text(text) {
     return `sha256:${crypto.createHash('sha256').update(String(text || ''), 'utf8').digest('hex')}`;
 }
@@ -121,9 +130,35 @@ export function canonicalizeRow(row, ignoredColumns = []) {
     const normalized = {};
     for (const [key, value] of Object.entries(row || {})) {
         if (ignore.has(key)) continue;
-        normalized[key] = value ?? null;
+        normalized[key] = normalizeCanonicalValue(value);
     }
     return normalized;
+}
+
+export function normalizeCanonicalValue(value) {
+    if (value === undefined || value === null) {
+        return null;
+    }
+    if (typeof value === 'bigint') {
+        const asNumber = Number(value);
+        return Number.isSafeInteger(asNumber) ? asNumber : value.toString();
+    }
+    if (Array.isArray(value)) {
+        return value.map((entry) => normalizeCanonicalValue(entry));
+    }
+    if (value instanceof Uint8Array) {
+        return {
+            __blobHex: Buffer.from(value).toString('hex'),
+        };
+    }
+    if (value && typeof value === 'object') {
+        const normalized = {};
+        for (const key of Object.keys(value).sort(compareCanonicalText)) {
+            normalized[key] = normalizeCanonicalValue(value[key]);
+        }
+        return normalized;
+    }
+    return value;
 }
 
 export function buildDeterministicTableDump(tableSpecs, rowProvider) {
@@ -134,7 +169,7 @@ export function buildDeterministicTableDump(tableSpecs, rowProvider) {
             .sort((left, right) => {
                 const a = stableStringify(left);
                 const b = stableStringify(right);
-                return a.localeCompare(b);
+                return compareCanonicalText(a, b);
             });
         tables[spec.name] = rows;
     }

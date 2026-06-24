@@ -23,6 +23,7 @@ import {
     TIER2_REVIEW_KIND,
     buildDeterministicHashId,
     buildDeterministicTableDump,
+    compareCanonicalText,
     hashDeterministicTableDump,
     sha256Text,
     stableStringify,
@@ -72,7 +73,7 @@ const REBUILD_TABLE_SPECS = Object.freeze([
     { name: 'reconstruction_candidate_conflicts', ignoredColumns: ['reconstruction_run_id'] },
     { name: 'reconstruction_candidate_review_items', ignoredColumns: ['reconstruction_run_id'] },
     { name: 'reconstruction_occurrence_groups', ignoredColumns: ['reconstruction_run_id'] },
-    { name: 'reconstruction_occurrence_group_members', ignoredColumns: ['reconstruction_run_id'] },
+    { name: 'reconstruction_occurrence_group_members', ignoredColumns: ['reconstruction_run_id', 'source_id'] },
     { name: 'reconstruction_version_lifecycle_groups', ignoredColumns: ['reconstruction_run_id'] },
     { name: 'reconstruction_supersession_components', ignoredColumns: ['reconstruction_run_id'] },
 ]);
@@ -83,6 +84,9 @@ const TERMINAL_REPORT_STATUS = new Set([
     'invalid',
     'invalidated_source_mutation',
 ]);
+
+export const CANONICAL_CANDIDATE_HASH_VERSION = 1;
+export const CANONICAL_CANDIDATE_HASH_BASIS = 'persisted_candidate_db';
 
 function isTerminalCandidateStatus(status) {
     const normalized = String(status || '').trim();
@@ -853,7 +857,13 @@ function buildFailureReport(manifest, candidatePaths, finishedAt, failure, repor
         determinism: {
             attempted: false,
             equivalent: false,
+            hashVersion: CANONICAL_CANDIDATE_HASH_VERSION,
+            basis: CANONICAL_CANDIDATE_HASH_BASIS,
             canonicalCandidateHash: null,
+            canonicalHashFinal: false,
+            canonicalByteLength: null,
+            tableRowCounts: {},
+            tableHashes: {},
             differingFieldsIgnored: ['reconstruction_run_id', 'started_at', 'finished_at', 'candidateRelativePath'],
             unexplainedDifferences: [],
         },
@@ -1646,6 +1656,63 @@ function determineEvidenceIndependence(members) {
     return { evidenceIndependence: EVIDENCE_INDEPENDENCE.NOT_PROVEN, independenceBasis: INDEPENDENCE_BASIS.INDEPENDENCE_NOT_PROVEN };
 }
 
+function collapseOccurrenceMembers(rawMembers = []) {
+    const sortedMembers = [...rawMembers].sort((left, right) =>
+        stableStringify([
+            left.memberEvidenceId,
+            left.sourceId,
+            left.sourceManifestId,
+            left.artifactMessageId,
+            left.chatInstanceId,
+        ]).localeCompare(stableStringify([
+            right.memberEvidenceId,
+            right.sourceId,
+            right.sourceManifestId,
+            right.artifactMessageId,
+            right.chatInstanceId,
+        ])));
+    const byEvidenceId = new Map();
+
+    for (const member of sortedMembers) {
+        const existing = byEvidenceId.get(member.memberEvidenceId);
+        if (!existing) {
+            byEvidenceId.set(member.memberEvidenceId, {
+                ...member,
+                coveredSourceMessageIds: [...new Set(member.coveredSourceMessageIds || [])].sort(),
+                duplicateCopies: [{
+                    sourceManifestId: member.sourceManifestId,
+                    artifactMessageId: member.artifactMessageId,
+                    chatInstanceId: member.chatInstanceId,
+                }],
+            });
+            continue;
+        }
+
+        existing.coveredSourceMessageIds = [...new Set([
+            ...(existing.coveredSourceMessageIds || []),
+            ...(member.coveredSourceMessageIds || []),
+        ])].sort();
+        existing.duplicateCopies.push({
+            sourceManifestId: member.sourceManifestId,
+            artifactMessageId: member.artifactMessageId,
+            chatInstanceId: member.chatInstanceId,
+        });
+    }
+
+    const members = [...byEvidenceId.values()].sort((left, right) => left.memberEvidenceId.localeCompare(right.memberEvidenceId));
+    const multiplicity = members.map((member) => ({
+        memberEvidenceId: member.memberEvidenceId,
+        count: Number(member.duplicateCopies?.length || 1),
+    }));
+
+    return {
+        members,
+        rawMemberCount: rawMembers.length,
+        uniqueMemberCount: members.length,
+        multiplicity,
+    };
+}
+
 function classifyOccurrenceGroup(group) {
     const members = group.members || [];
     const uniqueSemanticHashes = [...new Set(members.map((member) => member.canonicalHash))];
@@ -1693,6 +1760,20 @@ function classifyOccurrenceGroup(group) {
     }
 
     if (members.length === 1) {
+        if (Number(group.rawMemberCount || 0) > Number(group.uniqueMemberCount || members.length)) {
+            return {
+                occurrenceClassification: OCCURRENCE_CLASSIFICATION.DUPLICATE_OCCURRENCE,
+                occurrenceRuleId: 'OCC-DUP-001',
+                reconciliationResult: 'MERGED_DUPLICATE',
+                blocking: false,
+                unresolvedReason: null,
+                classificationBasis: {
+                    rawMemberCount: Number(group.rawMemberCount || 0),
+                    uniqueMemberCount: Number(group.uniqueMemberCount || members.length),
+                    duplicateMultiplicity: group.memberMultiplicity || [],
+                },
+            };
+        }
         return {
             occurrenceClassification: OCCURRENCE_CLASSIFICATION.NONE,
             occurrenceRuleId: 'OCC-NONE-001',
@@ -2209,7 +2290,11 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
 
     for (const group of [...occurrenceGroups.values()].sort((left, right) =>
         stableStringify([left.decisionId, left.recordVersion]).localeCompare(stableStringify([right.decisionId, right.recordVersion])))) {
-        group.members.sort((left, right) => left.memberEvidenceId.localeCompare(right.memberEvidenceId));
+        const collapsedMembers = collapseOccurrenceMembers(group.members);
+        group.rawMemberCount = collapsedMembers.rawMemberCount;
+        group.uniqueMemberCount = collapsedMembers.uniqueMemberCount;
+        group.memberMultiplicity = collapsedMembers.multiplicity;
+        group.members = collapsedMembers.members;
         const independence = determineEvidenceIndependence(group.members);
         group.evidenceIndependence = independence.evidenceIndependence;
         group.independenceBasis = independence.independenceBasis;
@@ -2217,7 +2302,7 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
             group.memoryScopeId,
             group.decisionId,
             group.recordVersion,
-            group.members.map((member) => member.memberEvidenceId),
+            group.memberMultiplicity.map((entry) => `${entry.memberEvidenceId}:${entry.count}`),
         );
 
         const classification = classifyOccurrenceGroup(group);
@@ -2247,6 +2332,9 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
             details: {
                 classifierVersion: 1,
                 classificationBasis: classification.classificationBasis,
+                rawMemberCount: group.rawMemberCount,
+                uniqueMemberCount: group.uniqueMemberCount,
+                duplicateMultiplicity: group.memberMultiplicity,
                 memberEvidenceIds: group.members.map((member) => member.memberEvidenceId),
             },
         });
@@ -2268,6 +2356,8 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
                 details: {
                     branchedFromChatInstanceId: member.branchedFromChatInstanceId || null,
                     importedFromChatInstanceId: member.importedFromChatInstanceId || null,
+                    duplicateSourceCount: Number(member.duplicateCopies?.length || 1),
+                    duplicateCopies: member.duplicateCopies || [],
                 },
             });
         }
@@ -2848,9 +2938,71 @@ function validateCandidateState(adapter, manifest, compileResult, liveAuthorityC
 }
 
 function dumpComparableState(adapter) {
-    return buildDeterministicTableDump(REBUILD_TABLE_SPECS, (tableName) => {
+    return normalizeComparableDumpForHash(buildDeterministicTableDump(REBUILD_TABLE_SPECS, (tableName) => {
         return adapter.all(`SELECT * FROM ${tableName}`);
-    });
+    }));
+}
+
+export function buildPersistedCanonicalCandidateState(adapter) {
+    const comparableDump = dumpComparableState(adapter);
+    const canonicalBytes = stableStringify(comparableDump);
+    const tableRowCounts = Object.fromEntries(
+        REBUILD_TABLE_SPECS.map((spec) => [spec.name, Array.isArray(comparableDump[spec.name]) ? comparableDump[spec.name].length : 0]),
+    );
+    const tableHashes = Object.fromEntries(
+        REBUILD_TABLE_SPECS.map((spec) => [spec.name, sha256Text(stableStringify(comparableDump[spec.name] || []))]),
+    );
+    return {
+        hashVersion: CANONICAL_CANDIDATE_HASH_VERSION,
+        basis: CANONICAL_CANDIDATE_HASH_BASIS,
+        comparableDump,
+        canonicalBytes,
+        canonicalByteLength: Buffer.byteLength(canonicalBytes, 'utf8'),
+        canonicalCandidateHash: hashDeterministicTableDump(comparableDump),
+        tableRowCounts,
+        tableHashes,
+    };
+}
+
+export function computePersistedCanonicalCandidateState(candidateDbPath) {
+    const adapter = createAdapter(candidateDbPath);
+    try {
+        return buildPersistedCanonicalCandidateState(adapter);
+    } finally {
+        adapter.close();
+    }
+}
+
+export function normalizeComparableDumpForHash(dump) {
+    const clone = JSON.parse(JSON.stringify(dump || {}));
+    const memberRows = Array.isArray(clone.reconstruction_occurrence_group_members)
+        ? clone.reconstruction_occurrence_group_members
+        : [];
+
+    for (const row of memberRows) {
+        const rawDetails = String(row?.details_json || '').trim();
+        if (!rawDetails) {
+            continue;
+        }
+        try {
+            const details = JSON.parse(rawDetails);
+            if (Array.isArray(details?.duplicateCopies)) {
+                details.duplicateCopies = details.duplicateCopies.map((entry) => {
+                    if (!entry || typeof entry !== 'object') {
+                        return entry;
+                    }
+                    const next = { ...entry };
+                    delete next.sourceId;
+                    return next;
+                }).sort((left, right) => compareCanonicalText(stableStringify(left), stableStringify(right)));
+            }
+            row.details_json = stableStringify(details);
+        } catch {
+            // Preserve original text when the JSON payload cannot be normalized.
+        }
+    }
+
+    return clone;
 }
 
 function removeArtifactTriplet(candidatePaths) {
@@ -3017,6 +3169,7 @@ export async function runCandidateRebuild(request, options = {}) {
     const reconstructionRunId = sanitizeIdentifier(options.reconstructionRunId, 'reconstructionRunId');
     const { candidatePaths, manifest } = loadManifestFromSidecar(userRoot, reconstructionRunId);
     const adapter = createAdapter(candidatePaths.candidateDbPath);
+    let adapterClosed = false;
     const finishedAt = nowTimestamp(options.now);
 
     try {
@@ -3090,7 +3243,13 @@ export async function runCandidateRebuild(request, options = {}) {
                     determinism: {
                         attempted: false,
                         equivalent: false,
+                        hashVersion: CANONICAL_CANDIDATE_HASH_VERSION,
+                        basis: CANONICAL_CANDIDATE_HASH_BASIS,
                         canonicalCandidateHash: null,
+                        canonicalHashFinal: false,
+                        canonicalByteLength: null,
+                        tableRowCounts: {},
+                        tableHashes: {},
                         differingFieldsIgnored: ['reconstruction_run_id', 'started_at', 'finished_at', 'candidateRelativePath'],
                         unexplainedDifferences: [],
                     },
@@ -3174,7 +3333,13 @@ export async function runCandidateRebuild(request, options = {}) {
                 determinism: {
                     attempted: false,
                     equivalent: false,
+                    hashVersion: CANONICAL_CANDIDATE_HASH_VERSION,
+                    basis: CANONICAL_CANDIDATE_HASH_BASIS,
                     canonicalCandidateHash: null,
+                    canonicalHashFinal: false,
+                    canonicalByteLength: null,
+                    tableRowCounts: {},
+                    tableHashes: {},
                     differingFieldsIgnored: ['reconstruction_run_id', 'started_at', 'finished_at', 'candidateRelativePath'],
                     unexplainedDifferences: [],
                 },
@@ -3195,13 +3360,11 @@ export async function runCandidateRebuild(request, options = {}) {
         const postFingerprints = getLiveAuthorityFingerprints(userRoot);
         const liveAuthorityChanged = !equalFingerprints(preFingerprints, postFingerprints);
 
-        const comparableDump = dumpComparableState(adapter);
-        const canonicalCandidateHash = hashDeterministicTableDump(comparableDump);
-
         const determinismDbPath = `${candidatePaths.candidateDbPath}.determinism`;
         const determinismAdapter = createAdapter(determinismDbPath);
         let determinismEquivalent = false;
         let unexplainedDifferences = [];
+        let determinismCanonicalState = null;
         try {
             initializeDatabase(determinismAdapter, finishedAt);
             for (const statement of candidateAuditSchemaStatements()) {
@@ -3210,87 +3373,122 @@ export async function runCandidateRebuild(request, options = {}) {
             insertManifestRows(determinismAdapter, manifest);
             const determinismFrozenCorpusByFileId = loadFrozenCorpusByFileId(userRoot, manifest);
             await compileCandidate(determinismAdapter, manifest, determinismFrozenCorpusByFileId);
-            const determinismHash = hashDeterministicTableDump(dumpComparableState(determinismAdapter));
-            determinismEquivalent = determinismHash === canonicalCandidateHash;
-            if (!determinismEquivalent) {
-                unexplainedDifferences = ['candidate_comparable_state_hash_mismatch'];
-            }
         } finally {
             determinismAdapter.close();
+        }
+        try {
+            determinismCanonicalState = computePersistedCanonicalCandidateState(determinismDbPath);
+        } finally {
             fs.rmSync(determinismDbPath, { force: true });
             fs.rmSync(`${determinismDbPath}-wal`, { force: true });
             fs.rmSync(`${determinismDbPath}-shm`, { force: true });
         }
 
         const validation = validateCandidateState(adapter, manifest, compileResult, liveAuthorityChanged);
-        const succeeded = validation.ok && determinismEquivalent;
         updateCandidateRunStatus(
             adapter,
             reconstructionRunId,
-            succeeded ? RECONSTRUCTION_STATUS.SUCCEEDED : RECONSTRUCTION_STATUS.INVALID,
+            RECONSTRUCTION_STATUS.VALIDATING,
             {
                 finishedAt,
-                failureReason: succeeded ? null : validation.issues.concat(unexplainedDifferences).join(','),
+                failureReason: null,
             },
         );
 
-        const report = {
-            schemaVersion: ARCHITECTURAL_REBUILD_REPORT_SCHEMA_VERSION,
-            protocolVersion: ARCHITECTURAL_REBUILD_PROTOCOL_VERSION,
-            reconstructionRunId,
-            memoryScopeId: manifest.memoryScopeId,
-            status: succeeded ? 'success' : 'invalid',
-            candidateArtifactId: manifest.candidateArtifactId,
-            candidateRelativePath: manifest.candidateRelativePath,
-            manifestRelativePath: manifest.manifestRelativePath,
-            reportRelativePath: manifest.reportRelativePath,
-            liveAuthorityChanged,
-            promotionAvailable: false,
-            inputSummary: {
-                ...buildInputSummary(manifest),
-                tier2MessagesScanned: manifest.corpusFiles.reduce((sum, entry) => sum + Number(entry.messageCount || 0), 0),
-                tier2ClaimsDetected: compileResult.tier2ClaimsDetected,
-                tier2ClaimsAdmitted: compileResult.tier2ClaimsAdmitted,
-                tier2ClaimsAmbiguous: compileResult.tier2ClaimsAmbiguous,
-                tier2ClaimsBlocked: compileResult.tier2ClaimsBlocked,
-                tier2MentionsDetected: compileResult.tier2MentionsDetected,
-                tier2ContextDependent: compileResult.tier2ContextDependent,
-            },
-            outputSummary: {
-                candidateAuthorityRecordCount: compileResult.candidateAuthorityRecordCount,
-                candidateIssueCount: compileResult.candidateIssueCount,
-                candidateClaimCount: compileResult.candidateClaimCount,
-                candidateConflictCount: compileResult.candidateConflictCount,
-                candidateReviewItemCount: compileResult.candidateReviewItemCount,
-            },
-            artifactAdmissions: buildArtifactReportEntries(manifest),
-            candidateRecords: buildCandidateRecordReportEntries(adapter, manifest.reconstructionRunId),
-            occurrenceGroups: buildOccurrenceGroupReportEntries(adapter, manifest.reconstructionRunId),
-            versionLifecycleGroups: buildVersionLifecycleGroupReportEntries(adapter, manifest.reconstructionRunId),
-            supersessionComponents: buildSupersessionComponentReportEntries(adapter, manifest.reconstructionRunId),
-            tier2Claims: buildCandidateClaimReportEntries(adapter, manifest.reconstructionRunId),
-            tier2ClaimLinks: buildCandidateClaimLinkReportEntries(adapter, manifest.reconstructionRunId),
-            issues: buildCandidateIssueReportEntries(adapter, manifest.reconstructionRunId),
-            reviewItems: buildCandidateReviewItemReportEntries(adapter, manifest.reconstructionRunId),
-            coverage: compileResult.coverage,
-            exclusions: compileResult.exclusions,
-            conflicts: buildCandidateConflictReportEntries(adapter, manifest.reconstructionRunId),
-            unresolvedEvidence: compileResult.unresolvedEvidence,
-            promotionBlockers: [
-                'promotion path intentionally unavailable in C0.5A',
-                ...(validation.issues.length > 0 ? validation.issues : []),
-            ],
-            determinism: {
-                attempted: true,
-                equivalent: determinismEquivalent,
-                canonicalCandidateHash,
-                differingFieldsIgnored: ['reconstruction_run_id', 'started_at', 'finished_at', 'candidateRelativePath'],
-                unexplainedDifferences,
-            },
-            failure: null,
-            createdAt: manifest.createdAt,
-            finishedAt,
-        };
+        adapter.close();
+        adapterClosed = true;
+
+        const persistedCanonicalState = computePersistedCanonicalCandidateState(candidatePaths.candidateDbPath);
+        determinismEquivalent = determinismCanonicalState.canonicalCandidateHash === persistedCanonicalState.canonicalCandidateHash;
+        if (!determinismEquivalent) {
+            unexplainedDifferences = ['candidate_comparable_state_hash_mismatch'];
+        }
+        const succeeded = validation.ok && determinismEquivalent;
+
+        const statusUpdateAdapter = createAdapter(candidatePaths.candidateDbPath);
+        try {
+            updateCandidateRunStatus(
+                statusUpdateAdapter,
+                reconstructionRunId,
+                succeeded ? RECONSTRUCTION_STATUS.SUCCEEDED : RECONSTRUCTION_STATUS.INVALID,
+                {
+                    finishedAt,
+                    failureReason: succeeded ? null : validation.issues.concat(unexplainedDifferences).join(','),
+                },
+            );
+        } finally {
+            statusUpdateAdapter.close();
+        }
+
+        const reportAdapter = createAdapter(candidatePaths.candidateDbPath);
+        let report;
+        try {
+            report = {
+                schemaVersion: ARCHITECTURAL_REBUILD_REPORT_SCHEMA_VERSION,
+                protocolVersion: ARCHITECTURAL_REBUILD_PROTOCOL_VERSION,
+                reconstructionRunId,
+                memoryScopeId: manifest.memoryScopeId,
+                status: succeeded ? 'success' : 'invalid',
+                candidateArtifactId: manifest.candidateArtifactId,
+                candidateRelativePath: manifest.candidateRelativePath,
+                manifestRelativePath: manifest.manifestRelativePath,
+                reportRelativePath: manifest.reportRelativePath,
+                liveAuthorityChanged,
+                promotionAvailable: false,
+                inputSummary: {
+                    ...buildInputSummary(manifest),
+                    tier2MessagesScanned: manifest.corpusFiles.reduce((sum, entry) => sum + Number(entry.messageCount || 0), 0),
+                    tier2ClaimsDetected: compileResult.tier2ClaimsDetected,
+                    tier2ClaimsAdmitted: compileResult.tier2ClaimsAdmitted,
+                    tier2ClaimsAmbiguous: compileResult.tier2ClaimsAmbiguous,
+                    tier2ClaimsBlocked: compileResult.tier2ClaimsBlocked,
+                    tier2MentionsDetected: compileResult.tier2MentionsDetected,
+                    tier2ContextDependent: compileResult.tier2ContextDependent,
+                },
+                outputSummary: {
+                    candidateAuthorityRecordCount: compileResult.candidateAuthorityRecordCount,
+                    candidateIssueCount: compileResult.candidateIssueCount,
+                    candidateClaimCount: compileResult.candidateClaimCount,
+                    candidateConflictCount: compileResult.candidateConflictCount,
+                    candidateReviewItemCount: compileResult.candidateReviewItemCount,
+                },
+                artifactAdmissions: buildArtifactReportEntries(manifest),
+                candidateRecords: buildCandidateRecordReportEntries(reportAdapter, manifest.reconstructionRunId),
+                occurrenceGroups: buildOccurrenceGroupReportEntries(reportAdapter, manifest.reconstructionRunId),
+                versionLifecycleGroups: buildVersionLifecycleGroupReportEntries(reportAdapter, manifest.reconstructionRunId),
+                supersessionComponents: buildSupersessionComponentReportEntries(reportAdapter, manifest.reconstructionRunId),
+                tier2Claims: buildCandidateClaimReportEntries(reportAdapter, manifest.reconstructionRunId),
+                tier2ClaimLinks: buildCandidateClaimLinkReportEntries(reportAdapter, manifest.reconstructionRunId),
+                issues: buildCandidateIssueReportEntries(reportAdapter, manifest.reconstructionRunId),
+                reviewItems: buildCandidateReviewItemReportEntries(reportAdapter, manifest.reconstructionRunId),
+                coverage: compileResult.coverage,
+                exclusions: compileResult.exclusions,
+                conflicts: buildCandidateConflictReportEntries(reportAdapter, manifest.reconstructionRunId),
+                unresolvedEvidence: compileResult.unresolvedEvidence,
+                promotionBlockers: [
+                    'promotion path intentionally unavailable in C0.5A',
+                    ...(validation.issues.length > 0 ? validation.issues : []),
+                ],
+                determinism: {
+                    attempted: true,
+                    equivalent: determinismEquivalent,
+                    hashVersion: persistedCanonicalState.hashVersion,
+                    basis: persistedCanonicalState.basis,
+                    canonicalCandidateHash: persistedCanonicalState.canonicalCandidateHash,
+                    canonicalHashFinal: true,
+                    canonicalByteLength: persistedCanonicalState.canonicalByteLength,
+                    tableRowCounts: persistedCanonicalState.tableRowCounts,
+                    tableHashes: persistedCanonicalState.tableHashes,
+                    differingFieldsIgnored: ['reconstruction_run_id', 'started_at', 'finished_at', 'candidateRelativePath'],
+                    unexplainedDifferences,
+                },
+                failure: null,
+                createdAt: manifest.createdAt,
+                finishedAt,
+            };
+        } finally {
+            reportAdapter.close();
+        }
 
         writeReport(candidatePaths, report);
         applyCandidateRetention(userRoot, manifest.memoryScopeId);
@@ -3301,10 +3499,17 @@ export async function runCandidateRebuild(request, options = {}) {
         };
     } catch (error) {
         try {
-            updateCandidateRunStatus(adapter, reconstructionRunId, RECONSTRUCTION_STATUS.FAILED, {
-                finishedAt,
-                failureReason: String(error?.code || error?.message || 'failed'),
-            });
+            const failureAdapter = adapterClosed ? createAdapter(candidatePaths.candidateDbPath) : adapter;
+            try {
+                updateCandidateRunStatus(failureAdapter, reconstructionRunId, RECONSTRUCTION_STATUS.FAILED, {
+                    finishedAt,
+                    failureReason: String(error?.code || error?.message || 'failed'),
+                });
+            } finally {
+                if (adapterClosed) {
+                    failureAdapter.close();
+                }
+            }
             const liveAuthorityChanged = !equalFingerprints(manifest.liveAuthorityFingerprints || {}, getLiveAuthorityFingerprints(userRoot));
             const failureReport = buildFailureReport(manifest, candidatePaths, finishedAt, error, { liveAuthorityChanged });
             writeReport(candidatePaths, failureReport);
@@ -3314,7 +3519,9 @@ export async function runCandidateRebuild(request, options = {}) {
         }
         throw error;
     } finally {
-        adapter.close();
+        if (!adapterClosed) {
+            adapter.close();
+        }
     }
 }
 

@@ -31,7 +31,7 @@
     {
       "canonicalRelativePath": "core/summarization/architectural-rebuild-protocol.js",
       "packagedRelativePath": "lib/core/summarization/architectural-rebuild-protocol.js",
-      "sha256": "c85a883390e0f1f1cd14cb676111e9cdbfc405ee44de8af3c6c549ba3a867871"
+      "sha256": "9cd0f5b41fd508990639a79be2aca9bed0f092979f33c4117939d12de72db089"
     },
     {
       "canonicalRelativePath": "core/summarization/architectural-record-parser.js",
@@ -97,7 +97,7 @@
     },
     {
       "relativePath": "lib/core/summarization/architectural-rebuild-protocol.js",
-      "sha256": "c85a883390e0f1f1cd14cb676111e9cdbfc405ee44de8af3c6c549ba3a867871"
+      "sha256": "9cd0f5b41fd508990639a79be2aca9bed0f092979f33c4117939d12de72db089"
     },
     {
       "relativePath": "lib/core/summarization/architectural-record-parser.js",
@@ -133,7 +133,7 @@
     },
     {
       "relativePath": "lib/packaged-shared-manifest.json",
-      "sha256": "190041460f9d767dd954a1f642e731f7c1a4aa4e5aea6f22420c9b0d256ad181"
+      "sha256": "fc63f0c4caa3e3e4f795c881df94814573e37691f375d74f89a8836aba484cc3"
     },
     {
       "relativePath": "package.json",
@@ -145,11 +145,11 @@
     },
     {
       "relativePath": "rebuild.js",
-      "sha256": "f76b4cf3760ed232c5ab73971d5e2d01ef20b47da96f70d9b6904b627b9fe88b"
+      "sha256": "177196eae01e7a6a8d3bed13724d99c35479e179c58a57f89b26ae828552a4e7"
     },
     {
       "relativePath": "schema.js",
-      "sha256": "e44328ef4eb0653addc7007cdf6a8b16afc9442e6109a50dc674febaac529831"
+      "sha256": "21c57a06cf6048bbc030c73775f56346aafc4ad8aa3ebb25563a96dc85dd46d9"
     },
     {
       "relativePath": "sqlite-bun.js",
