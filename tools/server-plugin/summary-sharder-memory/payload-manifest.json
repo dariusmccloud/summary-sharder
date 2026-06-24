@@ -24,9 +24,14 @@
       "sha256": "9203f1a6f19d138d2ac06773f64f11fb5c6f3170845056f16b45b840ead7134d"
     },
     {
+      "canonicalRelativePath": "core/summarization/architectural-dialogue-claim-extractor.js",
+      "packagedRelativePath": "lib/core/summarization/architectural-dialogue-claim-extractor.js",
+      "sha256": "26217c943f5215dc86303007aa68b0d7286e8b84d50e83b7a4bba55591f8d6e0"
+    },
+    {
       "canonicalRelativePath": "core/summarization/architectural-rebuild-protocol.js",
       "packagedRelativePath": "lib/core/summarization/architectural-rebuild-protocol.js",
-      "sha256": "12e6d3c60828a2a907d9e7aa3304702bfd9e2ad58cde4173f965724fd3e87085"
+      "sha256": "c85a883390e0f1f1cd14cb676111e9cdbfc405ee44de8af3c6c549ba3a867871"
     },
     {
       "canonicalRelativePath": "core/summarization/architectural-record-parser.js",
@@ -87,8 +92,12 @@
       "sha256": "9203f1a6f19d138d2ac06773f64f11fb5c6f3170845056f16b45b840ead7134d"
     },
     {
+      "relativePath": "lib/core/summarization/architectural-dialogue-claim-extractor.js",
+      "sha256": "26217c943f5215dc86303007aa68b0d7286e8b84d50e83b7a4bba55591f8d6e0"
+    },
+    {
       "relativePath": "lib/core/summarization/architectural-rebuild-protocol.js",
-      "sha256": "12e6d3c60828a2a907d9e7aa3304702bfd9e2ad58cde4173f965724fd3e87085"
+      "sha256": "c85a883390e0f1f1cd14cb676111e9cdbfc405ee44de8af3c6c549ba3a867871"
     },
     {
       "relativePath": "lib/core/summarization/architectural-record-parser.js",
@@ -124,7 +133,7 @@
     },
     {
       "relativePath": "lib/packaged-shared-manifest.json",
-      "sha256": "7bb7e7fa4079332b88dfe20dd44828766aee3cb623883519b2072f2f3959a9a9"
+      "sha256": "190041460f9d767dd954a1f642e731f7c1a4aa4e5aea6f22420c9b0d256ad181"
     },
     {
       "relativePath": "package.json",
@@ -136,11 +145,11 @@
     },
     {
       "relativePath": "rebuild.js",
-      "sha256": "88f97f4122243634eac38381c4007d13d206d20c61400d4e55cb58408bdfbaca"
+      "sha256": "60fe28c0442e5514a44c762fe277571547ec7aa728b2e67e62f9df5d5d1e1230"
     },
     {
       "relativePath": "schema.js",
-      "sha256": "73e90617da70c68245f1571e865b60187eea30c09891237f6dc6f2444f2f9319"
+      "sha256": "e44328ef4eb0653addc7007cdf6a8b16afc9442e6109a50dc674febaac529831"
     },
     {
       "relativePath": "sqlite-bun.js",

@@ -14,12 +14,24 @@ import {
     ARCHITECTURAL_REBUILD_REPORT_SCHEMA_VERSION,
     RECONSTRUCTION_STATUS,
     TERMINAL_RECONSTRUCTION_STATUS,
+    TIER2_CLAIM_CLASS,
+    TIER2_CLAIM_RELATIONSHIP,
+    TIER2_CLAIM_STATE,
+    TIER2_CONFIDENCE_CLASS,
+    TIER2_RECONCILIATION_BASIS,
+    TIER2_REVIEW_KIND,
+    buildDeterministicHashId,
     buildDeterministicTableDump,
     hashDeterministicTableDump,
     sha256Text,
     stableStringify,
     summarizeCompactRebuildReport,
 } from './lib/core/summarization/architectural-rebuild-protocol.js';
+import {
+    buildTier2ClaimReviewItem,
+    extractArchitecturalDialogueClaims,
+    isTier2ClaimAdmitted,
+} from './lib/core/summarization/architectural-dialogue-claim-extractor.js';
 import { parseArchitecturalExtractionResponse } from './lib/core/summarization/architectural-sharder-format.js';
 import { buildArchitecturalShardMetadata } from './lib/core/summarization/saved-shard-identity.js';
 import {
@@ -54,6 +66,10 @@ const REBUILD_TABLE_SPECS = Object.freeze([
     { name: 'reconstruction_candidate_issues', ignoredColumns: ['reconstruction_run_id', 'issue_id', 'source_id'] },
     { name: 'reconstruction_candidate_provenance', ignoredColumns: ['reconstruction_run_id', 'provenance_id'] },
     { name: 'reconstruction_candidate_provenance_sources', ignoredColumns: ['reconstruction_run_id', 'provenance_id'] },
+    { name: 'reconstruction_candidate_claims', ignoredColumns: ['reconstruction_run_id'] },
+    { name: 'reconstruction_candidate_claim_links', ignoredColumns: ['reconstruction_run_id'] },
+    { name: 'reconstruction_candidate_conflicts', ignoredColumns: ['reconstruction_run_id'] },
+    { name: 'reconstruction_candidate_review_items', ignoredColumns: ['reconstruction_run_id'] },
 ]);
 
 const TERMINAL_REPORT_STATUS = new Set([
@@ -376,6 +392,85 @@ function buildCandidateIssueReportEntries(adapter, reconstructionRunId) {
     }));
 }
 
+function buildCandidateClaimReportEntries(adapter, reconstructionRunId) {
+    return adapter.all(
+        `SELECT *
+           FROM reconstruction_candidate_claims
+          WHERE reconstruction_run_id = ?
+          ORDER BY claim_id ASC`,
+        [reconstructionRunId],
+    ).map((row) => ({
+        claimId: row.claim_id,
+        claimIdVersion: Number(row.claim_id_version),
+        memoryScopeId: row.memory_scope_id,
+        claimClass: row.claim_class || null,
+        claimState: row.claim_state || null,
+        authorityClass: row.authority_class,
+        authorityBasis: row.authority_basis,
+        claimZoneClass: row.claim_zone_class,
+        extractionMode: row.extraction_mode,
+        extractionRuleId: row.extraction_rule_id,
+        extractionRuleVersion: Number(row.extraction_rule_version),
+        normalizationVersion: Number(row.normalization_version),
+        confidenceClass: row.confidence_class,
+        admissionStatus: row.admission_status,
+        admissionReason: row.admission_reason,
+        evidenceLineageId: row.evidence_lineage_id,
+        sourceMessageId: row.source_message_id,
+        chatInstanceId: row.chat_instance_id,
+        sourceRevisionHash: row.source_revision_hash,
+        claimTextExcerpt: row.claim_text_excerpt,
+        normalizedClaim: JSON.parse(row.normalized_claim_json || '{}'),
+        details: JSON.parse(row.details_json || '{}'),
+    }));
+}
+
+function buildCandidateClaimLinkReportEntries(adapter, reconstructionRunId) {
+    return adapter.all(
+        `SELECT claim_id, related_record_id, relationship_type, reconciliation_basis
+           FROM reconstruction_candidate_claim_links
+          WHERE reconstruction_run_id = ?
+          ORDER BY claim_id ASC, related_record_id ASC, relationship_type ASC`,
+        [reconstructionRunId],
+    ).map((row) => ({
+        claimId: row.claim_id,
+        relatedRecordId: row.related_record_id,
+        relationshipType: row.relationship_type,
+        reconciliationBasis: row.reconciliation_basis,
+    }));
+}
+
+function buildCandidateConflictReportEntries(adapter, reconstructionRunId) {
+    return adapter.all(
+        `SELECT conflict_id, claim_id, conflict_code, details_json
+           FROM reconstruction_candidate_conflicts
+          WHERE reconstruction_run_id = ?
+          ORDER BY conflict_id ASC`,
+        [reconstructionRunId],
+    ).map((row) => ({
+        conflictId: row.conflict_id,
+        claimId: row.claim_id,
+        code: row.conflict_code,
+        details: JSON.parse(row.details_json || '{}'),
+    }));
+}
+
+function buildCandidateReviewItemReportEntries(adapter, reconstructionRunId) {
+    return adapter.all(
+        `SELECT review_item_id, claim_id, review_kind, severity, details_json
+           FROM reconstruction_candidate_review_items
+          WHERE reconstruction_run_id = ?
+          ORDER BY review_item_id ASC`,
+        [reconstructionRunId],
+    ).map((row) => ({
+        reviewItemId: row.review_item_id,
+        claimId: row.claim_id || null,
+        reviewKind: row.review_kind,
+        severity: row.severity,
+        details: JSON.parse(row.details_json || '{}'),
+    }));
+}
+
 function buildDynamicRetentionState(userRoot, report) {
     if (!report?.memoryScopeId || !report?.reconstructionRunId) {
         return {
@@ -406,6 +501,13 @@ function buildInputSummary(manifest) {
         admittedArtifacts: manifest.artifacts.filter((artifact) => artifact.admissionStatus === 'admitted').length,
         excludedArtifacts: manifest.artifacts.filter((artifact) => artifact.admissionStatus === 'excluded').length,
         blockedArtifacts: manifest.artifacts.filter((artifact) => artifact.admissionStatus === 'blocked').length,
+        tier2MessagesScanned: 0,
+        tier2ClaimsDetected: 0,
+        tier2ClaimsAdmitted: 0,
+        tier2ClaimsAmbiguous: 0,
+        tier2ClaimsBlocked: 0,
+        tier2MentionsDetected: 0,
+        tier2ContextDependent: 0,
     };
 }
 
@@ -437,6 +539,9 @@ function buildFailureReport(manifest, candidatePaths, finishedAt, failure, repor
         outputSummary: {
             candidateAuthorityRecordCount: 0,
             candidateIssueCount: 0,
+            candidateClaimCount: 0,
+            candidateConflictCount: 0,
+            candidateReviewItemCount: 0,
         },
         coverage: {
             exact: { attempted: false, count: null },
@@ -448,9 +553,12 @@ function buildFailureReport(manifest, candidatePaths, finishedAt, failure, repor
         },
         artifactAdmissions: buildArtifactReportEntries(manifest),
         candidateRecords: [],
+        tier2Claims: [],
+        tier2ClaimLinks: [],
         issues: [],
         exclusions: [],
         conflicts: [],
+        reviewItems: [],
         unresolvedEvidence: [],
         promotionBlockers: [
             'promotion path intentionally unavailable in C0.5A',
@@ -772,6 +880,98 @@ function insertCandidateIssue(adapter, reconstructionRunId, issue) {
     );
 }
 
+function insertCandidateClaim(adapter, reconstructionRunId, claim) {
+    adapter.run(
+        `INSERT INTO reconstruction_candidate_claims (
+            reconstruction_run_id, claim_id, claim_id_version, memory_scope_id, claim_class, claim_state,
+            authority_class, authority_basis, claim_zone_class, extraction_mode, extraction_rule_id,
+            extraction_rule_version, normalization_version, confidence_class, admission_status,
+            admission_reason, evidence_lineage_id, source_message_id, chat_instance_id, source_revision_hash,
+            claim_text_excerpt, normalized_claim_json, details_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            reconstructionRunId,
+            claim.claimId,
+            Number(claim.claimIdVersion || 1),
+            claim.memoryScopeId,
+            claim.claimClass || null,
+            claim.claimState || null,
+            claim.authorityClass,
+            claim.authorityBasis,
+            claim.claimZoneClass,
+            claim.extractionMode,
+            claim.extractionRuleId,
+            Number(claim.extractionRuleVersion || 1),
+            Number(claim.normalizationVersion || 1),
+            claim.confidenceClass,
+            claim.admissionStatus,
+            claim.admissionReason,
+            claim.evidenceLineageId,
+            claim.sourceMessageId,
+            claim.chatInstanceId,
+            claim.sourceRevisionHash,
+            claim.claimTextExcerpt || '',
+            JSON.stringify(claim.normalizedClaimPayload || {}),
+            JSON.stringify({
+                sourceTimestamp: claim.sourceTimestamp || null,
+                speakerEntityId: claim.speakerEntityId || null,
+                speakerRole: claim.speakerRole || null,
+                jurisdictionScope: claim.jurisdictionScope || null,
+                claimSpan: claim.claimSpan || null,
+                reviewKind: claim.reviewKind || null,
+                relatedRecordIds: claim.relatedRecordIds || [],
+                sourceOccurrenceId: claim.sourceOccurrenceId || null,
+            }),
+        ],
+    );
+}
+
+function insertCandidateClaimLink(adapter, reconstructionRunId, link) {
+    adapter.run(
+        `INSERT INTO reconstruction_candidate_claim_links (
+            reconstruction_run_id, claim_id, related_record_id, relationship_type, reconciliation_basis
+        ) VALUES (?, ?, ?, ?, ?)`,
+        [
+            reconstructionRunId,
+            link.claimId,
+            link.relatedRecordId,
+            link.relationshipType,
+            link.reconciliationBasis,
+        ],
+    );
+}
+
+function insertCandidateConflict(adapter, reconstructionRunId, conflict) {
+    adapter.run(
+        `INSERT INTO reconstruction_candidate_conflicts (
+            reconstruction_run_id, conflict_id, claim_id, conflict_code, details_json
+        ) VALUES (?, ?, ?, ?, ?)`,
+        [
+            reconstructionRunId,
+            conflict.conflictId,
+            conflict.claimId,
+            conflict.conflictCode,
+            JSON.stringify(conflict.details || {}),
+        ],
+    );
+}
+
+function insertCandidateReviewItem(adapter, reconstructionRunId, reviewItem) {
+    adapter.run(
+        `INSERT INTO reconstruction_candidate_review_items (
+            reconstruction_run_id, review_item_id, claim_id, review_kind, severity, details_json
+        ) VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+            reconstructionRunId,
+            reviewItem.reviewItemId,
+            reviewItem.claimId || null,
+            reviewItem.reviewKind,
+            reviewItem.severity,
+            JSON.stringify(reviewItem.details || {}),
+        ],
+    );
+}
+
 function aggregateDeterministicArtifacts(manifest, corpusByFileId) {
     return manifest.artifacts
         .filter((artifact) => artifact.admissionStatus === 'admitted')
@@ -784,6 +984,128 @@ function aggregateDeterministicArtifacts(manifest, corpusByFileId) {
             const b = stableStringify([right.corpus?.fileEntry?.sourceLocator?.relativePath, right.outputUid, right.sourceManifestId, right.sourceId]);
             return a.localeCompare(b);
         });
+}
+
+function buildTier2OccurrenceContext(manifest, corpus, message) {
+    return {
+        memoryScopeId: manifest.memoryScopeId,
+        chatInstanceId: corpus.fileEntry?.chatInstanceId || null,
+        sourceRelativePath: corpus.fileEntry?.sourceLocator?.relativePath || null,
+        sourceMessageId: String(message?.extra?.summary_sharder?.messageIdentity?.messageId || '').trim(),
+        sourceRevisionHash: String(message?.extra?.summary_sharder?.messageIdentity?.revisionHash || '').trim(),
+        initFingerprint: String(message?.extra?.summary_sharder?.messageIdentity?.initFingerprint || '').trim(),
+        message,
+    };
+}
+
+function buildTier2DecisionFields(claim, decisionId) {
+    const fields = {
+        ID: decisionId,
+        STATUS: claim.claimState || TIER2_CLAIM_STATE.PROPOSED,
+    };
+    if (claim.claimClass === TIER2_CLAIM_CLASS.DECISION) {
+        fields.DECISION = claim.normalizedClaimPayload?.decisionText || '';
+    } else if (claim.claimClass === TIER2_CLAIM_CLASS.CORRECTION) {
+        fields.CHANGED = claim.normalizedClaimPayload?.correctionText || '';
+    } else if (claim.claimClass === TIER2_CLAIM_CLASS.SUPERSESSION) {
+        fields.SUPERSEDES = claim.normalizedClaimPayload?.supersededDecisionId || '';
+        fields.DECISION = `Supersession candidate for ${claim.normalizedClaimPayload?.replacementDecisionId || decisionId}`;
+    } else if (claim.claimClass === TIER2_CLAIM_CLASS.UNRESOLVED_COMMITMENT) {
+        fields.DECISION = claim.normalizedClaimPayload?.commitmentText || '';
+    }
+    return fields;
+}
+
+function buildTier2RecordId(memoryScopeId, decisionId, recordVersion = 1) {
+    return `${memoryScopeId}:${decisionId}:${recordVersion}`;
+}
+
+function normalizeTier2ComparisonText(value) {
+    return String(value || '')
+        .trim()
+        .replace(/[.?!]+$/u, '')
+        .trim()
+        .replace(/\s+/gu, ' ')
+        .toLowerCase();
+}
+
+async function buildTier2AuthorityInput(claim, decisionId) {
+    const fields = buildTier2DecisionFields(claim, decisionId);
+    return await buildArchitecturalDecisionAuthorityInput(`[S1:1] | ${Object.entries(fields)
+        .filter(([, value]) => String(value || '').trim())
+        .map(([key, value]) => `${key}: ${String(value)}`)
+        .join(' | ')}`);
+}
+
+function insertCandidateProvenanceRecord(adapter, manifest, recordId, sourceKind, claimOrOccurrence) {
+    const provenanceId = createId('prov');
+    const sourceMessageId = claimOrOccurrence.sourceMessageId
+        || claimOrOccurrence.artifactMessageId
+        || null;
+    const sourceIdentityHash = claimOrOccurrence.sourceIdentityHash
+        || claimOrOccurrence.evidenceLineageId
+        || claimOrOccurrence.sourceMessageId
+        || null;
+    adapter.run(
+        `INSERT INTO reconstruction_candidate_provenance (
+            reconstruction_run_id, provenance_id, record_id, memory_scope_id, speaker_entity_id,
+            chat_instance_id, artifact_message_id, source_manifest_id, source_revision_hash, source_identity_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            manifest.reconstructionRunId,
+            provenanceId,
+            recordId,
+            manifest.memoryScopeId,
+            String(claimOrOccurrence.speakerEntityId || ''),
+            String(claimOrOccurrence.chatInstanceId || ''),
+            String(sourceMessageId || ''),
+            sourceKind,
+            String(claimOrOccurrence.sourceRevisionHash || ''),
+            String(sourceIdentityHash || ''),
+        ],
+    );
+    const coveredSourceMessageIds = claimOrOccurrence.coveredSourceMessageIds || [];
+    for (const messageId of coveredSourceMessageIds) {
+        adapter.run(
+            `INSERT INTO reconstruction_candidate_provenance_sources (
+                reconstruction_run_id, provenance_id, covered_source_message_id
+            ) VALUES (?, ?, ?)`,
+            [manifest.reconstructionRunId, provenanceId, messageId],
+        );
+    }
+}
+
+function collectTier2Claims(manifest, corpusByFileId, admittedArtifactMessageIds) {
+    const claims = [];
+    const files = [...manifest.corpusFiles].sort((left, right) =>
+        stableStringify([left.sourceLocator?.relativePath, left.chatInstanceId || '', left.corpusFileId])
+            .localeCompare(stableStringify([right.sourceLocator?.relativePath, right.chatInstanceId || '', right.corpusFileId])));
+
+    for (const fileEntry of files) {
+        const corpus = corpusByFileId.get(fileEntry.corpusFileId);
+        if (!corpus) continue;
+        for (const message of corpus.messages) {
+            const messageId = String(message?.extra?.summary_sharder?.messageIdentity?.messageId || '').trim();
+            if (!messageId || admittedArtifactMessageIds.has(messageId)) {
+                continue;
+            }
+            const detections = extractArchitecturalDialogueClaims(buildTier2OccurrenceContext(manifest, corpus, message));
+            const evidencePolicy = String(message?.extra?.summary_sharder?.evidencePolicy || '').trim().toLowerCase();
+            if (evidencePolicy === 'exclude') {
+                for (const detection of detections) {
+                    if (detection.admissionStatus === 'admitted') {
+                        detection.admissionStatus = 'blocked';
+                        detection.admissionReason = 'evidence_policy_excluded';
+                        detection.confidenceClass = TIER2_CONFIDENCE_CLASS.OUT_OF_SCOPE;
+                    }
+                }
+            }
+            claims.push(...detections);
+        }
+    }
+
+    claims.sort((left, right) => left.claimId.localeCompare(right.claimId));
+    return claims;
 }
 
 async function compileCandidate(adapter, manifest, corpusByFileId) {
@@ -818,7 +1140,10 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
     const registry = getSharderSectionRegistry(ARCHITECTURAL_PROFILE);
     const artifacts = aggregateDeterministicArtifacts(manifest, corpusByFileId);
     const decisionGroups = new Map();
+    const admittedArtifactMessageIds = new Set();
     const issues = [];
+    const conflicts = [];
+    const reviewItems = [];
     const unresolvedEvidence = [];
     const exclusions = manifest.artifacts
         .filter((artifact) => artifact.admissionStatus !== 'admitted')
@@ -859,6 +1184,7 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
                 continue;
             }
 
+            admittedArtifactMessageIds.add(String(artifact.artifactMessageId || '').trim());
             const occurrence = {
                 artifact,
                 authorityInput,
@@ -874,9 +1200,37 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
         }
     }
 
+    const recordByDecisionId = new Map();
+    const decisionTextToRecords = new Map();
     let candidateAuthorityRecordCount = 0;
     let exactCount = 0;
+    let corroboratedCount = 0;
+    let deltaRecoveredCount = 0;
+    let reconstructedCount = 0;
     let conflictedCount = 0;
+
+    function indexRecord(decisionId, recordVersion, authorityInput, fields = authorityInput.fields || {}) {
+        const recordId = buildTier2RecordId(manifest.memoryScopeId, decisionId, recordVersion);
+        const decisionText = String(fields?.DECISION || '').trim();
+        const decisionComparisonText = normalizeTier2ComparisonText(decisionText);
+        const indexed = {
+            decisionId,
+            recordId,
+            recordVersion,
+            canonicalHash: authorityInput.canonicalHash,
+            fields,
+            decisionText,
+            decisionComparisonText,
+        };
+        recordByDecisionId.set(decisionId, indexed);
+        if (decisionComparisonText) {
+            const key = decisionComparisonText;
+            const list = decisionTextToRecords.get(key) || [];
+            list.push(indexed);
+            decisionTextToRecords.set(key, list);
+        }
+        return indexed;
+    }
 
     for (const [decisionId, occurrences] of [...decisionGroups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
         const hashes = [...new Set(occurrences.map((entry) => entry.authorityInput.canonicalHash))];
@@ -899,7 +1253,7 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
 
         const canonical = occurrences[0].authorityInput;
         const recordVersion = 1;
-        const recordId = `${manifest.memoryScopeId}:${decisionId}:${recordVersion}`;
+        const recordId = buildTier2RecordId(manifest.memoryScopeId, decisionId, recordVersion);
         const provenanceEntries = [];
 
         for (const occurrence of occurrences) {
@@ -1002,8 +1356,256 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
             }
         }
 
+        indexRecord(decisionId, recordVersion, canonical, canonical.fields || {});
         candidateAuthorityRecordCount += 1;
         exactCount += 1;
+    }
+
+    const tier2Claims = collectTier2Claims(manifest, corpusByFileId, admittedArtifactMessageIds);
+    const corroborationLineages = new Set();
+
+    for (const claim of tier2Claims) {
+        const mutableClaim = {
+            ...claim,
+            relatedRecordIds: [...(claim.relatedRecordIds || [])],
+        };
+
+        if (!isTier2ClaimAdmitted(mutableClaim)) {
+            insertCandidateClaim(adapter, manifest.reconstructionRunId, mutableClaim);
+            if (mutableClaim.reviewKind) {
+                const reviewItem = buildTier2ClaimReviewItem(mutableClaim, mutableClaim.reviewKind, 'warning', {
+                    admissionReason: mutableClaim.admissionReason,
+                });
+                reviewItems.push(reviewItem);
+                insertCandidateReviewItem(adapter, manifest.reconstructionRunId, reviewItem);
+            }
+            continue;
+        }
+
+        const payload = mutableClaim.normalizedClaimPayload || {};
+
+        if (mutableClaim.claimClass === TIER2_CLAIM_CLASS.DECISION) {
+            const explicitDecisionId = String(payload.explicitDecisionId || '').trim().toLowerCase() || null;
+            const decisionText = String(payload.decisionText || '').trim();
+            const decisionComparisonText = normalizeTier2ComparisonText(decisionText);
+            const relatedRecord = explicitDecisionId ? recordByDecisionId.get(explicitDecisionId) : null;
+
+            if (relatedRecord && decisionText) {
+                const authorityInput = await buildTier2AuthorityInput(mutableClaim, explicitDecisionId);
+                const claimStatus = String(mutableClaim.claimState || '').trim().toUpperCase();
+                const relatedStatus = String(relatedRecord.fields?.STATUS || '').trim().toUpperCase();
+                if (
+                    authorityInput.canonicalHash === relatedRecord.canonicalHash
+                    || (
+                        decisionComparisonText
+                        && decisionComparisonText === relatedRecord.decisionComparisonText
+                        && claimStatus === relatedStatus
+                    )
+                ) {
+                    mutableClaim.relatedRecordIds.push(relatedRecord.recordId);
+                    insertCandidateClaim(adapter, manifest.reconstructionRunId, mutableClaim);
+                    insertCandidateClaimLink(adapter, manifest.reconstructionRunId, {
+                        claimId: mutableClaim.claimId,
+                        relatedRecordId: relatedRecord.recordId,
+                        relationshipType: TIER2_CLAIM_RELATIONSHIP.CORROBORATES,
+                        reconciliationBasis: TIER2_RECONCILIATION_BASIS.EXPLICIT_RECORD_ID,
+                    });
+                    insertCandidateProvenanceRecord(adapter, manifest, relatedRecord.recordId, `claim:${mutableClaim.claimId}`, {
+                        speakerEntityId: mutableClaim.speakerEntityId,
+                        chatInstanceId: mutableClaim.chatInstanceId,
+                        sourceMessageId: mutableClaim.sourceMessageId,
+                        sourceRevisionHash: mutableClaim.sourceRevisionHash,
+                        evidenceLineageId: mutableClaim.evidenceLineageId,
+                        coveredSourceMessageIds: [mutableClaim.sourceMessageId],
+                    });
+                    const corroborationKey = stableStringify([relatedRecord.recordId, mutableClaim.evidenceLineageId]);
+                    if (!corroborationLineages.has(corroborationKey)) {
+                        corroborationLineages.add(corroborationKey);
+                        corroboratedCount += 1;
+                    }
+                    continue;
+                }
+
+                const conflict = {
+                    conflictId: buildDeterministicHashId('conflict', 1, {
+                        claimId: mutableClaim.claimId,
+                        code: 'TIER2_DECISION_CONTRADICTS_TIER1',
+                    }),
+                    claimId: mutableClaim.claimId,
+                    conflictCode: 'TIER2_DECISION_CONTRADICTS_TIER1',
+                    details: {
+                        explicitDecisionId,
+                        relatedRecordId: relatedRecord.recordId,
+                    },
+                };
+                insertCandidateClaim(adapter, manifest.reconstructionRunId, mutableClaim);
+                insertCandidateConflict(adapter, manifest.reconstructionRunId, conflict);
+                conflicts.push({ sourceId: mutableClaim.sourceMessageId, code: conflict.conflictCode });
+                conflictedCount += 1;
+                continue;
+            }
+
+            if (!explicitDecisionId && decisionText) {
+                const textMatches = decisionTextToRecords.get(decisionComparisonText) || [];
+                if (textMatches.length > 0) {
+                    mutableClaim.admissionStatus = 'review_only';
+                    mutableClaim.admissionReason = 'possible_corroboration_review';
+                    mutableClaim.reviewKind = TIER2_REVIEW_KIND.POSSIBLE_CORROBORATION;
+                    mutableClaim.confidenceClass = TIER2_CONFIDENCE_CLASS.AMBIGUOUS;
+                    insertCandidateClaim(adapter, manifest.reconstructionRunId, mutableClaim);
+                    const reviewItem = buildTier2ClaimReviewItem(mutableClaim, TIER2_REVIEW_KIND.POSSIBLE_CORROBORATION, 'warning', {
+                        relatedRecordIds: textMatches.map((entry) => entry.recordId),
+                        reconciliationBasis: TIER2_RECONCILIATION_BASIS.EXACT_DECISION_TEXT_MATCH,
+                    });
+                    reviewItems.push(reviewItem);
+                    insertCandidateReviewItem(adapter, manifest.reconstructionRunId, reviewItem);
+                    continue;
+                }
+            }
+
+            const effectiveDecisionId = explicitDecisionId || `tier2-occurrence-${mutableClaim.claimId.replace(/^claimv1:sha256:/u, '').slice(0, 24)}`;
+            const authorityInput = await buildTier2AuthorityInput(mutableClaim, effectiveDecisionId);
+            const recordVersion = 1;
+            const recordId = buildTier2RecordId(manifest.memoryScopeId, effectiveDecisionId, recordVersion);
+            adapter.run(
+                `INSERT INTO decision_records (
+                    memory_scope_id, decision_id, record_version, canonical_hash, canonical_hash_version,
+                    hash_algorithm, semantic_payload, fields_json, status, prior_version,
+                    source_chat_instance_id, last_updating_chat_instance_id, provenance_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    manifest.memoryScopeId,
+                    effectiveDecisionId,
+                    recordVersion,
+                    authorityInput.canonicalHash,
+                    authorityInput.canonicalHashVersion,
+                    authorityInput.hashAlgorithm,
+                    authorityInput.semanticPayload,
+                    JSON.stringify(authorityInput.fields || {}),
+                    authorityInput.status || mutableClaim.claimState || '',
+                    null,
+                    mutableClaim.chatInstanceId || null,
+                    mutableClaim.chatInstanceId || null,
+                    JSON.stringify([]),
+                    timestamp,
+                    timestamp,
+                ],
+            );
+            adapter.run(
+                `INSERT INTO current_decisions (
+                    memory_scope_id, decision_id, current_record_version, canonical_hash, canonical_hash_version,
+                    hash_algorithm, authority_location, archive_pointer_json, stub_pointer_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    manifest.memoryScopeId,
+                    effectiveDecisionId,
+                    recordVersion,
+                    authorityInput.canonicalHash,
+                    authorityInput.canonicalHashVersion,
+                    authorityInput.hashAlgorithm,
+                    'active',
+                    JSON.stringify(null),
+                    JSON.stringify(null),
+                    timestamp,
+                ],
+            );
+            insertCandidateProvenanceRecord(adapter, manifest, recordId, `claim:${mutableClaim.claimId}`, {
+                speakerEntityId: mutableClaim.speakerEntityId,
+                chatInstanceId: mutableClaim.chatInstanceId,
+                sourceMessageId: mutableClaim.sourceMessageId,
+                sourceRevisionHash: mutableClaim.sourceRevisionHash,
+                evidenceLineageId: mutableClaim.evidenceLineageId,
+                coveredSourceMessageIds: [mutableClaim.sourceMessageId],
+            });
+            mutableClaim.relatedRecordIds.push(recordId);
+            insertCandidateClaim(adapter, manifest.reconstructionRunId, mutableClaim);
+            insertCandidateClaimLink(adapter, manifest.reconstructionRunId, {
+                claimId: mutableClaim.claimId,
+                relatedRecordId: recordId,
+                relationshipType: TIER2_CLAIM_RELATIONSHIP.CREATES_RECORD,
+                reconciliationBasis: TIER2_RECONCILIATION_BASIS.SELF_CONTAINED_TIER2_DECISION,
+            });
+            indexRecord(effectiveDecisionId, recordVersion, authorityInput, authorityInput.fields || {});
+            candidateAuthorityRecordCount += 1;
+            reconstructedCount += 1;
+            continue;
+        }
+
+        if (mutableClaim.claimClass === TIER2_CLAIM_CLASS.CORRECTION) {
+            const targetDecisionId = String(payload.targetDecisionId || '').trim().toLowerCase() || null;
+            if (!targetDecisionId || !recordByDecisionId.has(targetDecisionId)) {
+                mutableClaim.admissionStatus = 'review_only';
+                mutableClaim.admissionReason = 'target_record_missing';
+                mutableClaim.reviewKind = TIER2_REVIEW_KIND.TARGET_RECORD_MISSING;
+                mutableClaim.confidenceClass = TIER2_CONFIDENCE_CLASS.AMBIGUOUS;
+                insertCandidateClaim(adapter, manifest.reconstructionRunId, mutableClaim);
+                const reviewItem = buildTier2ClaimReviewItem(mutableClaim, TIER2_REVIEW_KIND.TARGET_RECORD_MISSING, 'warning', {
+                    targetDecisionId,
+                });
+                reviewItems.push(reviewItem);
+                insertCandidateReviewItem(adapter, manifest.reconstructionRunId, reviewItem);
+                continue;
+            }
+            const target = recordByDecisionId.get(targetDecisionId);
+            mutableClaim.relatedRecordIds.push(target.recordId);
+            insertCandidateClaim(adapter, manifest.reconstructionRunId, mutableClaim);
+            insertCandidateClaimLink(adapter, manifest.reconstructionRunId, {
+                claimId: mutableClaim.claimId,
+                relatedRecordId: target.recordId,
+                relationshipType: TIER2_CLAIM_RELATIONSHIP.CORRECTS,
+                reconciliationBasis: TIER2_RECONCILIATION_BASIS.EXPLICIT_TARGET_RELATIONSHIP,
+            });
+            const reviewItem = buildTier2ClaimReviewItem(mutableClaim, TIER2_REVIEW_KIND.DETERMINISTIC_CORRECTION_REVIEW_REQUIRED, 'warning', {
+                targetDecisionId,
+            });
+            reviewItems.push(reviewItem);
+            insertCandidateReviewItem(adapter, manifest.reconstructionRunId, reviewItem);
+            deltaRecoveredCount += 1;
+            continue;
+        }
+
+        if (mutableClaim.claimClass === TIER2_CLAIM_CLASS.SUPERSESSION) {
+            const replacementDecisionId = String(payload.replacementDecisionId || '').trim().toLowerCase() || null;
+            const supersededDecisionId = String(payload.supersededDecisionId || '').trim().toLowerCase() || null;
+            if (!replacementDecisionId || !supersededDecisionId) {
+                mutableClaim.admissionStatus = 'review_only';
+                mutableClaim.admissionReason = 'incomplete_supersession';
+                mutableClaim.reviewKind = TIER2_REVIEW_KIND.INCOMPLETE_SUPERSESSION;
+                mutableClaim.confidenceClass = TIER2_CONFIDENCE_CLASS.AMBIGUOUS;
+                insertCandidateClaim(adapter, manifest.reconstructionRunId, mutableClaim);
+                const reviewItem = buildTier2ClaimReviewItem(mutableClaim, TIER2_REVIEW_KIND.INCOMPLETE_SUPERSESSION, 'warning', {});
+                reviewItems.push(reviewItem);
+                insertCandidateReviewItem(adapter, manifest.reconstructionRunId, reviewItem);
+                continue;
+            }
+            if (!recordByDecisionId.has(supersededDecisionId)) {
+                mutableClaim.admissionStatus = 'review_only';
+                mutableClaim.admissionReason = 'target_record_missing';
+                mutableClaim.reviewKind = TIER2_REVIEW_KIND.TARGET_RECORD_MISSING;
+                mutableClaim.confidenceClass = TIER2_CONFIDENCE_CLASS.AMBIGUOUS;
+                insertCandidateClaim(adapter, manifest.reconstructionRunId, mutableClaim);
+                const reviewItem = buildTier2ClaimReviewItem(mutableClaim, TIER2_REVIEW_KIND.TARGET_RECORD_MISSING, 'warning', {
+                    supersededDecisionId,
+                    replacementDecisionId,
+                });
+                reviewItems.push(reviewItem);
+                insertCandidateReviewItem(adapter, manifest.reconstructionRunId, reviewItem);
+                continue;
+            }
+            const supersededRecord = recordByDecisionId.get(supersededDecisionId);
+            mutableClaim.relatedRecordIds.push(supersededRecord.recordId);
+            insertCandidateClaim(adapter, manifest.reconstructionRunId, mutableClaim);
+            insertCandidateClaimLink(adapter, manifest.reconstructionRunId, {
+                claimId: mutableClaim.claimId,
+                relatedRecordId: supersededRecord.recordId,
+                relationshipType: TIER2_CLAIM_RELATIONSHIP.SUPERSEDES,
+                reconciliationBasis: TIER2_RECONCILIATION_BASIS.EXPLICIT_TARGET_RELATIONSHIP,
+            });
+            deltaRecoveredCount += 1;
+            continue;
+        }
+
+        insertCandidateClaim(adapter, manifest.reconstructionRunId, mutableClaim);
     }
 
     for (const issue of issues) {
@@ -1012,20 +1614,27 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
 
     return {
         exclusions,
-        conflicts: issues.map((issue) => ({
-            sourceId: issue.sourceId,
-            code: issue.code,
-        })),
+        conflicts,
+        reviewItems,
         unresolvedEvidence,
+        tier2ClaimsDetected: tier2Claims.length,
+        tier2ClaimsAdmitted: tier2Claims.filter((entry) => entry.admissionStatus === 'admitted').length,
+        tier2ClaimsAmbiguous: tier2Claims.filter((entry) => entry.confidenceClass === TIER2_CONFIDENCE_CLASS.AMBIGUOUS).length,
+        tier2ClaimsBlocked: tier2Claims.filter((entry) => entry.admissionStatus === 'blocked').length,
+        tier2MentionsDetected: tier2Claims.filter((entry) => entry.reviewKind === TIER2_REVIEW_KIND.NON_ADMITTED_MENTION).length,
+        tier2ContextDependent: tier2Claims.filter((entry) => entry.reviewKind === TIER2_REVIEW_KIND.CONTEXT_DEPENDENT_CANDIDATE).length,
+        candidateClaimCount: tier2Claims.length,
+        candidateConflictCount: conflicts.length,
+        candidateReviewItemCount: reviewItems.length,
         candidateAuthorityRecordCount,
         candidateIssueCount: issues.length,
         coverage: {
             exact: { attempted: true, count: exactCount },
-            corroborated: { attempted: false, count: null },
-            deltaRecovered: { attempted: false, count: null },
-            reconstructed: { attempted: false, count: null },
+            corroborated: { attempted: true, count: corroboratedCount },
+            deltaRecovered: { attempted: true, count: deltaRecoveredCount },
+            reconstructed: { attempted: true, count: reconstructedCount },
             conflicted: { attempted: true, count: conflictedCount },
-            partial: { attempted: true, count: unresolvedEvidence.length || null },
+            partial: { attempted: true, count: unresolvedEvidence.length + reviewItems.length || null },
         },
     };
 }
@@ -1047,6 +1656,13 @@ function validateCandidateState(adapter, manifest, compileResult, liveAuthorityC
     const provenanceRecordCount = Number(adapter.scalar('SELECT COUNT(DISTINCT record_id) FROM reconstruction_candidate_provenance WHERE reconstruction_run_id = ?', [manifest.reconstructionRunId]) || 0);
     if (provenanceRecordCount !== decisionRecordCount) {
         issues.push('candidate_provenance_incomplete');
+    }
+    const claimCount = Number(adapter.scalar('SELECT COUNT(*) FROM reconstruction_candidate_claims WHERE reconstruction_run_id = ?', [manifest.reconstructionRunId]) || 0);
+    if (claimCount !== Number(compileResult.candidateClaimCount || 0)) {
+        issues.push('candidate_claim_count_mismatch');
+    }
+    if (Number(compileResult.candidateIssueCount || 0) > 0) {
+        issues.push('candidate_issues_present');
     }
     if (liveAuthorityChanged) {
         issues.push('live_authority_changed');
@@ -1269,10 +1885,16 @@ export async function runCandidateRebuild(request, options = {}) {
                     outputSummary: {
                         candidateAuthorityRecordCount: 0,
                         candidateIssueCount: 1,
+                        candidateClaimCount: 0,
+                        candidateConflictCount: 0,
+                        candidateReviewItemCount: 0,
                     },
                     artifactAdmissions: buildArtifactReportEntries(manifest),
                     candidateRecords: [],
+                    tier2Claims: [],
+                    tier2ClaimLinks: [],
                     issues: [],
+                    reviewItems: [],
                     coverage: {
                         exact: { attempted: false, count: null },
                         corroborated: { attempted: false, count: null },
@@ -1339,22 +1961,31 @@ export async function runCandidateRebuild(request, options = {}) {
                 liveAuthorityChanged,
                 promotionAvailable: false,
                 inputSummary: {
-                    totalFiles: manifest.corpusFiles.length,
-                    totalArtifacts: manifest.artifacts.length,
-                    admittedArtifacts: manifest.artifacts.filter((artifact) => artifact.admissionStatus === 'admitted').length,
-                    excludedArtifacts: manifest.artifacts.filter((artifact) => artifact.admissionStatus === 'excluded').length,
-                    blockedArtifacts: manifest.artifacts.filter((artifact) => artifact.admissionStatus === 'blocked').length,
+                    ...buildInputSummary(manifest),
+                    tier2MessagesScanned: manifest.corpusFiles.reduce((sum, entry) => sum + Number(entry.messageCount || 0), 0),
+                    tier2ClaimsDetected: compileResult.tier2ClaimsDetected,
+                    tier2ClaimsAdmitted: compileResult.tier2ClaimsAdmitted,
+                    tier2ClaimsAmbiguous: compileResult.tier2ClaimsAmbiguous,
+                    tier2ClaimsBlocked: compileResult.tier2ClaimsBlocked,
+                    tier2MentionsDetected: compileResult.tier2MentionsDetected,
+                    tier2ContextDependent: compileResult.tier2ContextDependent,
                 },
                 outputSummary: {
                     candidateAuthorityRecordCount: compileResult.candidateAuthorityRecordCount,
                     candidateIssueCount: compileResult.candidateIssueCount,
+                    candidateClaimCount: compileResult.candidateClaimCount,
+                    candidateConflictCount: compileResult.candidateConflictCount,
+                    candidateReviewItemCount: compileResult.candidateReviewItemCount,
                 },
                 artifactAdmissions: buildArtifactReportEntries(manifest),
                 candidateRecords: buildCandidateRecordReportEntries(adapter, manifest.reconstructionRunId),
+                tier2Claims: buildCandidateClaimReportEntries(adapter, manifest.reconstructionRunId),
+                tier2ClaimLinks: buildCandidateClaimLinkReportEntries(adapter, manifest.reconstructionRunId),
                 issues: buildCandidateIssueReportEntries(adapter, manifest.reconstructionRunId),
+                reviewItems: buildCandidateReviewItemReportEntries(adapter, manifest.reconstructionRunId),
                 coverage: compileResult.coverage,
                 exclusions: compileResult.exclusions,
-                conflicts: compileResult.conflicts,
+                conflicts: buildCandidateConflictReportEntries(adapter, manifest.reconstructionRunId),
                 unresolvedEvidence: finalMutations.map((entry) => ({
                     sourceId: entry.corpusFileId,
                     reason: 'source_mutated_before_validation_finalize',
@@ -1439,22 +2070,31 @@ export async function runCandidateRebuild(request, options = {}) {
             liveAuthorityChanged,
             promotionAvailable: false,
             inputSummary: {
-                totalFiles: manifest.corpusFiles.length,
-                totalArtifacts: manifest.artifacts.length,
-                admittedArtifacts: manifest.artifacts.filter((artifact) => artifact.admissionStatus === 'admitted').length,
-                excludedArtifacts: manifest.artifacts.filter((artifact) => artifact.admissionStatus === 'excluded').length,
-                blockedArtifacts: manifest.artifacts.filter((artifact) => artifact.admissionStatus === 'blocked').length,
+                ...buildInputSummary(manifest),
+                tier2MessagesScanned: manifest.corpusFiles.reduce((sum, entry) => sum + Number(entry.messageCount || 0), 0),
+                tier2ClaimsDetected: compileResult.tier2ClaimsDetected,
+                tier2ClaimsAdmitted: compileResult.tier2ClaimsAdmitted,
+                tier2ClaimsAmbiguous: compileResult.tier2ClaimsAmbiguous,
+                tier2ClaimsBlocked: compileResult.tier2ClaimsBlocked,
+                tier2MentionsDetected: compileResult.tier2MentionsDetected,
+                tier2ContextDependent: compileResult.tier2ContextDependent,
             },
             outputSummary: {
                 candidateAuthorityRecordCount: compileResult.candidateAuthorityRecordCount,
                 candidateIssueCount: compileResult.candidateIssueCount,
+                candidateClaimCount: compileResult.candidateClaimCount,
+                candidateConflictCount: compileResult.candidateConflictCount,
+                candidateReviewItemCount: compileResult.candidateReviewItemCount,
             },
             artifactAdmissions: buildArtifactReportEntries(manifest),
             candidateRecords: buildCandidateRecordReportEntries(adapter, manifest.reconstructionRunId),
+            tier2Claims: buildCandidateClaimReportEntries(adapter, manifest.reconstructionRunId),
+            tier2ClaimLinks: buildCandidateClaimLinkReportEntries(adapter, manifest.reconstructionRunId),
             issues: buildCandidateIssueReportEntries(adapter, manifest.reconstructionRunId),
+            reviewItems: buildCandidateReviewItemReportEntries(adapter, manifest.reconstructionRunId),
             coverage: compileResult.coverage,
             exclusions: compileResult.exclusions,
-            conflicts: compileResult.conflicts,
+            conflicts: buildCandidateConflictReportEntries(adapter, manifest.reconstructionRunId),
             unresolvedEvidence: compileResult.unresolvedEvidence,
             promotionBlockers: [
                 'promotion path intentionally unavailable in C0.5A',

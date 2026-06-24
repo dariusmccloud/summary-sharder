@@ -14,9 +14,14 @@
       "sha256": "9203f1a6f19d138d2ac06773f64f11fb5c6f3170845056f16b45b840ead7134d"
     },
     {
+      "canonicalRelativePath": "core/summarization/architectural-dialogue-claim-extractor.js",
+      "packagedRelativePath": "lib/core/summarization/architectural-dialogue-claim-extractor.js",
+      "sha256": "26217c943f5215dc86303007aa68b0d7286e8b84d50e83b7a4bba55591f8d6e0"
+    },
+    {
       "canonicalRelativePath": "core/summarization/architectural-rebuild-protocol.js",
       "packagedRelativePath": "lib/core/summarization/architectural-rebuild-protocol.js",
-      "sha256": "12e6d3c60828a2a907d9e7aa3304702bfd9e2ad58cde4173f965724fd3e87085"
+      "sha256": "c85a883390e0f1f1cd14cb676111e9cdbfc405ee44de8af3c6c549ba3a867871"
     },
     {
       "canonicalRelativePath": "core/summarization/architectural-record-parser.js",

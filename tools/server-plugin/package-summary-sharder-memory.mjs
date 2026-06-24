@@ -22,6 +22,7 @@ const STATIC_PAYLOAD_FILES = Object.freeze([
 const RUNTIME_SHARED_ENTRYPOINTS = Object.freeze([
     'core/summarization/sharder-section-registry.js',
     'core/summarization/architectural-authority-store.js',
+    'core/summarization/architectural-dialogue-claim-extractor.js',
     'core/summarization/architectural-rebuild-protocol.js',
     'core/summarization/architectural-sharder-format.js',
     'core/summarization/saved-shard-identity.js',

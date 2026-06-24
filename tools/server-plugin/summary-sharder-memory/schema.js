@@ -167,5 +167,56 @@ export function candidateAuditSchemaStatements() {
             covered_source_message_id TEXT NOT NULL,
             PRIMARY KEY (reconstruction_run_id, provenance_id, covered_source_message_id)
         )`,
+        `CREATE TABLE IF NOT EXISTS reconstruction_candidate_claims (
+            reconstruction_run_id TEXT NOT NULL,
+            claim_id TEXT NOT NULL,
+            claim_id_version INTEGER NOT NULL,
+            memory_scope_id TEXT NOT NULL,
+            claim_class TEXT,
+            claim_state TEXT,
+            authority_class TEXT NOT NULL,
+            authority_basis TEXT NOT NULL,
+            claim_zone_class TEXT NOT NULL,
+            extraction_mode TEXT NOT NULL,
+            extraction_rule_id TEXT NOT NULL,
+            extraction_rule_version INTEGER NOT NULL,
+            normalization_version INTEGER NOT NULL,
+            confidence_class TEXT NOT NULL,
+            admission_status TEXT NOT NULL,
+            admission_reason TEXT NOT NULL,
+            evidence_lineage_id TEXT NOT NULL,
+            source_message_id TEXT NOT NULL,
+            chat_instance_id TEXT NOT NULL,
+            source_revision_hash TEXT NOT NULL,
+            claim_text_excerpt TEXT NOT NULL,
+            normalized_claim_json TEXT NOT NULL,
+            details_json TEXT NOT NULL,
+            PRIMARY KEY (reconstruction_run_id, claim_id)
+        )`,
+        `CREATE TABLE IF NOT EXISTS reconstruction_candidate_claim_links (
+            reconstruction_run_id TEXT NOT NULL,
+            claim_id TEXT NOT NULL,
+            related_record_id TEXT NOT NULL,
+            relationship_type TEXT NOT NULL,
+            reconciliation_basis TEXT NOT NULL,
+            PRIMARY KEY (reconstruction_run_id, claim_id, related_record_id, relationship_type)
+        )`,
+        `CREATE TABLE IF NOT EXISTS reconstruction_candidate_conflicts (
+            reconstruction_run_id TEXT NOT NULL,
+            conflict_id TEXT NOT NULL,
+            claim_id TEXT NOT NULL,
+            conflict_code TEXT NOT NULL,
+            details_json TEXT NOT NULL,
+            PRIMARY KEY (reconstruction_run_id, conflict_id)
+        )`,
+        `CREATE TABLE IF NOT EXISTS reconstruction_candidate_review_items (
+            reconstruction_run_id TEXT NOT NULL,
+            review_item_id TEXT NOT NULL,
+            claim_id TEXT,
+            review_kind TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            details_json TEXT NOT NULL,
+            PRIMARY KEY (reconstruction_run_id, review_item_id)
+        )`,
     ];
 }
