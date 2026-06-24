@@ -253,12 +253,12 @@ test('chat path resolver supports group and character chats without arbitrary pa
     });
     const group = resolveChatJsonlPath(request, {
         isGroup: true,
-        groupId: 'group-123',
-        chatLocator: 'group-123',
+        groupId: '2026-05-16@19h17m39s788ms',
+        chatLocator: '2026-05-16@19h17m39s788ms',
     });
 
     assert.match(direct.chatFilePath, /Jeep[\\/]Session A\.jsonl$/);
-    assert.match(group.chatFilePath, /group chats[\\/]group-123\.jsonl$/);
+    assert.match(group.chatFilePath, /group chats[\\/]2026-05-16@19h17m39s788ms\.jsonl$/);
     assert.throws(
         () => resolveChatJsonlPath(request, { avatarUrl: '..\\bad.png', chatLocator: 'x' }),
         /(invalid|path separators)/i,

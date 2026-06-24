@@ -439,8 +439,8 @@ export function resolveChatJsonlPath(request, locator = {}) {
     const chatFileName = `${chatFileStem}.jsonl`;
 
     if (isGroup) {
-        const groupId = sanitizeIdentifier(locator?.groupId, 'groupId');
-        const filePath = path.join(request.user.directories.groupChats, sanitizeChatFileStem(groupId) + '.jsonl');
+        const groupId = sanitizeChatFileStem(locator?.groupId);
+        const filePath = path.join(request.user.directories.groupChats, `${groupId}.jsonl`);
         return {
             kind: 'group',
             locator: {
