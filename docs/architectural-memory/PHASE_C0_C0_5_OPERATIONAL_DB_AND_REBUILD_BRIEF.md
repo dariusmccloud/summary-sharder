@@ -2,18 +2,19 @@
 
 ## Status
 
-This brief replaces the abandoned ordinary-chat receipt direction proven unsafe by `1B0`.
+This document is now historical substrate and recovery rationale.
 
-It defines the bounded implementation target for:
+It preserves:
 
-- `Phase C0`: server-side operational database
-- `Phase C0.5`: self-healing rebuild engine and interpretation protocol
+- the completed `C0` operational-database substrate
+- the governing negative findings from `1B0`
+- the recovery and portability facts that still constrain later reconstruction work
 
-It does not authorize:
+The active executable reconstruction contract now lives in:
 
-- Phase C1 authority/projection runtime expansion
-- Phase C2 archive movement, stable windows, or reference indexing
-- any return to out-of-band ordinary-chat receipt writes
+- [PHASE_C0_5A_CANDIDATE_REBUILD_ORCHESTRATION_BRIEF.md](C:\Users\chris\OneDrive\Documents\Personal\Projects\summary-sharder\docs\architectural-memory\PHASE_C0_5A_CANDIDATE_REBUILD_ORCHESTRATION_BRIEF.md)
+
+This historical document must not be used as the sole implementation brief for new work.
 
 ## C0 Outcome
 
@@ -543,13 +544,13 @@ This is the server-side replacement for browser-authoritative `commitArchitectur
 
 ### database health and maintenance
 
-- `POST /rebuild/prepare`
-- `POST /rebuild/execute`
-- `GET /rebuild/status/:jobId`
-- `POST /rebuild/promote`
-- `POST /rebuild/quarantine-current`
+- `POST /rebuild/candidate/init`
+- `POST /rebuild/candidate/run`
+- `GET /rebuild/candidate/report/:jobId`
 
-These belong to C0.5 but live in the same plugin.
+These belong to `C0.5A` but live in the same plugin.
+
+No promote or candidate-to-live swap route may exist in `C0.5A`.
 
 ## API hard rules
 
@@ -824,7 +825,7 @@ If the DB is missing, corrupt, or inconsistent:
 2. discover recovery corpus
 3. build candidate DB separately
 4. validate candidate DB
-5. atomically promote candidate DB
+5. emit candidate report and stop before promotion
 
 The current DB must never be mutated progressively during rebuild.
 
@@ -969,36 +970,409 @@ Add backend readiness and migration status UI only as needed for C0.
 
 Do not start archive browsing or C1/C2 runtime affordances here.
 
-## Phase C0.5 File-by-File Plan
+## Phase C0.5A: Candidate Rebuild Orchestration
+
+`C0.5A` is the first bounded reconstruction slice.
+
+It must prove that the system can:
+
+```text
+discover corpus
+→ freeze input manifest
+→ create isolated candidate DB
+→ compile one bounded source class
+→ validate candidate
+→ emit report
+→ stop before promotion
+```
+
+Successful `C0.5A` completion means:
+
+```text
+candidate built
+candidate validated
+report emitted
+live authority untouched
+promotion unavailable
+```
+
+## C0.5A Governing Constraints
+
+1. Corpus discovery is read-only.
+2. No chat normalization occurs during reconstruction discovery.
+3. No metadata adoption occurs during reconstruction discovery.
+4. No native host save is triggered by reconstruction.
+5. No live authority mutation is permitted.
+6. A mixed-time corpus view is invalid.
+7. Content integrity and prompt exposure remain independent dimensions.
+8. Exposure-only problems must not automatically invalidate semantically intact evidence.
+9. Candidate failure fails closed.
+10. `C0.5A` contains no promotion path.
+
+## C0.5A Admission Scope
+
+The first compiler input is intentionally narrow.
+
+Admit only:
+
+- valid identity-backed Architectural shard artifacts
+- valid saved shard/source manifests
+- admitted evidence-policy state
+- non-conflicted content integrity
+
+Exclude or block:
+
+- structurally invalid shard artifacts
+- conflicted content integrity
+- unsupported schema versions
+- incomplete required provenance
+- sources whose frozen file hash changes during the run
+
+Prompt-exposure diagnostics remain reportable, but exposure-only problems do not by themselves make semantically intact shard evidence inadmissible.
+
+## C0.5A Input Manifest
+
+Freeze a reconstruction input manifest before compilation begins.
+
+Minimum schema:
+
+```js
+{
+  schemaVersion: 1,
+  protocolVersion: 'architectural-rebuild-protocol/v1',
+  reconstructionRunId: 'rebuild_...',
+  memoryScopeId: 'scope_...',
+  createdAt: 1782144000000,
+  sources: [
+    {
+      sourceId: 'src_...',
+      sourceClass: 'architectural-shard',
+      sourceLocator: {
+        hostFamily: 'sillytavern|sillybunny',
+        userRoot: 'default-user',
+        relativePath: 'chats/Jeep/...jsonl',
+        messageId: 'msg_...',
+        outputUid: '...',
+      },
+      chatInstanceId: 'chat_...',
+      sourceFileHash: 'sha256:...',
+      sourceFileBytes: 12345,
+      schemaVersion: 2,
+      headerVersion: 1,
+      messageCount: 250,
+      identityStatus: 'identity-complete|identity-partial|identity-conflicted',
+      shardManifestCount: 3,
+      contentHealth: 'INTACT|STALE|DEGRADED|ORPHANED|CONFLICTED',
+      exposureHealth: 'EXPOSURE_OK|SOURCE_AND_ARTIFACT_VISIBLE|SOURCE_VISIBLE_ARTIFACT_HIDDEN|SOURCE_HIDDEN_ARTIFACT_HIDDEN|VISIBILITY_POLICY_UNKNOWN',
+      admissionStatus: 'admitted|excluded|blocked',
+      admissionReason: '...',
+      frozenAt: 1782144000000,
+    },
+  ],
+}
+```
+
+Rules:
+
+- every admitted source must be frozen with a stable file hash before compilation
+- admitted-source mutation after freeze invalidates the candidate run
+- excluded and blocked sources still appear in the manifest with explicit reasons
+- manifest freeze is itself read-only and must not rewrite corpus files
+
+## C0.5A Candidate Database Boundary
+
+Candidate reconstruction must write to a physically separate database.
+
+Requirements:
+
+- do not write to the live C0 operational DB
+- do not overwrite the live snapshot DB
+- do not overwrite the live state marker
+- use an explicit candidate filename tied to the reconstruction run ID
+- ordinary authority reads must never consult the candidate DB
+
+Candidate path shape:
+
+```text
+<user-root>/summary-sharder/candidates/architectural-memory.candidate.<reconstructionRunId>.db
+```
+
+Related artifacts may include:
+
+```text
+architectural-memory.candidate.<reconstructionRunId>.report.json
+architectural-memory.candidate.<reconstructionRunId>.manifest.json
+```
+
+These candidate artifacts are not authority state.
+
+## C0.5A Candidate Schema Changes
+
+`C0.5A` should add candidate-only tables or their equivalent for:
+
+```js
+{
+  reconstruction_runs: [
+    'reconstruction_run_id',
+    'memory_scope_id',
+    'protocol_version',
+    'status',
+    'started_at',
+    'finished_at',
+    'failure_reason',
+  ],
+  reconstruction_manifest_sources: [
+    'reconstruction_run_id',
+    'source_id',
+    'source_class',
+    'source_locator_json',
+    'chat_instance_id',
+    'source_file_hash',
+    'schema_version',
+    'header_version',
+    'message_count',
+    'identity_status',
+    'shard_manifest_count',
+    'content_health',
+    'exposure_health',
+    'admission_status',
+    'admission_reason',
+  ],
+  reconstruction_candidate_records: [
+    'reconstruction_run_id',
+    'record_id',
+    'record_type',
+    'canonical_hash',
+    'canonical_hash_version',
+    'record_version',
+    'memory_scope_id',
+    'payload_json',
+  ],
+  reconstruction_candidate_provenance: [
+    'reconstruction_run_id',
+    'record_id',
+    'speaker_entity_id',
+    'chat_instance_id',
+    'artifact_message_id',
+    'source_manifest_id',
+    'covered_source_ids_json',
+    'source_revision_hash',
+    'source_identity_hash',
+  ],
+  reconstruction_candidate_issues: [
+    'reconstruction_run_id',
+    'issue_id',
+    'severity',
+    'code',
+    'message',
+    'source_id',
+    'details_json',
+  ],
+}
+```
+
+These tables live only in the candidate DB for `C0.5A`.
+
+No live authority table should be rewritten, swapped, or consulted through candidate aliases in this slice.
+
+## C0.5A Provenance Minimum
+
+Every candidate row must retain provenance back to:
+
+- memory scope
+- speaker entity
+- chat instance
+- artifact message ID
+- source manifest
+- covered source identities
+- source hashes
+- reconstruction run
+
+Incomplete required provenance is a validation failure.
+
+## C0.5A Validation Requirements
+
+Before reporting success, validate:
+
+- schema opens cleanly
+- foreign keys hold
+- scope consistency holds
+- identity uniqueness holds
+- provenance completeness holds
+- collision handling is explicit
+- admitted inputs reconcile to outputs
+- exclusions and rejections are explicit
+- live authority remained unchanged
+
+If any of the above fail:
+
+- candidate status becomes failed or invalid
+- report still emits if possible
+- live authority remains untouched
+
+## C0.5A Reconstruction Report Schema
+
+Emit both a compact human-readable summary and a machine-readable report.
+
+Minimum machine-readable schema:
+
+```js
+{
+  schemaVersion: 1,
+  protocolVersion: 'architectural-rebuild-protocol/v1',
+  reconstructionRunId: 'rebuild_...',
+  memoryScopeId: 'scope_...',
+  status: 'success|failed|invalid',
+  candidateDbPath: '...',
+  manifestPath: '...',
+  startedAt: 1782144000000,
+  finishedAt: 1782144001234,
+  liveAuthorityChanged: false,
+  promotionAvailable: false,
+  inputSummary: {
+    totalSources: 12,
+    admittedSources: 8,
+    excludedSources: 3,
+    blockedSources: 1,
+  },
+  outputSummary: {
+    candidateRecordCount: 42,
+    candidateIssueCount: 5,
+  },
+  coverage: {
+    exact: 10,
+    corroborated: 0,
+    deltaRecovered: 0,
+    reconstructed: 0,
+    conflicted: 2,
+    partial: 1,
+  },
+  exclusions: [
+    { sourceId: 'src_...', reason: 'unsupported_schema' },
+  ],
+  conflicts: [
+    { sourceId: 'src_...', code: 'SHARD_MANIFEST_INVALID' },
+  ],
+  unresolvedEvidence: [
+    { sourceId: 'src_...', reason: 'identity_partial' },
+  ],
+  promotionBlockers: [
+    'promotion path intentionally unavailable in C0.5A',
+  ],
+  determinism: {
+    attempted: true,
+    equivalent: true,
+    differingFieldsIgnored: ['reconstructionRunId', 'startedAt', 'finishedAt'],
+    unexplainedDifferences: [],
+  },
+}
+```
+
+## C0.5A Determinism Proof
+
+Run unchanged admitted corpus twice.
+
+Compare meaningful candidate state while ignoring only explicitly variable operational fields such as:
+
+- reconstruction run ID
+- timestamps
+- file paths derived only from the run ID
+
+Unexplained differences are a failure.
+
+## C0.5A No-Promotion Proof
+
+`C0.5A` must contain no promotion path.
+
+Explicitly prohibited:
+
+- no automatic swap
+- no promote endpoint
+- no promote UI
+- no startup adoption
+- no candidate-to-live fallback
+
+Proof obligations:
+
+- candidate DB path is distinct from live DB path
+- live manifest/state marker file hashes do not change during candidate build
+- ordinary authority-read code paths do not open candidate artifacts
+- route surface exposes build/validate/report only
+
+## Phase C0.5A File-by-File Plan
 
 ### `tools/server-plugin/summary-sharder-memory/rebuild.js`
 
-Candidate rebuild pipeline:
+Own `C0.5A` orchestration:
 
-- corpus discovery
-- source hashing
-- checkpoint parse
-- coverage map build
-- delta interpretation
-- dedup classification
-- validation
-- candidate promotion
+- read-only corpus discovery
+- input manifest freeze
+- admitted-source mutation recheck
+- candidate DB creation
+- bounded structured-shard compilation
+- candidate validation
+- human and machine report emission
+- no promotion behavior
+
+### `tools/server-plugin/summary-sharder-memory/schema.js`
+
+Add candidate-only reconstruction tables and migration guards for:
+
+- reconstruction runs
+- manifest sources
+- candidate records
+- candidate provenance
+- candidate issues
+
+Do not alter live authority lookup semantics in this slice.
+
+### `tools/server-plugin/summary-sharder-memory/core.js`
+
+Add helpers for:
+
+- candidate path derivation
+- manifest file hashing
+- read-only source admission
+- live-store immutability checks
+
+### `tools/server-plugin/summary-sharder-memory/index.js`
+
+Add bounded rebuild routes only:
+
+- `POST /rebuild/candidate/init`
+- `POST /rebuild/candidate/run`
+- `GET /rebuild/candidate/report`
+
+No promotion route may exist.
 
 ### `core/summarization/architectural-rebuild-protocol.js`
 
-Versioned interpretation and evidence contract shared between frontend and plugin.
+Define:
+
+- protocol version
+- input-manifest normalization
+- admission enums
+- report enums
+- determinism comparison rules
 
 ### `core/summarization/architectural-rebuild-protocol.test.mjs`
 
-Protocol and classification tests.
+Add tests for:
+
+- manifest normalization
+- admission-state validation
+- determinism comparison
+- report schema validation
 
 ### `core/summarization/saved-shard-identity.js`
 
-Reuse existing saved-shard identity helpers as recovery-corpus inputs.
+Reuse as recovery-corpus locator and provenance helper.
 
 ### `core/summarization/architectural-record-parser.js`
 
-Remains the structured parser for checkpoint records and decision payload reconstruction.
+Remain the structured parser for Architectural shard payloads.
+
+For `C0.5A`, parse only the highest-confidence structured class.
 
 ## Rebuild Interpretation Protocol Outline
 
@@ -1008,9 +1382,9 @@ Protocol version:
 architectural-rebuild-protocol/v1
 ```
 
-## Evidence hierarchy
+## C0.5A Evidence Hierarchy
 
-Authority order:
+Authority order remains:
 
 1. valid structured Architectural shard
 2. explicit correction or decision in raw dialogue
@@ -1019,22 +1393,26 @@ Authority order:
 5. strongly implied raw-message evidence
 6. semantic inference
 
-Rules:
+However, `C0.5A` compiles only tier 1 automatically.
 
-- higher tier wins for the same temporal scope
-- later lower-tier evidence may create a correction or delta candidate
-- later lower-tier evidence must not silently rewrite an earlier checkpoint
-- inference cannot re-seal authority on its own
+Lower tiers remain future input classes for later reconstruction slices and may still appear in the report as unresolved evidence.
 
-## Semantic handling classes
+## C0.5A Semantic Handling Classes
 
-### ignored outright
+### admitted and compiled
 
-- chatter
-- praise
-- duplicate filler
-- formatting-only noise
-- host metadata not tied to architectural meaning
+- structured Architectural shard sections
+- explicit shard CURRENT state
+- explicit structured supersession chains
+- explicit structured unresolved threads
+
+### discovered but not compiled in C0.5A
+
+- raw dialogue corrections
+- lorebook canon
+- settings-derived evidence
+- implied evidence
+- semantic inference candidates
 
 ### metadata-only
 
@@ -1045,71 +1423,9 @@ Rules:
 - checkpoint hash
 - creation timestamps
 
-### semantically interpreted
-
-- structured Architectural shard sections
-- explicit decision/correction statements
-- checkpointed CURRENT state
-- explicit supersession chains
-- explicit unresolved threads
-
-## Checkpoint coverage requirements
-
-Each checkpoint must expose or allow reconstruction of:
-
-- source chat identity
-- first covered message
-- last covered message
-- source collection or branch
-- checkpoint creation position
-- covered-span hash where practical
-
-## Recovery statuses
-
-- `EXACT`
-- `CORROBORATED`
-- `DELTA_RECOVERED`
-- `RECONSTRUCTED`
-- `CONFLICTED`
-- `PARTIAL`
-
-These apply to recovered records and to overall rebuild result reporting.
-
-## Deduplication Rules
-
-Governing rule:
-
-```text
-Deduplicate occurrences, not meaning.
-```
-
-Occurrence classes:
-
-- `DUPLICATE`
-- `CORROBORATION`
-- `PROGRESSION`
-- `CORRECTION`
-- `CONFLICT`
-- `DISTINCT`
-
-Automatic merge is allowed only for deterministic equivalents:
-
-- exact duplicate files
-- same stable ID plus same canonical semantic hash
-- exact structured equivalents
-- explicit alias/migration mappings
-
-Automatic merge is not allowed for:
-
-- near-duplicate prose similarity
-- same theme with different stable IDs
-- “probably the same decision” guesses
-
-False splits are preferred over false merges.
-
 ## Runtime Smoke Plan
 
-These checks belong immediately after C0/C0.5 implementation.
+These checks belong immediately after `C0.5A` implementation.
 
 ### Host integration
 
@@ -1120,65 +1436,44 @@ These checks belong immediately after C0/C0.5 implementation.
 5. CSRF-enabled host flow succeeds with fetched token
 6. CSRF-disabled host flow succeeds with `disabled`
 
-### Save path
+### C0.5A candidate orchestration
 
-7. save Architectural shard through normal host path
-8. projection metadata remains discoverable after refresh
-9. backend authority commit occurs only after save confirmation
-10. no direct ordinary-chat patch route is used
-
-### Migration
-
-11. legacy local browser records migrate exactly
-12. stale or conflicting browser records produce explicit report
-13. browser-local data remains until verification completes
-
-### Rebuild
-
-14. remove DB and rebuild from corpus
-15. rebuild produces candidate DB first
-16. candidate promotion is atomic
-17. rebuilt DB matches expected canonical hashes for exact recoverables
+7. corpus discovery is read-only
+8. frozen manifest is emitted before compile
+9. admitted source mutation after freeze invalidates the run
+10. candidate DB path is distinct from live DB path
+11. live DB, snapshot DB, and state marker remain unchanged
+12. only admitted structured shard sources compile
+13. candidate validates before success is reported
+14. machine-readable report is emitted
+15. human-readable summary is emitted
+16. promotion remains unavailable
 
 ## Test Matrix
 
-### C0
+### C0.5A
 
-1. Node adapter opens DB and applies schema
-2. Bun adapter opens DB and applies schema
-3. Node-created DB reads on Bun
-4. Bun-created DB reads on Node
-5. Node-created managed snapshot restores on Node
-6. Bun-created managed snapshot restores on Bun
-7. Node-created snapshot reads on Bun
-8. Bun-created snapshot reads on Node
-9. compare-before-write conflict blocks stale update
-10. transaction rollback preserves integrity
-11. manifest init is idempotent
-12. path resolution stays under authenticated user root
-13. route validation rejects traversal input
-14. browser migration exact equivalence succeeds
-15. browser migration conflict is reported
-16. no silent fallback to localStorage authority
-
-### C0.5
-
-17. rebuild candidate DB is separate from active DB
-18. corrupt DB is quarantined
-19. exact checkpoint reconstruction yields `EXACT`
-20. lower-tier later evidence yields delta candidate, not silent rewrite
-21. duplicate stable ID plus equal canonical hash deduplicates
-22. similar content with different IDs does not merge
-23. unresolved coverage emits audit finding
-24. missing project files emit audit finding
-25. incomplete scope membership emits audit finding
-26. rebuild report classifies all spans
+1. read-only discovery does not trigger host save
+2. manifest freeze records admitted, excluded, and blocked sources
+3. source mutation after freeze invalidates the candidate
+4. candidate DB is physically separate from active DB
+5. live DB snapshot and state marker hashes remain unchanged
+6. unsupported schema source is excluded with explicit reason
+7. conflicted content-integrity source is blocked
+8. exposure-only issue remains reportable without forcing semantic exclusion
+9. candidate rows retain full required provenance
+10. schema and foreign-key validation runs before success
+11. admitted-input versus output reconciliation is explicit
+12. machine-readable report classifies exclusions, conflicts, and unresolved evidence
+13. unchanged corpus run twice yields equivalent meaningful candidate state
+14. unexplained determinism differences fail the run
+15. no route, UI, or startup path can promote a candidate
 
 ### Regression
 
-27. `1B0` negative race remains documented and testable
-28. Narrative Memory behavior unchanged
-29. existing Architectural save/review behavior unchanged outside backend authority routing
+16. `1B0` negative race remains documented and testable
+17. Narrative Memory behavior unchanged
+18. existing Architectural save/review behavior unchanged outside reconstruction routes
 
 ## Treatment of Uncommitted 1B0 Files
 
@@ -1265,30 +1560,26 @@ One-time browser migration:
 - server import and verification
 - migration audit reporting
 
-### Commit C0.5-1
+### Commit C0.5A-1
 
-Recovery protocol and corpus discovery:
+Candidate rebuild orchestration:
 
 - interpretation protocol module
-- checkpoint scanning
-- coverage map
-
-### Commit C0.5-2
-
-Candidate rebuild engine:
-
+- read-only corpus discovery
+- frozen input manifest
 - candidate DB creation
-- dedup classification
-- validation
-- promotion/quarantine flow
+- bounded structured-shard compilation
+- validation and reporting
+- explicit no-promotion surface
 
-### Commit C0.5-3
+### Commit C0.5A-2
 
-Smoke and regression completion:
+Smoke and determinism completion:
 
 - host integration smoke
-- rebuild smoke
-- negative `1B0` regression preservation
+- candidate validation smoke
+- repeated unchanged-input determinism proof
+- negative regression preservation
 
 ## Implementation Conclusion
 
@@ -1382,4 +1673,4 @@ What has been proved:
 
 The remaining browser-specific checks are implementation smoke items, not substrate blockers.
 
-VERDICT: READY TO IMPLEMENT C0
+VERDICT: HISTORICAL C0 SUBSTRATE RECORD; ACTIVE C0.5A CONTRACT MOVED TO PHASE_C0_5A_CANDIDATE_REBUILD_ORCHESTRATION_BRIEF.md
