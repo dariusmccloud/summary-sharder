@@ -94,3 +94,78 @@ export function schemaStatements() {
         )`,
     ];
 }
+
+export function candidateAuditSchemaStatements() {
+    return [
+        `CREATE TABLE IF NOT EXISTS reconstruction_runs (
+            reconstruction_run_id TEXT PRIMARY KEY,
+            memory_scope_id TEXT NOT NULL,
+            protocol_version TEXT NOT NULL,
+            status TEXT NOT NULL,
+            request_key TEXT NOT NULL,
+            candidate_artifact_id TEXT NOT NULL,
+            candidate_relative_path TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            finished_at INTEGER,
+            failure_reason TEXT
+        )`,
+        `CREATE TABLE IF NOT EXISTS reconstruction_manifest_files (
+            reconstruction_run_id TEXT NOT NULL,
+            corpus_file_id TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            chat_instance_id TEXT,
+            physical_file_hash TEXT NOT NULL,
+            physical_file_bytes INTEGER NOT NULL,
+            schema_version INTEGER NOT NULL,
+            header_version INTEGER NOT NULL,
+            message_count INTEGER NOT NULL,
+            identity_status TEXT NOT NULL,
+            PRIMARY KEY (reconstruction_run_id, corpus_file_id)
+        )`,
+        `CREATE TABLE IF NOT EXISTS reconstruction_manifest_artifacts (
+            reconstruction_run_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            corpus_file_id TEXT NOT NULL,
+            artifact_message_id TEXT,
+            output_uid TEXT,
+            source_manifest_id TEXT NOT NULL,
+            artifact_kind TEXT NOT NULL,
+            semantic_source_hash TEXT NOT NULL,
+            content_health TEXT NOT NULL,
+            exposure_health TEXT NOT NULL,
+            evidence_policy TEXT NOT NULL,
+            admission_status TEXT NOT NULL,
+            admission_reason TEXT NOT NULL,
+            PRIMARY KEY (reconstruction_run_id, source_id)
+        )`,
+        `CREATE TABLE IF NOT EXISTS reconstruction_candidate_issues (
+            reconstruction_run_id TEXT NOT NULL,
+            issue_id TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            code TEXT NOT NULL,
+            message TEXT NOT NULL,
+            source_id TEXT,
+            details_json TEXT NOT NULL,
+            PRIMARY KEY (reconstruction_run_id, issue_id)
+        )`,
+        `CREATE TABLE IF NOT EXISTS reconstruction_candidate_provenance (
+            reconstruction_run_id TEXT NOT NULL,
+            provenance_id TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            memory_scope_id TEXT NOT NULL,
+            speaker_entity_id TEXT NOT NULL,
+            chat_instance_id TEXT NOT NULL,
+            artifact_message_id TEXT NOT NULL,
+            source_manifest_id TEXT NOT NULL,
+            source_revision_hash TEXT NOT NULL,
+            source_identity_hash TEXT NOT NULL,
+            PRIMARY KEY (reconstruction_run_id, provenance_id)
+        )`,
+        `CREATE TABLE IF NOT EXISTS reconstruction_candidate_provenance_sources (
+            reconstruction_run_id TEXT NOT NULL,
+            provenance_id TEXT NOT NULL,
+            covered_source_message_id TEXT NOT NULL,
+            PRIMARY KEY (reconstruction_run_id, provenance_id, covered_source_message_id)
+        )`,
+    ];
+}

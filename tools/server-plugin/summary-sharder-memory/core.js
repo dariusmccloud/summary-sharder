@@ -21,7 +21,7 @@ export {
 
 export const CAPABILITIES = Object.freeze({
     phase: 'c0',
-    rebuildAvailable: false,
+    rebuildAvailable: true,
     browserMigration: true,
     projectionRegistry: true,
     ordinaryChatPatching: false,
@@ -30,6 +30,12 @@ export const CAPABILITIES = Object.freeze({
         nestedMetadataPreferred: true,
         corpusMutation: false,
         persistedChatInspection: true,
+    }),
+    c0_5a: Object.freeze({
+        candidateRebuildOrchestration: true,
+        promotionAvailable: false,
+        liveAuthorityMutation: false,
+        readOnlyCorpusDiscovery: true,
     }),
     c0_5: false,
     c1: false,

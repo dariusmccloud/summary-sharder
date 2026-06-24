@@ -24,6 +24,11 @@ import {
     snapshotOperationalDatabase,
     validateArray,
 } from './core.js';
+import {
+    initCandidateRebuildRun,
+    loadCandidateRebuildReport,
+    runCandidateRebuild,
+} from './rebuild.js';
 
 export const info = {
     id: PLUGIN_ID,
@@ -346,6 +351,40 @@ export async function init(router) {
             } finally {
                 adapter.close();
             }
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/rebuild/candidate/init', async (request, response) => {
+        try {
+            const result = await initCandidateRebuildRun(request, {
+                memoryScopeId: request.body?.memoryScopeId,
+                requestKey: request.body?.requestKey,
+                now: request.body?.now,
+            });
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/rebuild/candidate/run', async (request, response) => {
+        try {
+            const result = await runCandidateRebuild(request, {
+                reconstructionRunId: request.body?.reconstructionRunId,
+                now: request.body?.now,
+            });
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.get('/rebuild/candidate/report/:reconstructionRunId', async (request, response) => {
+        try {
+            const result = loadCandidateRebuildReport(request, request.params.reconstructionRunId);
+            return response.send({ ok: true, ...result });
         } catch (error) {
             return handleError(response, error);
         }
