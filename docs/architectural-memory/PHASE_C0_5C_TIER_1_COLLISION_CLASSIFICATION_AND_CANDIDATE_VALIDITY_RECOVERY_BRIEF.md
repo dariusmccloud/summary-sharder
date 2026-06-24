@@ -120,13 +120,12 @@ Deterministic Tier-1 collision classification and candidate-validity recovery on
 - no candidate promotion
 
 It must:
-
-identify same-version occurrence groups
+- identify same-version occurrence groups
 - freeze collision evidence
 - classify each occurrence group using bounded mechanical rules
 - reconcile only mechanically proven non-conflicts
-- evaluate resulting lifecycle graphs deterministically
-- preserve unresolved groups and invalid lifecycle graphs as explicit blockers
+- evaluate resulting version and supersession lifecycle structures deterministically
+- preserve unresolved groups and invalid lifecycle structures as explicit blockers
 
 ### Later Slice
 
@@ -157,9 +156,9 @@ It may contain:
 - malformed members
 - incompatible same-version records
 
-### Version-chain evaluation
+### Version lifecycle evaluation
 
-Version-chain evaluation occurs only after same-version occurrence reconciliation produces canonical Tier-1 candidate records.
+Version lifecycle evaluation occurs only after same-version occurrence reconciliation produces canonical Tier-1 candidate records.
 
 It evaluates canonicalized records for the same:
 
@@ -169,15 +168,15 @@ memoryScopeId + decisionId
 
 across versions.
 
-### Supersession-chain evaluation
+### Supersession lifecycle evaluation
 
-Supersession-chain evaluation may span multiple decision IDs.
+Supersession lifecycle evaluation may span multiple decision IDs.
 
 It must use a separate relationship graph rather than being forced into one same-decision occurrence group.
 
 Rule:
 
-> Same-version occurrence reconciliation comes first. Lifecycle evaluation comes second.
+> Same-version occurrence reconciliation comes first. Version and supersession lifecycle evaluation come second.
 
 ## Occurrence Classification
 
@@ -199,16 +198,30 @@ Rules:
 4. `UNRESOLVED_SEMANTIC_CONFLICT` remains blocking.
 5. `MALFORMED_STRUCTURED_RECORD` remains blocking until separately repaired or excluded.
 
-## Lifecycle Classification
+## Version Lifecycle Classification
 
-After occurrence reconciliation, the resulting canonical Tier-1 candidate records must classify into lifecycle states separately from occurrence classification.
+After occurrence reconciliation, canonical Tier-1 candidate records must classify into version lifecycle states separately from occurrence classification.
 
-Supported lifecycle classifications:
+Supported version lifecycle classifications:
 
 - `SINGLE_VERSION`
 - `VALID_VERSION_CHAIN`
 - `FORKED_VERSION_CHAIN`
 - `INCOMPLETE_VERSION_CHAIN`
+
+Rules:
+
+1. Version lifecycle classification is evaluated only after same-version occurrence reconciliation.
+2. Version lifecycle evaluation uses canonicalized records for one `memoryScopeId + decisionId`.
+3. Candidate validity must incorporate occurrence classification and version lifecycle classification independently.
+
+## Supersession Lifecycle Classification
+
+Supersession relationships must classify separately from both occurrence classification and version lifecycle classification.
+
+Supported supersession lifecycle classifications:
+
+- `NO_SUPERSESSION`
 - `VALID_SUPERSESSION_CHAIN`
 - `INCOMPLETE_SUPERSESSION_CHAIN`
 - `CYCLIC_SUPERSESSION_CHAIN`
@@ -216,11 +229,56 @@ Supported lifecycle classifications:
 
 Rules:
 
-1. Lifecycle classification is evaluated only after same-version occurrence reconciliation.
-2. Version-chain evaluation uses canonicalized records for one `memoryScopeId + decisionId`.
-3. Supersession-chain evaluation uses explicit relationship graphs and may span multiple decision IDs.
-4. Candidate validity must incorporate both occurrence classification and lifecycle classification.
-5. A decision history may simultaneously have a non-trivial occurrence classification at one version and a valid lifecycle classification across versions.
+1. Supersession lifecycle evaluation runs after occurrence reconciliation using canonical Tier-1 identities.
+2. Supersession lifecycle evaluation uses explicit relationship graphs and may span multiple decision IDs.
+3. Candidate validity must incorporate occurrence classification, version lifecycle classification, and supersession lifecycle classification independently.
+4. A decision history may simultaneously have a valid version chain and a valid supersession chain.
+
+## Immutable Audit Structures
+
+The candidate audit model must conceptually expose three immutable result structures:
+
+- `occurrenceGroups`
+- `versionLifecycleGroups`
+- `supersessionComponents`
+
+Illustrative shape:
+
+```js
+{
+  occurrenceGroups: [
+    {
+      collisionEvidenceGroupId: '...',
+      decisionId: 'decision-a',
+      recordVersion: 3,
+      occurrenceClassification: 'BRANCH_LINEAGE_DUPLICATE',
+      canonicalRecordId: '...',
+      blocking: false,
+    },
+  ],
+  versionLifecycleGroups: [
+    {
+      versionLifecycleGroupId: '...',
+      decisionId: 'decision-a',
+      canonicalRecordIds: ['...', '...', '...'],
+      versionLifecycleClassification: 'VALID_VERSION_CHAIN',
+      versionLifecycleRuleId: 'VERSION-CHAIN-001',
+      blocking: false,
+    },
+  ],
+  supersessionComponents: [
+    {
+      supersessionComponentId: '...',
+      decisionIds: ['decision-a', 'decision-b'],
+      supersessionLifecycleClassification: 'VALID_SUPERSESSION_CHAIN',
+      supersessionRuleId: 'SUPERSESSION-001',
+      blocking: false,
+    },
+  ],
+}
+```
+
+Compact and detailed reporting must reconcile back to these immutable structures rather than flattening different dimensions into one overloaded row.
 
 ## Evidence Independence Contract
 
@@ -240,6 +298,28 @@ Rules:
 2. Equivalent records with `UNKNOWN` or `NOT_PROVEN` independence may be coalesced as duplicate authority occurrences when mechanically safe.
 3. Unknown or unproven independence must not gain corroboration weight.
 4. Shared ancestry, branch ancestry, or import-copy evidence forces `SHARED_LINEAGE`.
+
+Each same-version occurrence group must also record:
+
+```text
+independenceBasis:
+- SHARED_MESSAGE_ANCESTRY
+- EXPLICIT_BRANCH_COPY
+- EXPLICIT_IMPORT_COPY
+- DISTINCT_ORIGIN_PROVEN
+- INDEPENDENCE_NOT_PROVEN
+- LINEAGE_UNKNOWN
+```
+
+Rules:
+
+1. Shared message identity or recorded branch/import ancestry means `SHARED_LINEAGE`.
+2. Merely appearing in different chats is not independence proof.
+3. Different file paths are not independence proof.
+4. Different timestamps alone are not independence proof.
+5. Absence of known shared ancestry is not positive independence proof.
+6. If current metadata cannot positively prove separate origin, use `NOT_PROVEN` or `UNKNOWN`.
+7. It is acceptable for `CORROBORATING_PROVENANCE` to remain rare or unreachable in `C0.5C-1`.
 
 ## Occurrence Classification Precedence
 
@@ -296,23 +376,32 @@ Required classifier-output fields:
 - `reconciliationResult`
 - `blockingState`
 
-## Deterministic Canonical Row Selection
+## Canonical Tier-1 Record Identity
 
-When a same-version occurrence group is reconciled, the authority-shaped candidate surface must choose a canonical Tier-1 record deterministically.
+When a same-version occurrence group is reconciled, the authority-shaped candidate surface must derive a fresh canonical Tier-1 record identity rather than selecting one surviving member row.
 
-It must not choose a survivor using:
+Required specification:
 
-- insertion order
-- source-file order
-- first-seen order
-- timestamps
-- host enumeration order
+```text
+canonicalTier1RecordIdV1 =
+SHA-256(
+  protocol prefix
+  + memoryScopeId
+  + decisionId
+  + recordVersion
+  + canonicalHashVersion
+  + canonicalHash
+)
+```
 
-Required rule:
+Rules:
 
-> Canonical row selection must be derived from stable semantic fields and versioned deterministic selection rules.
-
-All original collision members must remain preserved in candidate-only audit and provenance rows even when one canonical Tier-1 row represents the reconciled surface.
+1. Exact duplicates map to that canonical ID.
+2. Branch copies map to that canonical ID.
+3. Corroborating occurrences map to that canonical ID.
+4. All original member rows remain in audit and provenance tables.
+5. Tier-2 links remap through an explicit member-to-canonical mapping.
+6. For incompatible same-version canonical hashes, do not create one canonical row until the conflict is resolved.
 
 ## Mechanical Reconciliation Rules
 
@@ -339,7 +428,7 @@ Rule:
 
 ## Tier-2 Remapping Rule
 
-After same-version occurrence reconciliation and canonical Tier-1 row selection:
+After same-version occurrence reconciliation and canonical Tier-1 record derivation:
 
 - Tier-2 links
 - Tier-2 conflicts
@@ -353,7 +442,7 @@ Rule:
 
 > Tier-2 associations follow canonical Tier-1 record identity after reconciliation, while audit tables preserve the original member-level attachment history.
 
-## Detailed Collision Result Contract
+## Occurrence Result Contract
 
 `C0.5C` must stop reporting collisions only as aggregate counts such as:
 
@@ -361,7 +450,7 @@ Rule:
 REBUILD_DECISION_COLLISION x2
 ```
 
-Each detailed collision result must include at least:
+Each detailed occurrence result must include at least:
 
 - `collisionEvidenceGroupId`
 - `memoryScopeId`
@@ -371,10 +460,9 @@ Each detailed collision result must include at least:
 - `occurrenceClassification`
 - `occurrenceRuleId`
 - `evidenceIndependence`
+- `independenceBasis`
 - `canonicalRecordId`
 - `reconciliationResult`
-- `lifecycleClassification`
-- `lifecycleRuleId`
 - `blocking`
 - `unresolvedReason`
 
@@ -390,51 +478,82 @@ Recommended machine shape:
   occurrenceClassification: 'CORROBORATING_PROVENANCE',
   occurrenceRuleId: 'OCC-CORR-001',
   evidenceIndependence: 'PROVEN_INDEPENDENT',
+  independenceBasis: 'DISTINCT_ORIGIN_PROVEN',
   reconciliationResult: 'MERGED_PROVENANCE',
   canonicalRecordId: 'canonical_...',
-  lifecycleClassification: 'VALID_VERSION_CHAIN',
-  lifecycleRuleId: 'LIFECYCLE-VERSION-001',
   blocking: false,
   unresolvedReason: null,
 }
 ```
 
-This must be sufficient to prove whether two hosts are seeing the same structural collision or merely the same count.
+This must be sufficient to prove whether two hosts are seeing the same structural occurrence group or merely the same count.
 
-## Lifecycle Classification Rules
+## Version Lifecycle Result Contract
 
-Lifecycle evaluation must run only after occurrence reconciliation.
+Version lifecycle evaluation must run only after occurrence reconciliation.
 
-Minimum required lifecycle rule families:
+Minimum required version lifecycle rule families:
 
-- `LIFECYCLE-SINGLE-001`
+- `VERSION-CHAIN-001`
   - one canonical version only
   - result: `SINGLE_VERSION`
-- `LIFECYCLE-VERSION-001`
+- `VERSION-CHAIN-002`
   - explicit or deterministic prior-version continuity with no forks
   - result: `VALID_VERSION_CHAIN`
-- `LIFECYCLE-VERSION-002`
+- `VERSION-CHAIN-003`
   - multiple competing next versions from one prior canonical record
   - result: `FORKED_VERSION_CHAIN`
-- `LIFECYCLE-VERSION-003`
+- `VERSION-CHAIN-004`
   - missing required version continuity evidence
   - result: `INCOMPLETE_VERSION_CHAIN`
-- `LIFECYCLE-SUPERSEDE-001`
+
+Each detailed version lifecycle result must include at least:
+
+- `versionLifecycleGroupId`
+- `memoryScopeId`
+- `decisionId`
+- `canonicalRecordIds`
+- `versionLifecycleClassification`
+- `versionLifecycleRuleId`
+- `blocking`
+- `unresolvedReason`
+
+## Supersession Lifecycle Result Contract
+
+Supersession lifecycle evaluation must run only after occurrence reconciliation.
+
+Minimum required supersession rule families:
+
+- `SUPERSESSION-001`
+  - no supersession relationships in the evaluated component
+  - result: `NO_SUPERSESSION`
+- `SUPERSESSION-002`
   - explicit complete supersession links with no cycle
   - result: `VALID_SUPERSESSION_CHAIN`
-- `LIFECYCLE-SUPERSEDE-002`
+- `SUPERSESSION-003`
   - missing required supersession partner/link
   - result: `INCOMPLETE_SUPERSESSION_CHAIN`
-- `LIFECYCLE-SUPERSEDE-003`
+- `SUPERSESSION-004`
   - supersession graph contains a cycle
   - result: `CYCLIC_SUPERSESSION_CHAIN`
-- `LIFECYCLE-NA-001`
+- `SUPERSESSION-005`
   - lifecycle evaluation does not apply to the record/set
   - result: `NOT_APPLICABLE`
 
+Each detailed supersession lifecycle result must include at least:
+
+- `supersessionComponentId`
+- `memoryScopeId`
+- `decisionIds`
+- `canonicalRecordIds`
+- `supersessionLifecycleClassification`
+- `supersessionRuleId`
+- `blocking`
+- `unresolvedReason`
+
 ## Freeze and Determinism Requirements
 
-Occurrence and lifecycle evidence must be frozen before classification.
+Occurrence, version lifecycle, and supersession lifecycle evidence must be frozen before classification.
 
 Required inputs for an evidence group must come from the same immutable candidate run evidence:
 
@@ -448,7 +567,7 @@ Required inputs for an evidence group must come from the same immutable candidat
 Rules:
 
 1. The classifier must read the same frozen evidence on repeated runs.
-2. The same frozen evidence must produce the same occurrence classifications, lifecycle classifications, and reconciliation outcomes.
+2. The same frozen evidence must produce the same occurrence classifications, version lifecycle classifications, supersession lifecycle classifications, and reconciliation outcomes.
 3. If any admitted source changes after freeze, the run invalidates rather than classifying a mixed-time collision.
 
 ## Provenance Retention Requirements
@@ -503,7 +622,8 @@ A run may:
 The report must therefore distinguish at least:
 
 - execution success of the collision-classification pass
-- execution success of lifecycle classification
+- execution success of version lifecycle classification
+- execution success of supersession lifecycle classification
 - candidate validity after reconciliation
 - reconciled non-conflict groups
 - unresolved blocking groups
@@ -519,7 +639,8 @@ The ordinary report should foreground:
 
 - number of occurrence groups discovered
 - count by occurrence classification
-- count by lifecycle classification
+- count by version lifecycle classification
+- count by supersession lifecycle classification
 - number reconciled automatically
 - number still blocking validity
 - candidate validity before classification
@@ -530,22 +651,49 @@ The ordinary report should foreground:
 The detailed report must preserve:
 
 - one row per occurrence evidence group
-- stable evidence-group identity
+- one row per version lifecycle group
+- one row per supersession component
+- stable immutable group identities
 - occurrence classification basis
-- lifecycle classification basis where applicable
+- version lifecycle classification basis where applicable
+- supersession lifecycle classification basis where applicable
 - reconciliation action
 - blocker reason where unresolved
 
-Compact and detailed counts must derive from the same immutable evidence-group rows and reconcile exactly.
+Compact and detailed counts must derive from the same immutable occurrence groups, version lifecycle groups, and supersession components and reconcile exactly.
 
 Required count reconciliation:
 
 ```text
-original occurrence groups
+total occurrence groups
 =
-automatically reconciled groups
-+ unresolved blocking groups
+singleton non-collision groups
++ reconciled duplicate groups
++ reconciled lineage-duplicate groups
++ reconciled corroborating groups
++ generated-ID blocking groups
++ semantic-conflict blocking groups
 + malformed blocking groups
++ classification-failure groups
+```
+
+```text
+total version lifecycle groups
+=
+valid or single groups
++ forked groups
++ incomplete groups
++ classification-failure groups
+```
+
+```text
+total supersession components
+=
+no-supersession or not-applicable components
++ valid components
++ incomplete components
++ cyclic components
++ classification-failure components
 ```
 
 ## Validation Requirements
@@ -553,7 +701,8 @@ automatically reconciled groups
 `C0.5C` must validate:
 
 - occurrence-group determinism
-- lifecycle-classification determinism
+- version-lifecycle-group determinism
+- supersession-component determinism
 - classification coverage for every detected occurrence group
 - no silent drop of an occurrence group during reconciliation
 - provenance completeness after reconciliation
@@ -576,6 +725,19 @@ Rules:
 1. Do not leave stale generic blockers beside new classification results.
 2. Candidate validity must be recalculated from the reconciled and unreconciled evidence groups.
 3. Replaced blockers must point to specific occurrence or lifecycle failure classes, not aggregate ambiguity.
+
+At minimum, the implementation must define:
+
+- `REBUILD_GENERATED_ID_COLLISION`
+- `REBUILD_UNRESOLVED_SEMANTIC_CONFLICT`
+- `REBUILD_MALFORMED_STRUCTURED_RECORD`
+- `REBUILD_OCCURRENCE_CLASSIFICATION_FAILED`
+- `REBUILD_FORKED_VERSION_CHAIN`
+- `REBUILD_INCOMPLETE_VERSION_CHAIN`
+- `REBUILD_VERSION_CLASSIFICATION_FAILED`
+- `REBUILD_INCOMPLETE_SUPERSESSION_CHAIN`
+- `REBUILD_CYCLIC_SUPERSESSION_CHAIN`
+- `REBUILD_SUPERSESSION_CLASSIFICATION_FAILED`
 
 ## Excluded
 
