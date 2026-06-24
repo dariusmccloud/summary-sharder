@@ -25,9 +25,12 @@ import {
     validateArray,
 } from './core.js';
 import {
+    cleanupCandidateRebuildArtifacts,
     initCandidateRebuildRun,
+    listCandidateRebuildRuns,
     loadCandidateRebuildReport,
     runCandidateRebuild,
+    setCandidateRebuildPinned,
 } from './rebuild.js';
 
 export const info = {
@@ -385,6 +388,42 @@ export async function init(router) {
         try {
             const result = loadCandidateRebuildReport(request, request.params.reconstructionRunId);
             return response.send({ ok: true, ...result });
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.get('/rebuild/candidate/runs/:memoryScopeId', async (request, response) => {
+        try {
+            const result = listCandidateRebuildRuns(request, {
+                memoryScopeId: request.params.memoryScopeId,
+            });
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/rebuild/candidate/pin', async (request, response) => {
+        try {
+            const result = setCandidateRebuildPinned(request, {
+                reconstructionRunId: request.body?.reconstructionRunId,
+                pinned: request.body?.pinned !== false,
+                pinReason: request.body?.pinReason,
+                now: request.body?.now,
+            });
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/rebuild/candidate/cleanup', async (request, response) => {
+        try {
+            const result = cleanupCandidateRebuildArtifacts(request, {
+                memoryScopeId: request.body?.memoryScopeId,
+            });
+            return response.send(result);
         } catch (error) {
             return handleError(response, error);
         }

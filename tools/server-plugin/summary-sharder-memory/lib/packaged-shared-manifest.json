@@ -1,0 +1,62 @@
+{
+  "pluginId": "summary-sharder-memory",
+  "canonicalRoot": "core",
+  "generatedBy": "tools/server-plugin/package-summary-sharder-memory.mjs",
+  "modules": [
+    {
+      "canonicalRelativePath": "core/chat/archive-policy.js",
+      "packagedRelativePath": "lib/core/chat/archive-policy.js",
+      "sha256": "910531c5210be53ecc7770ea71f26ad79f1c09f60af73f7bdf751b9915d714cc"
+    },
+    {
+      "canonicalRelativePath": "core/summarization/architectural-authority-store.js",
+      "packagedRelativePath": "lib/core/summarization/architectural-authority-store.js",
+      "sha256": "9203f1a6f19d138d2ac06773f64f11fb5c6f3170845056f16b45b840ead7134d"
+    },
+    {
+      "canonicalRelativePath": "core/summarization/architectural-rebuild-protocol.js",
+      "packagedRelativePath": "lib/core/summarization/architectural-rebuild-protocol.js",
+      "sha256": "12e6d3c60828a2a907d9e7aa3304702bfd9e2ad58cde4173f965724fd3e87085"
+    },
+    {
+      "canonicalRelativePath": "core/summarization/architectural-record-parser.js",
+      "packagedRelativePath": "lib/core/summarization/architectural-record-parser.js",
+      "sha256": "7b49b8382d7a65e5037ad83cee4c4eb0806c91010cdf963c82c42650808dea70"
+    },
+    {
+      "canonicalRelativePath": "core/summarization/architectural-sharder-format.js",
+      "packagedRelativePath": "lib/core/summarization/architectural-sharder-format.js",
+      "sha256": "357cdbcbbe3b04690603c0fa5108945b2939add429714447e9906a6d24b83140"
+    },
+    {
+      "canonicalRelativePath": "core/summarization/architectural-sharder-shell.js",
+      "packagedRelativePath": "lib/core/summarization/architectural-sharder-shell.js",
+      "sha256": "81852c8275d5388daa525998a4fe42ccd2c6350226161de696563f946e60ef4c"
+    },
+    {
+      "canonicalRelativePath": "core/summarization/message-identity-core.js",
+      "packagedRelativePath": "lib/core/summarization/message-identity-core.js",
+      "sha256": "535e3952897a6a2ac5a58e4f4e26f0a2d68f6f4942364406720ae80e3e0ab3dd"
+    },
+    {
+      "canonicalRelativePath": "core/summarization/message-identity-schema.js",
+      "packagedRelativePath": "lib/core/summarization/message-identity-schema.js",
+      "sha256": "d95aa7dbf49bce01593e6ad0966ac10ae4bcc7115d90a0ad311fc2232bae7b1b"
+    },
+    {
+      "canonicalRelativePath": "core/summarization/saved-shard-identity.js",
+      "packagedRelativePath": "lib/core/summarization/saved-shard-identity.js",
+      "sha256": "3dfc7cde386d0b2aa59213dfb87da07ed2352b6a7e1b2446499bdffd533802be"
+    },
+    {
+      "canonicalRelativePath": "core/summarization/shard-integrity-core.js",
+      "packagedRelativePath": "lib/core/summarization/shard-integrity-core.js",
+      "sha256": "101a65750b675c24bb54efb8aa7744119683263232d1f9c26535aa0176d6d853"
+    },
+    {
+      "canonicalRelativePath": "core/summarization/sharder-section-registry.js",
+      "packagedRelativePath": "lib/core/summarization/sharder-section-registry.js",
+      "sha256": "8f48ae17969de26fe3cbb79933eac98e3698684d1255c8e12d19d455de61b9a2"
+    }
+  ]
+}

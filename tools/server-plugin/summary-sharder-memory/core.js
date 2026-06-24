@@ -33,6 +33,9 @@ export const CAPABILITIES = Object.freeze({
     }),
     c0_5a: Object.freeze({
         candidateRebuildOrchestration: true,
+        candidateReportRetrieval: true,
+        candidatePinning: true,
+        candidateCleanup: true,
         promotionAvailable: false,
         liveAuthorityMutation: false,
         readOnlyCorpusDiscovery: true,
@@ -140,13 +143,28 @@ export function quarantinePath(filePath, reason = 'invalid') {
 }
 
 function writeOperationalStateMarker(paths, adapter, now = Date.now()) {
+    let existing = null;
+    if (fs.existsSync(paths.statePath)) {
+        try {
+            existing = JSON.parse(fs.readFileSync(paths.statePath, 'utf8'));
+        } catch {
+            existing = null;
+        }
+    }
+
+    const adoptedAt = Number.isFinite(Number(existing?.adoptedAt))
+        ? Number(existing.adoptedAt)
+        : nowTimestamp(now);
     const marker = {
         schemaVersion: SCHEMA_VERSION,
         serviceVersion: SERVICE_VERSION,
         runtimeAdapter: adapter.runtime,
         journalMode: JOURNAL_MODE,
-        adoptedAt: nowTimestamp(now),
+        adoptedAt,
     };
+    if (existing && stableStringify(existing) === stableStringify(marker)) {
+        return;
+    }
     atomicWriteFile(paths.statePath, JSON.stringify(marker, null, 2));
 }
 

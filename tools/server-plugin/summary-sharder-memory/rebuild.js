@@ -6,8 +6,8 @@ import {
     ARCHITECTURAL_PROFILE,
     ARCHITECTURAL_SCHEMA_VERSION,
     getSharderSectionRegistry,
-} from '../../../core/summarization/sharder-section-registry.js';
-import { buildArchitecturalDecisionAuthorityInput } from '../../../core/summarization/architectural-authority-store.js';
+} from './lib/core/summarization/sharder-section-registry.js';
+import { buildArchitecturalDecisionAuthorityInput } from './lib/core/summarization/architectural-authority-store.js';
 import {
     ARCHITECTURAL_REBUILD_MANIFEST_SCHEMA_VERSION,
     ARCHITECTURAL_REBUILD_PROTOCOL_VERSION,
@@ -19,14 +19,14 @@ import {
     sha256Text,
     stableStringify,
     summarizeCompactRebuildReport,
-} from '../../../core/summarization/architectural-rebuild-protocol.js';
-import { parseArchitecturalExtractionResponse } from '../../../core/summarization/architectural-sharder-format.js';
-import { buildArchitecturalShardMetadata } from '../../../core/summarization/saved-shard-identity.js';
+} from './lib/core/summarization/architectural-rebuild-protocol.js';
+import { parseArchitecturalExtractionResponse } from './lib/core/summarization/architectural-sharder-format.js';
+import { buildArchitecturalShardMetadata } from './lib/core/summarization/saved-shard-identity.js';
 import {
     SHARD_CONTENT_HEALTH_VALUES,
     normalizeShardManifest,
     validateShardManifest,
-} from '../../../core/summarization/shard-integrity-core.js';
+} from './lib/core/summarization/shard-integrity-core.js';
 import {
     candidateAuditSchemaStatements,
     JOURNAL_MODE,
@@ -56,6 +56,21 @@ const REBUILD_TABLE_SPECS = Object.freeze([
     { name: 'reconstruction_candidate_provenance_sources', ignoredColumns: ['reconstruction_run_id', 'provenance_id'] },
 ]);
 
+const TERMINAL_REPORT_STATUS = new Set([
+    'success',
+    'failed',
+    'invalid',
+    'invalidated_source_mutation',
+]);
+
+function isTerminalCandidateStatus(status) {
+    const normalized = String(status || '').trim();
+    if (!normalized) {
+        return false;
+    }
+    return TERMINAL_RECONSTRUCTION_STATUS.has(normalized) || TERMINAL_REPORT_STATUS.has(normalized.toLowerCase());
+}
+
 function getHostFamily() {
     return typeof process?.versions?.bun === 'string' ? 'sillybunny' : 'sillytavern';
 }
@@ -83,6 +98,11 @@ function ensureCandidatePaths(userRoot, reconstructionRunId) {
         manifestRelativePath: toRelativePath(userRoot, path.join(candidatesRoot, `${baseName}.manifest.json`)),
         reportRelativePath: toRelativePath(userRoot, path.join(candidatesRoot, `${baseName}.report.json`)),
     };
+}
+
+function candidatePathsFromManifestPath(userRoot, manifestPath) {
+    const reconstructionRunId = path.basename(manifestPath).replace(/^architectural-memory\.candidate\./i, '').replace(/\.manifest\.json$/i, '');
+    return ensureCandidatePaths(userRoot, reconstructionRunId);
 }
 
 function getLiveAuthorityFingerprints(userRoot) {
@@ -190,7 +210,19 @@ function listScopeCandidateArtifacts(candidatesRoot, memoryScopeId) {
             if (manifest?.memoryScopeId !== memoryScopeId) continue;
             const reportPath = manifestPath.replace(/\.manifest\.json$/i, '.report.json');
             const report = fs.existsSync(reportPath) ? JSON.parse(fs.readFileSync(reportPath, 'utf8')) : null;
-            entries.push({ manifestPath, manifest, reportPath, report });
+            const candidateDbPath = manifestPath.replace(/\.manifest\.json$/i, '.db');
+            let runRow = null;
+            if (fs.existsSync(candidateDbPath)) {
+                const adapter = createAdapter(candidateDbPath);
+                try {
+                    runRow = adapter.get('SELECT * FROM reconstruction_runs WHERE reconstruction_run_id = ?', [manifest.reconstructionRunId]);
+                } catch {
+                    runRow = null;
+                } finally {
+                    adapter.close();
+                }
+            }
+            entries.push({ manifestPath, manifest, reportPath, report, runRow });
         } catch {
             // ignore malformed sidecars during discovery
         }
@@ -198,11 +230,254 @@ function listScopeCandidateArtifacts(candidatesRoot, memoryScopeId) {
     return entries;
 }
 
+function isPinnedReport(report) {
+    return report?.retention?.pinned === true;
+}
+
+function computeRetentionDisposition(entries) {
+    const terminalEntries = entries
+        .filter((entry) => isTerminalCandidateStatus(entry.report?.status))
+        .sort((a, b) => Number(b.report?.finishedAt || b.report?.createdAt || 0) - Number(a.report?.finishedAt || a.report?.createdAt || 0));
+
+    const reasonsByRunId = new Map();
+    const keep = new Set();
+    const latestSuccess = terminalEntries.find((entry) => entry.report?.status === 'success');
+    const latestNonSuccess = terminalEntries.find((entry) => entry.report?.status !== 'success');
+
+    if (latestSuccess) {
+        keep.add(latestSuccess.manifest.reconstructionRunId);
+        reasonsByRunId.set(latestSuccess.manifest.reconstructionRunId, ['latest_success']);
+    }
+    if (latestNonSuccess) {
+        keep.add(latestNonSuccess.manifest.reconstructionRunId);
+        reasonsByRunId.set(
+            latestNonSuccess.manifest.reconstructionRunId,
+            [...(reasonsByRunId.get(latestNonSuccess.manifest.reconstructionRunId) || []), 'latest_non_success'],
+        );
+    }
+
+    for (const entry of terminalEntries) {
+        if (!isPinnedReport(entry.report)) continue;
+        keep.add(entry.manifest.reconstructionRunId);
+        reasonsByRunId.set(
+            entry.manifest.reconstructionRunId,
+            [...(reasonsByRunId.get(entry.manifest.reconstructionRunId) || []), 'pinned'],
+        );
+    }
+
+    return {
+        keep,
+        reasonsByRunId,
+        removable: terminalEntries.filter((entry) => !keep.has(entry.manifest.reconstructionRunId)),
+    };
+}
+
+function buildArtifactReportEntries(manifest) {
+    const fileById = new Map((manifest.corpusFiles || []).map((entry) => [entry.corpusFileId, entry]));
+    return (manifest.artifacts || []).map((artifact) => {
+        const fileEntry = fileById.get(artifact.corpusFileId);
+        return {
+            sourceId: artifact.sourceId,
+            corpusFileId: artifact.corpusFileId,
+            relativePath: fileEntry?.sourceLocator?.relativePath || null,
+            chatInstanceId: fileEntry?.chatInstanceId || null,
+            artifactMessageId: artifact.artifactMessageId || null,
+            outputUid: artifact.outputUid || null,
+            sourceManifestId: artifact.sourceManifestId,
+            artifactKind: artifact.artifactKind,
+            semanticSourceHash: artifact.semanticSourceHash,
+            contentHealth: artifact.contentHealth,
+            exposureHealth: artifact.exposureHealth,
+            evidencePolicy: artifact.evidencePolicy,
+            admissionStatus: artifact.admissionStatus,
+            admissionReason: artifact.admissionReason,
+            stableDecisionIds: artifact.stableDecisionIds || [],
+            sectionKeys: artifact.sectionKeys || [],
+        };
+    });
+}
+
+function buildCandidateRecordReportEntries(adapter, reconstructionRunId) {
+    const decisions = adapter.all(
+        `SELECT memory_scope_id, decision_id, record_version, canonical_hash, canonical_hash_version, hash_algorithm,
+                status, source_chat_instance_id, last_updating_chat_instance_id
+           FROM decision_records
+          ORDER BY decision_id ASC, record_version ASC`,
+    );
+    const provenanceRows = adapter.all(
+        `SELECT provenance_id, record_id, memory_scope_id, speaker_entity_id, chat_instance_id, artifact_message_id,
+                source_manifest_id, source_revision_hash, source_identity_hash
+           FROM reconstruction_candidate_provenance
+          WHERE reconstruction_run_id = ?
+          ORDER BY record_id ASC, provenance_id ASC`,
+        [reconstructionRunId],
+    );
+    const coveredRows = adapter.all(
+        `SELECT provenance_id, covered_source_message_id
+           FROM reconstruction_candidate_provenance_sources
+          WHERE reconstruction_run_id = ?
+          ORDER BY provenance_id ASC, covered_source_message_id ASC`,
+        [reconstructionRunId],
+    );
+
+    const coveredByProvenanceId = new Map();
+    for (const row of coveredRows) {
+        const list = coveredByProvenanceId.get(row.provenance_id) || [];
+        list.push(row.covered_source_message_id);
+        coveredByProvenanceId.set(row.provenance_id, list);
+    }
+
+    const provenanceByRecordId = new Map();
+    for (const row of provenanceRows) {
+        const list = provenanceByRecordId.get(row.record_id) || [];
+        list.push({
+            provenanceId: row.provenance_id,
+            memoryScopeId: row.memory_scope_id,
+            speakerEntityId: row.speaker_entity_id,
+            chatInstanceId: row.chat_instance_id,
+            artifactMessageId: row.artifact_message_id,
+            sourceManifestId: row.source_manifest_id,
+            sourceRevisionHash: row.source_revision_hash,
+            sourceIdentityHash: row.source_identity_hash,
+            coveredSourceMessageIds: coveredByProvenanceId.get(row.provenance_id) || [],
+        });
+        provenanceByRecordId.set(row.record_id, list);
+    }
+
+    return decisions.map((row) => ({
+        memoryScopeId: row.memory_scope_id,
+        decisionId: row.decision_id,
+        recordVersion: Number(row.record_version),
+        recordId: `${row.memory_scope_id}:${row.decision_id}:${row.record_version}`,
+        canonicalHash: row.canonical_hash,
+        canonicalHashVersion: Number(row.canonical_hash_version),
+        hashAlgorithm: row.hash_algorithm,
+        status: row.status,
+        sourceChatInstanceId: row.source_chat_instance_id || null,
+        lastUpdatingChatInstanceId: row.last_updating_chat_instance_id || null,
+        provenance: provenanceByRecordId.get(`${row.memory_scope_id}:${row.decision_id}:${row.record_version}`) || [],
+    }));
+}
+
+function buildCandidateIssueReportEntries(adapter, reconstructionRunId) {
+    return adapter.all(
+        `SELECT issue_id, severity, code, message, source_id, details_json
+           FROM reconstruction_candidate_issues
+          WHERE reconstruction_run_id = ?
+          ORDER BY severity DESC, code ASC, issue_id ASC`,
+        [reconstructionRunId],
+    ).map((row) => ({
+        issueId: row.issue_id,
+        severity: row.severity,
+        code: row.code,
+        message: row.message,
+        sourceId: row.source_id || null,
+        details: JSON.parse(row.details_json || '{}'),
+    }));
+}
+
+function buildDynamicRetentionState(userRoot, report) {
+    if (!report?.memoryScopeId || !report?.reconstructionRunId) {
+        return {
+            pinned: false,
+            pinReason: null,
+            pinnedAt: null,
+            cleanupEligible: false,
+            retainedBecause: [],
+        };
+    }
+    const candidatesRoot = path.join(getStoragePaths(userRoot).storageRoot, 'candidates');
+    const entries = listScopeCandidateArtifacts(candidatesRoot, report.memoryScopeId);
+    const disposition = computeRetentionDisposition(entries);
+    const retainedBecause = disposition.reasonsByRunId.get(report.reconstructionRunId) || [];
+    return {
+        pinned: isPinnedReport(report),
+        pinReason: report?.retention?.pinReason || null,
+        pinnedAt: report?.retention?.pinnedAt || null,
+        cleanupEligible: isTerminalCandidateStatus(report.status) && !disposition.keep.has(report.reconstructionRunId),
+        retainedBecause,
+    };
+}
+
+function buildInputSummary(manifest) {
+    return {
+        totalFiles: manifest.corpusFiles.length,
+        totalArtifacts: manifest.artifacts.length,
+        admittedArtifacts: manifest.artifacts.filter((artifact) => artifact.admissionStatus === 'admitted').length,
+        excludedArtifacts: manifest.artifacts.filter((artifact) => artifact.admissionStatus === 'excluded').length,
+        blockedArtifacts: manifest.artifacts.filter((artifact) => artifact.admissionStatus === 'blocked').length,
+    };
+}
+
+function finalizeReport(userRoot, report) {
+    return {
+        ...report,
+        retention: buildDynamicRetentionState(userRoot, report),
+    };
+}
+
+function writeReport(candidatePaths, report) {
+    atomicWriteFile(candidatePaths.reportPath, JSON.stringify(report, null, 2));
+}
+
+function buildFailureReport(manifest, candidatePaths, finishedAt, failure, reportOverrides = {}) {
+    return {
+        schemaVersion: ARCHITECTURAL_REBUILD_REPORT_SCHEMA_VERSION,
+        protocolVersion: ARCHITECTURAL_REBUILD_PROTOCOL_VERSION,
+        reconstructionRunId: manifest.reconstructionRunId,
+        memoryScopeId: manifest.memoryScopeId,
+        status: 'failed',
+        candidateArtifactId: manifest.candidateArtifactId,
+        candidateRelativePath: manifest.candidateRelativePath,
+        manifestRelativePath: manifest.manifestRelativePath,
+        reportRelativePath: manifest.reportRelativePath,
+        liveAuthorityChanged: false,
+        promotionAvailable: false,
+        inputSummary: buildInputSummary(manifest),
+        outputSummary: {
+            candidateAuthorityRecordCount: 0,
+            candidateIssueCount: 0,
+        },
+        coverage: {
+            exact: { attempted: false, count: null },
+            corroborated: { attempted: false, count: null },
+            deltaRecovered: { attempted: false, count: null },
+            reconstructed: { attempted: false, count: null },
+            conflicted: { attempted: false, count: null },
+            partial: { attempted: false, count: null },
+        },
+        artifactAdmissions: buildArtifactReportEntries(manifest),
+        candidateRecords: [],
+        issues: [],
+        exclusions: [],
+        conflicts: [],
+        unresolvedEvidence: [],
+        promotionBlockers: [
+            'promotion path intentionally unavailable in C0.5A',
+            String(failure?.code || 'ARCH_REBUILD_FAILED'),
+        ],
+        determinism: {
+            attempted: false,
+            equivalent: false,
+            canonicalCandidateHash: null,
+            differingFieldsIgnored: ['reconstruction_run_id', 'started_at', 'finished_at', 'candidateRelativePath'],
+            unexplainedDifferences: [],
+        },
+        failure: {
+            code: String(failure?.code || 'ARCH_REBUILD_FAILED'),
+            message: String(failure?.message || 'Candidate rebuild failed'),
+        },
+        createdAt: manifest.createdAt,
+        finishedAt,
+        ...reportOverrides,
+    };
+}
+
 function findExistingActiveRun(candidatesRoot, memoryScopeId, requestKey) {
     const entries = listScopeCandidateArtifacts(candidatesRoot, memoryScopeId);
     for (const entry of entries) {
-        const status = entry.report?.status || entry.manifest?.status || null;
-        if (status && TERMINAL_RECONSTRUCTION_STATUS.has(status)) {
+        const status = entry.report?.status || entry.runRow?.status || entry.manifest?.status || null;
+        if (isTerminalCandidateStatus(status)) {
             continue;
         }
         if (requestKey && entry.manifest?.requestKey === requestKey) {
@@ -807,20 +1082,109 @@ function removeArtifactTriplet(candidatePaths) {
 
 function applyCandidateRetention(userRoot, memoryScopeId) {
     const candidatesRoot = path.join(getStoragePaths(userRoot).storageRoot, 'candidates');
-    const entries = listScopeCandidateArtifacts(candidatesRoot, memoryScopeId)
-        .filter((entry) => entry.report && TERMINAL_RECONSTRUCTION_STATUS.has(entry.report.status))
-        .sort((a, b) => Number(b.report?.finishedAt || b.report?.createdAt || 0) - Number(a.report?.finishedAt || a.report?.createdAt || 0));
-
-    const keep = new Set();
-    const latestSuccess = entries.find((entry) => entry.report.status === 'success');
-    const latestNonSuccess = entries.find((entry) => entry.report.status !== 'success');
-    if (latestSuccess) keep.add(latestSuccess.manifest.reconstructionRunId);
-    if (latestNonSuccess) keep.add(latestNonSuccess.manifest.reconstructionRunId);
-
-    for (const entry of entries) {
-        if (keep.has(entry.manifest.reconstructionRunId)) continue;
-        removeArtifactTriplet(ensureCandidatePaths(userRoot, entry.manifest.reconstructionRunId));
+    const entries = listScopeCandidateArtifacts(candidatesRoot, memoryScopeId);
+    const disposition = computeRetentionDisposition(entries);
+    const removedRunIds = [];
+    for (const entry of disposition.removable) {
+        removedRunIds.push(entry.manifest.reconstructionRunId);
+        removeArtifactTriplet(candidatePathsFromManifestPath(userRoot, entry.manifestPath));
     }
+    return {
+        keptRunIds: [...disposition.keep],
+        removedRunIds,
+        reasonsByRunId: Object.fromEntries(
+            [...disposition.reasonsByRunId.entries()].map(([runId, reasons]) => [runId, reasons]),
+        ),
+    };
+}
+
+export function listCandidateRebuildRuns(request, options = {}) {
+    const userRoot = getAuthenticatedUserRoot(request);
+    const memoryScopeId = sanitizeIdentifier(options.memoryScopeId, 'memoryScopeId');
+    const candidatesRoot = path.join(getStoragePaths(userRoot).storageRoot, 'candidates');
+    const entries = listScopeCandidateArtifacts(candidatesRoot, memoryScopeId);
+    const disposition = computeRetentionDisposition(entries);
+
+    const runs = entries
+        .map((entry) => {
+            const status = entry.report?.status
+                || (entry.runRow?.status ? String(entry.runRow.status).toLowerCase() : null)
+                || String(entry.manifest?.status || '').toLowerCase();
+            const normalizedTerminal = isTerminalCandidateStatus(status);
+            const reconstructionRunId = entry.manifest.reconstructionRunId;
+            return {
+                reconstructionRunId,
+                status,
+                candidateArtifactId: entry.manifest?.candidateArtifactId || `candidate_${reconstructionRunId}`,
+                candidateRelativePath: entry.manifest?.candidateRelativePath || null,
+                manifestRelativePath: entry.manifest?.manifestRelativePath || toRelativePath(userRoot, entry.manifestPath),
+                reportRelativePath: entry.manifest?.reportRelativePath || (entry.reportPath ? toRelativePath(userRoot, entry.reportPath) : null),
+                createdAt: entry.manifest?.createdAt || Number(entry.runRow?.started_at || 0) || null,
+                finishedAt: entry.report?.finishedAt || Number(entry.runRow?.finished_at || 0) || null,
+                terminal: normalizedTerminal,
+                retention: normalizedTerminal
+                    ? {
+                        pinned: isPinnedReport(entry.report),
+                        pinReason: entry.report?.retention?.pinReason || null,
+                        pinnedAt: entry.report?.retention?.pinnedAt || null,
+                        cleanupEligible: !disposition.keep.has(reconstructionRunId),
+                        retainedBecause: disposition.reasonsByRunId.get(reconstructionRunId) || [],
+                    }
+                    : {
+                        pinned: false,
+                        pinReason: null,
+                        pinnedAt: null,
+                        cleanupEligible: false,
+                        retainedBecause: [],
+                    },
+                promotionAvailable: false,
+            };
+        })
+        .sort((a, b) => Number(b.finishedAt || b.createdAt || 0) - Number(a.finishedAt || a.createdAt || 0));
+
+    return {
+        ok: true,
+        memoryScopeId,
+        promotionAvailable: false,
+        runs,
+    };
+}
+
+export function setCandidateRebuildPinned(request, options = {}) {
+    const userRoot = getAuthenticatedUserRoot(request);
+    const reconstructionRunId = sanitizeIdentifier(options.reconstructionRunId, 'reconstructionRunId');
+    const pinned = options.pinned !== false;
+    const candidatePaths = ensureCandidatePaths(userRoot, reconstructionRunId);
+    if (!fs.existsSync(candidatePaths.reportPath)) {
+        throw createError(404, `Candidate report ${reconstructionRunId} was not found`, 'ARCH_REBUILD_REPORT_NOT_FOUND');
+    }
+    const report = JSON.parse(fs.readFileSync(candidatePaths.reportPath, 'utf8'));
+    if (!TERMINAL_REPORT_STATUS.has(String(report?.status || '').toLowerCase())) {
+        throw createError(409, `Candidate ${reconstructionRunId} is not terminal and cannot be pinned`, 'ARCH_REBUILD_PIN_INVALID_STATE');
+    }
+    report.retention = {
+        pinned,
+        pinReason: pinned ? String(options.pinReason || '').trim() || 'manual_pin' : null,
+        pinnedAt: pinned ? nowTimestamp(options.now) : null,
+    };
+    writeReport(candidatePaths, report);
+    return {
+        ok: true,
+        report: finalizeReport(userRoot, report),
+        summary: summarizeCompactRebuildReport(report),
+    };
+}
+
+export function cleanupCandidateRebuildArtifacts(request, options = {}) {
+    const userRoot = getAuthenticatedUserRoot(request);
+    const memoryScopeId = sanitizeIdentifier(options.memoryScopeId, 'memoryScopeId');
+    const result = applyCandidateRetention(userRoot, memoryScopeId);
+    return {
+        ok: true,
+        memoryScopeId,
+        ...result,
+        promotionAvailable: false,
+    };
 }
 
 export async function initCandidateRebuildRun(request, options = {}) {
@@ -906,6 +1270,9 @@ export async function runCandidateRebuild(request, options = {}) {
                         candidateAuthorityRecordCount: 0,
                         candidateIssueCount: 1,
                     },
+                    artifactAdmissions: buildArtifactReportEntries(manifest),
+                    candidateRecords: [],
+                    issues: [],
                     coverage: {
                         exact: { attempted: false, count: null },
                         corroborated: { attempted: false, count: null },
@@ -931,14 +1298,15 @@ export async function runCandidateRebuild(request, options = {}) {
                         differingFieldsIgnored: ['reconstruction_run_id', 'started_at', 'finished_at', 'candidateRelativePath'],
                         unexplainedDifferences: [],
                     },
+                    failure: null,
                     createdAt: manifest.createdAt,
                     finishedAt,
                 };
-                atomicWriteFile(candidatePaths.reportPath, JSON.stringify(report, null, 2));
+                writeReport(candidatePaths, report);
                 applyCandidateRetention(userRoot, manifest.memoryScopeId);
                 return {
                     ok: false,
-                    report,
+                    report: finalizeReport(userRoot, report),
                     summary: summarizeCompactRebuildReport(report),
                 };
         }
@@ -981,6 +1349,9 @@ export async function runCandidateRebuild(request, options = {}) {
                     candidateAuthorityRecordCount: compileResult.candidateAuthorityRecordCount,
                     candidateIssueCount: compileResult.candidateIssueCount,
                 },
+                artifactAdmissions: buildArtifactReportEntries(manifest),
+                candidateRecords: buildCandidateRecordReportEntries(adapter, manifest.reconstructionRunId),
+                issues: buildCandidateIssueReportEntries(adapter, manifest.reconstructionRunId),
                 coverage: compileResult.coverage,
                 exclusions: compileResult.exclusions,
                 conflicts: compileResult.conflicts,
@@ -999,14 +1370,15 @@ export async function runCandidateRebuild(request, options = {}) {
                     differingFieldsIgnored: ['reconstruction_run_id', 'started_at', 'finished_at', 'candidateRelativePath'],
                     unexplainedDifferences: [],
                 },
+                failure: null,
                 createdAt: manifest.createdAt,
                 finishedAt,
             };
-            atomicWriteFile(candidatePaths.reportPath, JSON.stringify(report, null, 2));
+            writeReport(candidatePaths, report);
             applyCandidateRetention(userRoot, manifest.memoryScopeId);
             return {
                 ok: false,
-                report,
+                report: finalizeReport(userRoot, report),
                 summary: summarizeCompactRebuildReport(report),
             };
         }
@@ -1077,6 +1449,9 @@ export async function runCandidateRebuild(request, options = {}) {
                 candidateAuthorityRecordCount: compileResult.candidateAuthorityRecordCount,
                 candidateIssueCount: compileResult.candidateIssueCount,
             },
+            artifactAdmissions: buildArtifactReportEntries(manifest),
+            candidateRecords: buildCandidateRecordReportEntries(adapter, manifest.reconstructionRunId),
+            issues: buildCandidateIssueReportEntries(adapter, manifest.reconstructionRunId),
             coverage: compileResult.coverage,
             exclusions: compileResult.exclusions,
             conflicts: compileResult.conflicts,
@@ -1092,15 +1467,16 @@ export async function runCandidateRebuild(request, options = {}) {
                 differingFieldsIgnored: ['reconstruction_run_id', 'started_at', 'finished_at', 'candidateRelativePath'],
                 unexplainedDifferences,
             },
+            failure: null,
             createdAt: manifest.createdAt,
             finishedAt,
         };
 
-        atomicWriteFile(candidatePaths.reportPath, JSON.stringify(report, null, 2));
+        writeReport(candidatePaths, report);
         applyCandidateRetention(userRoot, manifest.memoryScopeId);
         return {
             ok: succeeded,
-            report,
+            report: finalizeReport(userRoot, report),
             summary: summarizeCompactRebuildReport(report),
         };
     } catch (error) {
@@ -1109,6 +1485,10 @@ export async function runCandidateRebuild(request, options = {}) {
                 finishedAt,
                 failureReason: String(error?.code || error?.message || 'failed'),
             });
+            const liveAuthorityChanged = !equalFingerprints(manifest.liveAuthorityFingerprints || {}, getLiveAuthorityFingerprints(userRoot));
+            const failureReport = buildFailureReport(manifest, candidatePaths, finishedAt, error, { liveAuthorityChanged });
+            writeReport(candidatePaths, failureReport);
+            applyCandidateRetention(userRoot, manifest.memoryScopeId);
         } catch {
             // ignore secondary failure
         }
@@ -1126,7 +1506,7 @@ export function loadCandidateRebuildReport(request, reconstructionRunId) {
     }
     const report = JSON.parse(fs.readFileSync(candidatePaths.reportPath, 'utf8'));
     return {
-        report,
+        report: finalizeReport(userRoot, report),
         summary: summarizeCompactRebuildReport(report),
     };
 }

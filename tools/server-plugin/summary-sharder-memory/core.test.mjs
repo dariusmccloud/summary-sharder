@@ -53,6 +53,26 @@ test('managed snapshot is created and verified', () => {
     }
 });
 
+test('reopening operational database does not rewrite an unchanged state marker', () => {
+    const root = makeTempRoot();
+    const paths = getStoragePaths(root);
+
+    {
+        const adapter = openOperationalDatabase(paths, { now: 1234567890 });
+        adapter.close();
+    }
+
+    const before = fs.readFileSync(paths.statePath, 'utf8');
+
+    {
+        const adapter = openOperationalDatabase(paths, { now: 2234567890 });
+        adapter.close();
+    }
+
+    const after = fs.readFileSync(paths.statePath, 'utf8');
+    assert.equal(after, before);
+});
+
 test('corrupt operational database restores from verified snapshot', () => {
     const root = makeTempRoot();
     const paths = getStoragePaths(root);

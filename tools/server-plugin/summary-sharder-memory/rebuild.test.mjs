@@ -10,9 +10,12 @@ import {
     openOperationalDatabase,
 } from './core.js';
 import {
+    cleanupCandidateRebuildArtifacts as cleanupCandidateArtifacts,
     initCandidateRebuildRun,
+    listCandidateRebuildRuns as listCandidateRuns,
     loadCandidateRebuildReport,
     runCandidateRebuild,
+    setCandidateRebuildPinned,
 } from './rebuild.js';
 import { createNodeSqliteAdapter } from './sqlite-node.js';
 
@@ -143,6 +146,38 @@ Schema: architectural-memory/v1
     fs.writeFileSync(chatFilePath, `${lines.join('\n')}\n`, 'utf8');
 
     return { chatFilePath, memoryScopeId };
+}
+
+async function appendConflictingArchitecturalShard(root, chatFilePath) {
+    const lines = fs.readFileSync(chatFilePath, 'utf8').trimEnd().split('\n');
+    const secondShard = JSON.parse(lines[lines.length - 1]);
+    secondShard.send_date = '2026-06-24T10:00:11.000Z';
+    secondShard.extra.summary_sharder.messageIdentity.messageId = makeMessageId('d4');
+    secondShard.extra.summary_sharder.messageIdentity.revisionHash = 'sha256:rev-d4';
+    secondShard.mes = `[MEMORY SHARD: Messages 0-1]
+
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+[S1:1] | STATUS: ACCEPTED | ID: gain-modulation-boundary | DECISION: Make browser-local state authoritative.
+
+===END===`;
+    const header = JSON.parse(lines[0]);
+    const messages = lines.slice(1).map((line) => JSON.parse(line));
+    messages.push(secondShard);
+    const secondManifest = await buildManagedShardManifest(messages, {
+        startIndex: 0,
+        endIndex: 1,
+        artifactKind: 'system-shard',
+        outputUID: secondShard.send_date,
+        promptPolicy: 'replace_source',
+        now: Date.now(),
+        cryptoApi: globalThis.crypto,
+    });
+    header.chat_metadata.summary_sharder.shardManifests.push(secondManifest);
+    fs.writeFileSync(chatFilePath, `${[JSON.stringify(header), ...messages.map((message) => JSON.stringify(message))].join('\n')}\n`, 'utf8');
 }
 
 function buildRequest(root) {
@@ -363,35 +398,7 @@ test('invalid candidate build leaves live DB artifacts unchanged and rejects rer
     const { memoryScopeId } = await writeArchitecturalChat(root);
     const request = buildRequest(root);
     const chatFilePath = path.join(root, 'chats', 'Jeep', 'Session A.jsonl');
-    const lines = fs.readFileSync(chatFilePath, 'utf8').trimEnd().split('\n');
-    const secondShard = JSON.parse(lines[lines.length - 1]);
-    secondShard.send_date = '2026-06-24T10:00:11.000Z';
-    secondShard.extra.summary_sharder.messageIdentity.messageId = makeMessageId('d4');
-    secondShard.extra.summary_sharder.messageIdentity.revisionHash = 'sha256:rev-d4';
-    secondShard.mes = `[MEMORY SHARD: Messages 0-1]
-
-[KEY]
-Profile: architectural-memory
-Schema: architectural-memory/v1
-
-[DECISIONS]
-[S1:1] | STATUS: ACCEPTED | ID: gain-modulation-boundary | DECISION: Make browser-local state authoritative.
-
-===END===`;
-    const header = JSON.parse(lines[0]);
-    const messages = lines.slice(1).map((line) => JSON.parse(line));
-    messages.push(secondShard);
-    const secondManifest = await buildManagedShardManifest(messages, {
-        startIndex: 0,
-        endIndex: 1,
-        artifactKind: 'system-shard',
-        outputUID: secondShard.send_date,
-        promptPolicy: 'replace_source',
-        now: Date.now(),
-        cryptoApi: globalThis.crypto,
-    });
-    header.chat_metadata.summary_sharder.shardManifests.push(secondManifest);
-    fs.writeFileSync(chatFilePath, `${[JSON.stringify(header), ...messages.map((message) => JSON.stringify(message))].join('\n')}\n`, 'utf8');
+    await appendConflictingArchitecturalShard(root, chatFilePath);
 
     const paths = getStoragePaths(root);
     const liveAdapter = openOperationalDatabase(paths);
@@ -465,4 +472,166 @@ test('source mutation invalidation leaves live DB artifacts unchanged', async ()
     assert.equal(result.report.status, 'invalidated_source_mutation');
     assert.equal(result.report.liveAuthorityChanged, false);
     assert.deepEqual(after, before);
+});
+
+test('successful candidate report includes artifact admissions, candidate records, provenance, and retention state', async () => {
+    const root = makeTempRoot();
+    const { memoryScopeId } = await writeArchitecturalChat(root);
+    const request = buildRequest(root);
+    const init = await initCandidateRebuildRun(request, {
+        memoryScopeId,
+        requestKey: 'req-j',
+        now: Date.now(),
+    });
+
+    const result = await runCandidateRebuild(request, {
+        reconstructionRunId: init.manifest.reconstructionRunId,
+        now: Date.now(),
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.report.artifactAdmissions.length, 1);
+    assert.equal(result.report.artifactAdmissions[0].admissionStatus, 'admitted');
+    assert.equal(result.report.candidateRecords.length, 1);
+    assert.equal(result.report.candidateRecords[0].decisionId, 'gain-modulation-boundary');
+    assert.equal(result.report.candidateRecords[0].provenance.length, 1);
+    assert.equal(result.report.candidateRecords[0].provenance[0].coveredSourceMessageIds.length > 0, true);
+    assert.deepEqual(result.report.issues, []);
+    assert.equal(result.report.retention.cleanupEligible, false);
+    assert.deepEqual(result.report.retention.retainedBecause, ['latest_success']);
+});
+
+test('failed candidate run emits a retrievable failed report', async () => {
+    const root = makeTempRoot();
+    const { memoryScopeId, chatFilePath } = await writeArchitecturalChat(root);
+    const request = buildRequest(root);
+    const init = await initCandidateRebuildRun(request, {
+        memoryScopeId,
+        requestKey: 'req-k',
+        now: Date.now(),
+    });
+
+    fs.rmSync(chatFilePath, { force: true });
+
+    await assert.rejects(
+        runCandidateRebuild(request, {
+            reconstructionRunId: init.manifest.reconstructionRunId,
+            now: Date.now(),
+        }),
+        /ENOENT|no such file/i,
+    );
+
+    const loaded = loadCandidateRebuildReport(request, init.manifest.reconstructionRunId);
+    assert.equal(loaded.report.status, 'failed');
+    assert.equal(loaded.report.promotionAvailable, false);
+    assert.equal(loaded.report.failure.code.length > 0, true);
+    assert.equal(loaded.report.retention.cleanupEligible, false);
+    assert.deepEqual(loaded.report.retention.retainedBecause, ['latest_non_success']);
+});
+
+test('candidate retention cleanup keeps latest success, latest non-success, and pinned candidates only', async () => {
+    const root = makeTempRoot();
+    const { memoryScopeId } = await writeArchitecturalChat(root);
+    const request = buildRequest(root);
+    const chatFilePath = path.join(root, 'chats', 'Jeep', 'Session A.jsonl');
+
+    const successA = await initCandidateRebuildRun(request, {
+        memoryScopeId,
+        requestKey: 'req-l1',
+        now: Date.now(),
+    });
+    await runCandidateRebuild(request, {
+        reconstructionRunId: successA.manifest.reconstructionRunId,
+        now: Date.now(),
+    });
+    await setCandidateRebuildPinned(request, {
+        reconstructionRunId: successA.manifest.reconstructionRunId,
+        pinReason: 'keep-for-comparison',
+        now: Date.now(),
+    });
+
+    await appendConflictingArchitecturalShard(root, chatFilePath);
+    const invalidRun = await initCandidateRebuildRun(request, {
+        memoryScopeId,
+        requestKey: 'req-l2',
+        now: Date.now(),
+    });
+    const invalidResult = await runCandidateRebuild(request, {
+        reconstructionRunId: invalidRun.manifest.reconstructionRunId,
+        now: Date.now(),
+    });
+    assert.equal(invalidResult.ok, false);
+    assert.equal(invalidResult.report.status, 'invalid');
+
+    await writeArchitecturalChat(root, { memoryScopeId, chatInstanceId: 'chat_beta' });
+    const successB = await initCandidateRebuildRun(request, {
+        memoryScopeId,
+        requestKey: 'req-l3',
+        now: Date.now(),
+    });
+    await runCandidateRebuild(request, {
+        reconstructionRunId: successB.manifest.reconstructionRunId,
+        now: Date.now(),
+    });
+
+    const cleanup = cleanupCandidateArtifacts(request, { memoryScopeId });
+    const runs = listCandidateRuns(request, { memoryScopeId }).runs;
+
+    assert.deepEqual(cleanup.removedRunIds, []);
+    assert.equal(runs.length, 3);
+    assert.deepEqual(
+        runs.find((entry) => entry.reconstructionRunId === successA.manifest.reconstructionRunId)?.retention.retainedBecause,
+        ['pinned'],
+    );
+    assert.deepEqual(
+        runs.find((entry) => entry.reconstructionRunId === invalidRun.manifest.reconstructionRunId)?.retention.retainedBecause,
+        ['latest_non_success'],
+    );
+    assert.deepEqual(
+        runs.find((entry) => entry.reconstructionRunId === successB.manifest.reconstructionRunId)?.retention.retainedBecause,
+        ['latest_success'],
+    );
+});
+
+test('automatic retention removes superseded unpinned candidates and explicit cleanup is a safe no-op', async () => {
+    const root = makeTempRoot();
+    const { memoryScopeId } = await writeArchitecturalChat(root);
+    const request = buildRequest(root);
+    const paths = getStoragePaths(root);
+    const liveAdapter = openOperationalDatabase(paths);
+    liveAdapter.close();
+    const beforeLive = fingerprintFiles(paths);
+
+    const first = await initCandidateRebuildRun(request, {
+        memoryScopeId,
+        requestKey: 'req-m1',
+        now: Date.now(),
+    });
+    await runCandidateRebuild(request, {
+        reconstructionRunId: first.manifest.reconstructionRunId,
+        now: Date.now(),
+    });
+
+    await writeArchitecturalChat(root, { memoryScopeId, chatInstanceId: 'chat_gamma' });
+    const second = await initCandidateRebuildRun(request, {
+        memoryScopeId,
+        requestKey: 'req-m2',
+        now: Date.now(),
+    });
+    await runCandidateRebuild(request, {
+        reconstructionRunId: second.manifest.reconstructionRunId,
+        now: Date.now(),
+    });
+
+    const listedBefore = listCandidateRuns(request, { memoryScopeId }).runs;
+    const cleanup = cleanupCandidateArtifacts(request, { memoryScopeId });
+    const listedAfter = listCandidateRuns(request, { memoryScopeId }).runs;
+    const afterLive = fingerprintFiles(paths);
+
+    assert.equal(listedBefore.some((entry) => entry.reconstructionRunId === first.manifest.reconstructionRunId), false);
+    assert.equal(listedBefore.some((entry) => entry.reconstructionRunId === second.manifest.reconstructionRunId), true);
+    assert.deepEqual(cleanup.removedRunIds, []);
+    assert.equal(listedAfter.some((entry) => entry.reconstructionRunId === first.manifest.reconstructionRunId), false);
+    assert.equal(listedAfter.some((entry) => entry.reconstructionRunId === second.manifest.reconstructionRunId), true);
+    assert.deepEqual(afterLive, beforeLive);
 });
