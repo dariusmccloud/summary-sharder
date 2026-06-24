@@ -2,11 +2,17 @@
 
 ## Status
 
-This is the active executable contract for `C0.5A`.
+STATUS: IMPLEMENTED AND VERIFIED
+
+`C0.5A` is closed.
+
+This document remains the governing record of the candidate rebuild boundary.
 
 `C0.25` is complete.
 
-`C0.5A` is the next boundary and is limited to candidate rebuild orchestration only.
+`C0.5A` was limited to candidate rebuild orchestration only.
+
+The next implementation boundary is `C0.5B`.
 
 It does not authorize:
 
