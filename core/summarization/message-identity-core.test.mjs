@@ -126,6 +126,47 @@ test('reconcileMessageIdentityState adopts missing ids and preserves existing an
     assert.equal(chatMetadata.summary_sharder.messageIdentity.unidentifiedCount, 0);
 });
 
+test('reconcileMessageIdentityState preserves lastReconciledAt when semantic identity state is unchanged', async () => {
+    const messages = [
+        {
+            name: 'Chris',
+            is_user: true,
+            is_system: false,
+            send_date: '2026-04-15T06:51:57.721Z',
+            mes: 'Hello?',
+        },
+        {
+            name: 'Abigail',
+            is_user: false,
+            send_date: '2026-04-15T06:53:36.798Z',
+            mes: 'Waiting.',
+        },
+    ];
+    const chatMetadata = {};
+
+    const first = await reconcileMessageIdentityState(messages, {
+        chatMetadata,
+        context: makeDirectContext(),
+        now: 1782210204120,
+        cryptoApi: makeCrypto(),
+    });
+
+    assert.equal(first.changed, true);
+    assert.equal(chatMetadata.summary_sharder.messageIdentity.lastReconciledAt, 1782210204120);
+
+    const second = await reconcileMessageIdentityState(messages, {
+        chatMetadata,
+        context: makeDirectContext(),
+        now: 1782210204999,
+        cryptoApi: makeCrypto(),
+    });
+
+    assert.equal(second.messagesChanged, false);
+    assert.equal(second.metadataChanged, false);
+    assert.equal(second.changed, false);
+    assert.equal(chatMetadata.summary_sharder.messageIdentity.lastReconciledAt, 1782210204120);
+});
+
 test('reconcileMessageIdentityState surfaces deterministic fingerprint collisions', async () => {
     const messages = [
         {

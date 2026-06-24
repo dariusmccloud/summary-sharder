@@ -11,6 +11,8 @@ import {
     shiftRangesOnInsert,
     recomputeVisibility
 } from '../chat/range-operations.js';
+import { SHARD_ARTIFACT_KINDS } from '../summarization/shard-integrity-core.js';
+import { refreshCurrentChatShardIntegrity } from '../summarization/shard-integrity-runtime.js';
 import { Popup, POPUP_RESULT } from '../../../../../popup.js';
 import { extractDraftEvents, generateDraftSummary } from './casing-api.js';
 
@@ -215,6 +217,15 @@ function estimateTokenCount(text) {
     return Math.round(words * 1.3);
 }
 
+function resolveOutputArtifactKind(settings, outputMode) {
+    if (outputMode === 'system') {
+        return settings?.sharderMode === true
+            ? SHARD_ARTIFACT_KINDS.SYSTEM_SHARD
+            : SHARD_ARTIFACT_KINDS.SYSTEM_SUMMARY;
+    }
+    return SHARD_ARTIFACT_KINDS.LOREBOOK_SUMMARY;
+}
+
 // ============================================================================
 // ADVANCED SUMMARIZATION
 // ============================================================================
@@ -392,6 +403,16 @@ async function runAdvancedSummarization(messages, startIndex, endIndex, settings
 
             // Final visibility update
             await recomputeVisibility();
+
+            await refreshCurrentChatShardIntegrity({
+                reason: 'advanced-summary-saved',
+                registerOutput: {
+                    outputUID: outputResult.outputUID,
+                    artifactKind: resolveOutputArtifactKind(settings, outputResult.mode),
+                    startIndex,
+                    endIndex,
+                },
+            });
         }
 
         toastr.success('Summarization complete!');
@@ -600,6 +621,16 @@ KEYWORDS: keyword1, keyword2, keyword3, keyword4, keyword5`;
 
             // Final visibility update (applies all changes at once)
             await recomputeVisibility();
+
+            await refreshCurrentChatShardIntegrity({
+                reason: 'summary-saved',
+                registerOutput: {
+                    outputUID: outputResult.outputUID,
+                    artifactKind: resolveOutputArtifactKind(settings, outputResult.mode),
+                    startIndex,
+                    endIndex,
+                },
+            });
         }
 
         // Clear progress toast

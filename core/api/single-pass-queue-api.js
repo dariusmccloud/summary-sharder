@@ -20,6 +20,8 @@ import {
     shiftRangesOnInsert,
     recomputeVisibility
 } from '../chat/range-operations.js';
+import { SHARD_ARTIFACT_KINDS } from '../summarization/shard-integrity-core.js';
+import { refreshCurrentChatShardIntegrity } from '../summarization/shard-integrity-runtime.js';
 import { openSharderReviewModal } from '../../ui/modals/summarization/single-pass-review-modal.js';
 
 function sleep(ms) {
@@ -235,6 +237,17 @@ async function saveSinglePassOutput(range, settings, finalOutput, extractedKeywo
     }
 
     await recomputeVisibility();
+    await refreshCurrentChatShardIntegrity({
+        reason: 'sharder-batch-saved',
+        registerOutput: {
+            outputUID: outputResult.outputUID,
+            artifactKind: outputResult.mode === 'system'
+                ? SHARD_ARTIFACT_KINDS.SYSTEM_SHARD
+                : SHARD_ARTIFACT_KINDS.LOREBOOK_SUMMARY,
+            startIndex: freshStartAfterSave,
+            endIndex: freshEndAfterSave,
+        },
+    });
 
     return {
         didInjectToContext: outputResult.didInjectToContext,

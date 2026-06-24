@@ -217,13 +217,22 @@ export async function buildCorpusRevisionHash(messages, options = {}) {
     }, options.cryptoApi);
 }
 
-function buildChatIdentityStatus(status, identifiedCount, unidentifiedCount, corpusRevisionHash, now) {
+function buildChatIdentityStatus(status, identifiedCount, unidentifiedCount, corpusRevisionHash, now, previous = null) {
+    const sameSemanticStatus = previous
+        && previous.schemaVersion === CHAT_IDENTITY_STATUS_SCHEMA_VERSION
+        && previous.status === status
+        && previous.identifiedCount === identifiedCount
+        && previous.unidentifiedCount === unidentifiedCount
+        && previous.corpusRevisionHash === corpusRevisionHash;
+
     return {
         schemaVersion: CHAT_IDENTITY_STATUS_SCHEMA_VERSION,
         status,
         identifiedCount,
         unidentifiedCount,
-        lastReconciledAt: Number.isFinite(now) ? now : Date.now(),
+        lastReconciledAt: sameSemanticStatus
+            ? previous.lastReconciledAt
+            : (Number.isFinite(now) ? now : Date.now()),
         corpusRevisionHash,
     };
 }
@@ -411,6 +420,7 @@ export async function reconcileMessageIdentityState(messages, options = {}) {
         unidentifiedCount,
         corpusRevisionHash,
         now,
+        ssChat.messageIdentity,
     );
 
     if (!deepEqual(ssChat.messageIdentity, nextStatus)) {

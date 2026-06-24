@@ -103,6 +103,7 @@ Excluded from `C0.25`:
 12. semantic similarity must never replace lifecycle or provenance rules
 13. the native host save path must persist corpus truth before SQLite projection updates
 14. C0.25 may rebuild only mechanically derived identity and integrity projections
+15. passive chat load may reconcile identity and integrity in memory, but must not force a full chat-file rewrite
 
 ## Independent Message Dimensions
 
@@ -239,6 +240,41 @@ Message IDs are:
 - immutable
 - never reused
 - independent of array position, timestamp, text, or swipe selection
+
+## Passive-Load Persistence Boundary
+
+Live SillyBunny testing established that passive-load full-file rewrites are not a safe persistence boundary.
+
+Specifically:
+
+- chat hydration may emit host events that resemble new-message activity
+- message-identity adoption during passive load may determine that messages need IDs or hashes
+- writing those changes back through the normal host save path during load can trigger Windows rename fallback conflicts
+
+Therefore `C0.25` must follow this rule:
+
+> Passive chat load may perform identity and integrity reconciliation in memory, but it must not force a full JSONL rewrite.
+
+Operational meaning:
+
+- allowed during passive load:
+  - read corpus state
+  - reconcile message identity in memory
+  - validate shard integrity in memory
+  - compute diagnostics and traces
+- not allowed during passive load:
+  - full chat save solely to persist adopted message IDs
+  - full chat save solely to persist derived integrity metadata
+  - deferred load-time retry whose only purpose is to persist passive reconciliation results
+
+Persistence of adopted message identity or derived integrity metadata must instead occur on a later ordinary host save boundary, such as:
+
+- explicit user save
+- real message mutation
+- explicit archive or edit operation
+- another already-legitimate host-write path
+
+This rule is host-safety policy, not merely a performance optimization.
 
 ## Initialization Fingerprint and Revision State
 
@@ -567,15 +603,16 @@ Future authoritative coverage must be identity-backed:
 ```json
 {
   "shardId": "shard_...",
+  "sourceSelector": {
+    "mode": "contiguous_interval",
+    "startMessageId": "msg_A",
+    "endMessageId": "msg_C"
+  },
+  "sourceIdentityHash": "sha256:...",
+  "sourceRevisionHash": "sha256:...",
   "sourceStartPositionAtCreation": 103,
   "sourceEndPositionAtCreation": 203,
-  "sourceMessageIds": [
-    "msg_A",
-    "msg_B",
-    "msg_C"
-  ],
-  "sourceCoverageHash": "sha256:...",
-  "replacementPolicy": "replace"
+  "promptPolicy": "replace_source"
 }
 ```
 
@@ -587,21 +624,90 @@ The numeric range remains useful for:
 
 The authoritative source definition becomes:
 
-- immutable source message IDs
-- source coverage hash
+- immutable source selector identity
+- source identity hash
+- source revision hash
+
+Persisted manifests must remain compact and authoritative.
+
+Expanded validation diagnostics, prompt duplication estimates, and convenience summaries are operational outputs and must be generated lazily or cached outside the portable corpus.
 
 ### Shard health states
 
-`C0.25` should introduce explicit health classification:
+`C0.25` should introduce explicit content health classification:
 
 - `INTACT`
-- `VISIBILITY_CHANGED`
 - `DEGRADED`
 - `STALE`
 - `ORPHANED`
 - `CONFLICTED`
 
+Prompt exposure must be tracked separately from source integrity.
+
+Recommended exposure states:
+
+- `EXPOSURE_OK`
+- `SOURCE_AND_ARTIFACT_VISIBLE`
+- `SOURCE_VISIBLE_ARTIFACT_HIDDEN`
+- `SOURCE_HIDDEN_ARTIFACT_HIDDEN`
+- `VISIBILITY_POLICY_UNKNOWN`
+
+Legacy shards without explicit prompt policy must default to:
+
+```text
+promptPolicy: unknown_legacy
+```
+
 Deletion or mutation of a covered source must never silently remap the shard to new content.
+
+## Performance and Metadata Budget
+
+`C0.25D` must include load-performance profiling and a persisted-metadata budget.
+
+Normal chat loading must not require:
+
+- repeated full-corpus scans
+- one full scan per manifest
+- eager expansion of detailed integrity reports
+- repeated full metadata cloning or stringification after the authoritative manifest state is known
+
+Persisted corpus metadata must remain compact and authoritative.
+
+Expanded operational diagnostics must be generated or queried lazily.
+
+Before `C0.25D` can close, profile and report at least:
+
+1. server file read
+2. server JSONL parse
+3. response serialization and transfer
+4. browser response parse
+5. base chat-state installation
+6. message rendering
+7. Summary Sharder chat-load handling
+8. message-identity scan
+9. manifest backfill
+10. shard-integrity validation
+11. architectural projection-registry processing
+12. any automatic save triggered during load
+13. final chat-ready state
+
+The controlled comparison set must include:
+
+- current full metadata
+- `shardIntegrity` removed
+- `architecturalProjectionRegistry` removed
+- both derived structures removed
+- Summary Sharder enabled
+- Summary Sharder disabled
+
+Do not set arbitrary permanent byte or millisecond thresholds before profiling.
+
+Establish the baseline first, identify dominant costs, and then propose measurable limits for:
+
+- maximum persisted derived metadata
+- expected metadata growth per message and per shard
+- maximum number of full-corpus traversals during load
+- acceptable Summary Sharder load-time regression
 
 ## Validator and Repair Boundary
 
@@ -745,6 +851,10 @@ Evidence-policy exclusion remains schema-defined and defaulted to include. Do no
 - corpus and shard validator
 - safe repair boundary
 - prompt-exposure and token-load diagnostics
+- compact persisted shard manifests
+- lazy derived integrity summaries
+- architectural projection metadata audit
+- load profiling and metadata-budget evidence
 
 ## Repository Boundary
 
@@ -778,6 +888,8 @@ Before `C0.25` can be considered complete, prove on both SillyTavern and SillyBu
 12. archived messages are kept out of prompt assembly by policy
 13. native prompt-hidden and evidence-policy exclusion remain distinguishable
 14. the native host save path persists message mutations before SQLite projection updates
+15. persisted shard metadata remains compact after first load normalization
+16. load profiling identifies the dominant stages for both bloated and compact metadata variants
 
 ## Deliverables
 

@@ -27,7 +27,7 @@ import {
     summarizeMessageIdentitySurface,
 } from './message-identity-schema.js';
 
-const PROJECTION_METADATA_SCHEMA_VERSION = 1;
+const PROJECTION_METADATA_SCHEMA_VERSION = 2;
 
 function getSummarySharderMetadataRoot(root = chat_metadata) {
     if (!root.summary_sharder) {
@@ -203,6 +203,7 @@ export async function persistArchitecturalAuthorityProjection(summary, options =
         });
 
         stage = 'projection-metadata';
+        const decisionIds = authorityInputs.map((input) => input.decisionId).filter(Boolean);
         const projectionMetadata = {
             schemaVersion: PROJECTION_METADATA_SCHEMA_VERSION,
             source: mode === 'lorebook' ? 'lorebook' : 'system',
@@ -210,16 +211,7 @@ export async function persistArchitecturalAuthorityProjection(summary, options =
             startIndex,
             endIndex,
             memoryScopeId: binding.memoryScopeId,
-            scopeVersion: authorityCommit.registry.scopeVersion,
-            currentScopeRun: authorityCommit.registry.currentScopeRun,
-            decisionVersionsById: Object.fromEntries(
-                Object.entries(authorityCommit.projectionState || {})
-                    .map(([decisionId, ref]) => [decisionId, ref.currentRecordVersion])
-            ),
-            canonicalHashesById: Object.fromEntries(
-                Object.entries(authorityCommit.projectionState || {})
-                    .map(([decisionId, ref]) => [decisionId, ref.canonicalHash])
-            ),
+            decisionIds,
             savedAt: Number.isFinite(now) ? now : Date.now(),
         };
 
@@ -238,8 +230,7 @@ export async function persistArchitecturalAuthorityProjection(summary, options =
             memoryScopeId: binding.memoryScopeId,
             scopeVersion: authorityCommit.registry.scopeVersion,
             currentScopeRun: authorityCommit.registry.currentScopeRun,
-            decisionVersionsById: projectionMetadata.decisionVersionsById,
-            canonicalHashesById: projectionMetadata.canonicalHashesById,
+            decisionIds: projectionMetadata.decisionIds,
             outputUID,
         });
 
@@ -302,45 +293,30 @@ export async function persistArchitecturalAuthorityProjection(summary, options =
 }
 
 export async function resolveArchitecturalProjectionContext(memoryScopeId, projectionMetadata = null) {
-    const projectionState = {};
-    const decisionVersionsById = projectionMetadata?.decisionVersionsById || {};
-    const canonicalHashesById = projectionMetadata?.canonicalHashesById || {};
-
-    for (const decisionId of Object.keys(decisionVersionsById)) {
-        projectionState[decisionId] = {
-            decisionId,
-            currentRecordVersion: decisionVersionsById[decisionId],
-            canonicalHash: canonicalHashesById[decisionId] || null,
-        };
-    }
-
-    const response = await loadArchitecturalAuthorityCurrentDecisions(memoryScopeId, Object.keys(projectionState));
+    const decisionIds = Array.isArray(projectionMetadata?.decisionIds)
+        ? projectionMetadata.decisionIds.map((value) => String(value || '').trim()).filter(Boolean)
+        : [];
+    const response = await loadArchitecturalAuthorityCurrentDecisions(memoryScopeId, decisionIds);
     const resolved = {};
     const diagnostics = [];
 
-    for (const [decisionId, projectionRef] of Object.entries(projectionState)) {
+    for (const decisionId of decisionIds) {
         const authority = response?.decisions?.[decisionId] || null;
         if (!authority?.pointer) {
+            diagnostics.push({
+                level: 'warning',
+                code: 'ARCH_SCOPE_PROJECTION_MISSING',
+                message: `Projection binding for decision ${decisionId} no longer resolves to current scope authority.`,
+                recordId: decisionId,
+            });
             continue;
         }
 
-        const stale = String(authority.pointer.canonicalHash || '') !== String(projectionRef.canonicalHash || '')
-            || Number(authority.pointer.currentRecordVersion || 0) !== Number(projectionRef.currentRecordVersion || 0);
-
         resolved[decisionId] = {
-            ...projectionRef,
+            decisionId,
             authority: authority.pointer,
-            stale,
+            stale: false,
         };
-
-        if (stale) {
-            diagnostics.push({
-                level: 'warning',
-                code: 'ARCH_SCOPE_PROJECTION_STALE',
-                message: `Projection for decision ${decisionId} is stale relative to current scope authority.`,
-                recordId: decisionId,
-            });
-        }
     }
 
     return {

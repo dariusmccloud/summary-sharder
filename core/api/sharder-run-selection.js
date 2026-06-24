@@ -29,7 +29,7 @@ export function annotateShardSelectionCandidates(items, startIndex, endIndex) {
             overlapsCurrentRange,
             selectionEligible: overlapsCurrentRange !== true,
             selectionDisabledReason: overlapsCurrentRange === true
-                ? 'Overlaps the current run range; selecting it would be ignored. Revise the message range to use it as a baseline.'
+                ? 'Overlaps the current run range. Shown for reference only and unavailable in this run. Go back and revise the message range to use it as a baseline.'
                 : null,
         };
     });

@@ -20,6 +20,8 @@ import {
 import { startUiOperation, endUiOperation } from './api-ui-helpers.js';
 import { log } from '../logger.js';
 import { ARCHITECTURAL_PROFILE, normalizeSharderProfile } from '../summarization/sharder-section-registry.js';
+import { SHARD_ARTIFACT_KINDS } from '../summarization/shard-integrity-core.js';
+import { refreshCurrentChatShardIntegrity } from '../summarization/shard-integrity-runtime.js';
 import { resolveSelectedShardsForRun } from './sharder-run-selection.js';
 import {
     startSharderHeadlessOperation,
@@ -258,6 +260,18 @@ export async function runSharder(startIndex, endIndex, settings, selectedShards 
             }
 
             await recomputeVisibility();
+
+            await refreshCurrentChatShardIntegrity({
+                reason: 'sharder-saved',
+                registerOutput: {
+                    outputUID: outputResult.outputUID,
+                    artifactKind: outputResult.mode === 'system'
+                        ? SHARD_ARTIFACT_KINDS.SYSTEM_SHARD
+                        : SHARD_ARTIFACT_KINDS.LOREBOOK_SUMMARY,
+                    startIndex,
+                    endIndex,
+                },
+            });
         }
 
         const archivedCount = review.archivedItems?.length || 0;

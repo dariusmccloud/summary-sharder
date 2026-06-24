@@ -986,7 +986,7 @@ function buildModalHtml(state) {
                     </label>
                     <label class="ss-archive-option">
                         <input type="checkbox" id="ss-sp-archive-cold" />
-                        <span>Log output to cold archive</span>
+                        <span>Save output to local cold archive (history only, not RAG-retrievable)</span>
                     </label>
                 </div>
             </div>
@@ -1097,6 +1097,10 @@ function updateOutputEditor(state) {
             setupPruningAdvisorHandlers();
         }
     }
+
+    reviewSections(state).forEach((section) => {
+        updateSectionCount(state, section.key);
+    });
 
     updateInlineDiagnostics(state);
 }

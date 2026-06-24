@@ -26,6 +26,17 @@ import { shiftRangesOnDelete, shiftRangesOnInsert, buildRangesFromIndices, range
 import { enforceArchivedPromptExclusion, initArchiveHandler, refreshArchiveDecorations } from './core/chat/archive-manager.js';
 import { isArchivedMessage } from './core/chat/archive-policy.js';
 import { reconcileCurrentChatMessageIdentity } from './core/summarization/message-identity-runtime.js';
+import { refreshCurrentChatShardIntegrity } from './core/summarization/shard-integrity-runtime.js';
+import {
+    announceLoadProfilingBypass,
+    beginLoadTrace,
+    finishLoadTrace,
+    getLoadProfilerFlags,
+    isLoadDebugTracingEnabled,
+    installLoadTraceDebugApi,
+    isLoadProfilingBypassEnabled,
+    profileLoadStage,
+} from './core/summarization/load-profiler.js';
 
 // UI modules
 import { renderSettingsUI, runManualSummarizeUI } from './ui/ui-manager.js';
@@ -85,6 +96,57 @@ export { runSummarization, getActivePrompt, applyHideSummarized, applyVisibility
 async function syncArchivePresentation() {
     await enforceArchivedPromptExclusion(settings);
     refreshArchiveDecorations(settings);
+}
+
+async function reconcileCorpusIntegrity(options = {}) {
+    const context = SillyTavern.getContext?.() || null;
+    const trace = beginLoadTrace({
+        kind: 'corpus-integrity',
+        reason: options.reason || 'runtime-sync',
+        chatId: context?.chatId || '',
+        messageCount: Array.isArray(context?.chat) ? context.chat.length : 0,
+        profilingBypassActive: isLoadProfilingBypassEnabled(globalThis),
+    });
+    let identityResult = null;
+    let integrityResult = null;
+    let traceError = null;
+
+    try {
+        identityResult = await profileLoadStage(trace, 'message-identity-scan', async () => {
+            return await reconcileCurrentChatMessageIdentity(options);
+        });
+        await profileLoadStage(trace, 'archive-presentation-sync', async () => {
+            await syncArchivePresentation();
+            return { saveKind: 'none' };
+        });
+        integrityResult = await profileLoadStage(trace, 'shard-integrity-validation', async () => {
+            return await refreshCurrentChatShardIntegrity({
+                reason: options.reason || 'runtime-sync',
+            });
+        });
+    } catch (error) {
+        traceError = {
+            message: String(error?.message || error),
+            code: String(error?.code || ''),
+        };
+        throw error;
+    } finally {
+        finishLoadTrace(trace, {
+            identitySaveKind: identityResult?.saveKind || 'none',
+            integritySaveKind: integrityResult?.saveKind || 'none',
+            manifestsAdded: integrityResult?.manifestsAdded || 0,
+            manifestCount: integrityResult?.manifestCount || 0,
+            error: traceError,
+        });
+    }
+}
+
+function isProfilingBypassActive() {
+    const active = isLoadProfilingBypassEnabled(globalThis);
+    if (active) {
+        announceLoadProfilingBypass(log, globalThis);
+    }
+    return active;
 }
 
 /**
@@ -186,6 +248,9 @@ async function onExternalVisibilityChange() {
 
     // Don't recompute visibility - SillyTavern already did it
     refreshArchiveDecorations(settings);
+    await refreshCurrentChatShardIntegrity({
+        reason: 'external-visibility-change',
+    });
 }
 
 /**
@@ -240,13 +305,21 @@ function normalizeReceivedMessageEvent(messageId, messageType) {
 }
 
 async function onNewMessage(messageId, messageType, sourceEventType = event_types.MESSAGE_RECEIVED) {
+    const normalizedEvent = normalizeReceivedMessageEvent(messageId, messageType);
+
+    // SillyBunny emits MESSAGE_RECEIVED for a loaded historical first message when chat.length === 1.
+    // Initial-load / chat-change reconciliation already covers that path, so do not treat it as a new-message save trigger.
+    if (normalizedEvent.messageType === 'first_message') {
+        cacheCurrentChatState();
+        return;
+    }
+
     // Update cache after new message
     cacheCurrentChatState();
 
-    await reconcileCurrentChatMessageIdentity({
+    await reconcileCorpusIntegrity({
         reason: 'message-received',
     });
-    await syncArchivePresentation();
 
     if (settings.mode !== 'auto') {
         return;
@@ -263,7 +336,6 @@ async function onNewMessage(messageId, messageType, sourceEventType = event_type
         return;
     }
 
-    const normalizedEvent = normalizeReceivedMessageEvent(messageId, messageType);
     if (!shouldQualifyAutoMessage(normalizedEvent.messageId, normalizedEvent.messageType, sourceEventType, chat)) {
         return;
     }
@@ -298,10 +370,9 @@ async function onNewMessage(messageId, messageType, sourceEventType = event_type
  */
 async function onMessageEdited(eventData) {
     void eventData;
-    await reconcileCurrentChatMessageIdentity({
+    await reconcileCorpusIntegrity({
         reason: 'message-edited',
     });
-    await syncArchivePresentation();
     cacheCurrentChatState();
 }
 
@@ -316,11 +387,10 @@ async function onMessageDeleted(newChatLength) {
     // If cache is stale or no deletion occurred, just validate
     if (cachedLength === 0 || newChatLength >= cachedLength) {
         validateAllRanges();
-        await reconcileCurrentChatMessageIdentity({
+        await reconcileCorpusIntegrity({
             reason: 'message-deleted',
             recordDeletion: true,
         });
-        await syncArchivePresentation();
         cacheCurrentChatState();
         return;
     }
@@ -344,11 +414,10 @@ async function onMessageDeleted(newChatLength) {
         validateAllRanges();
     }
 
-    await reconcileCurrentChatMessageIdentity({
+    await reconcileCorpusIntegrity({
         reason: 'message-deleted',
         recordDeletion: true,
     });
-    await syncArchivePresentation();
 
     // Update cache for next deletion
     cacheCurrentChatState();
@@ -368,10 +437,9 @@ async function onMessageInserted(insertedIndex) {
         lastSummarizedIndex++;
     }
 
-    await reconcileCurrentChatMessageIdentity({
+    await reconcileCorpusIntegrity({
         reason: 'message-inserted',
     });
-    await syncArchivePresentation();
 
     // Update cache
     cacheCurrentChatState();
@@ -379,19 +447,17 @@ async function onMessageInserted(insertedIndex) {
 
 async function onMessageSwiped(eventData) {
     void eventData;
-    await reconcileCurrentChatMessageIdentity({
+    await reconcileCorpusIntegrity({
         reason: 'message-swiped',
     });
-    await syncArchivePresentation();
     cacheCurrentChatState();
 }
 
 async function onMessageUpdated(eventData) {
     void eventData;
-    await reconcileCurrentChatMessageIdentity({
+    await reconcileCorpusIntegrity({
         reason: 'message-updated',
     });
-    await syncArchivePresentation();
     cacheCurrentChatState();
 }
 
@@ -449,22 +515,97 @@ function onChatChanged() {
 
     // Auto-detect hidden ranges on chat load
     setTimeout(async () => {
-        // Re-attach observer for new chat DOM
-        setupVisibilityObserver();
-
-        mergeDetectedHiddenRanges();
-
-        // Reapply visibility for THIS chat's ranges (must await to ensure completion before caching)
-        await applyVisibilitySettings(settings);
-
-        await reconcileCurrentChatMessageIdentity({
+        const loadTrace = beginLoadTrace({
+            kind: 'chat-changed-handler',
             reason: 'chat-changed',
+            chatId: context?.chatId || '',
+            messageCount: Array.isArray(context?.chat) ? context.chat.length : 0,
+            deferredByMs: 500,
+            ...getLoadProfilerFlags(globalThis),
         });
-        await syncArchivePresentation();
 
-        // Cache chat state for deletion tracking (after visibility is fully applied)
-        cacheCurrentChatState();
+        // Re-attach observer for new chat DOM
+        try {
+            await profileLoadStage(loadTrace, 'setup-visibility-observer', async () => {
+                setupVisibilityObserver();
+                return {
+                    observerAttached: Boolean(visibilityObserver),
+                };
+            });
+
+            if (isProfilingBypassActive()) {
+                await profileLoadStage(loadTrace, 'profiling-bypass', async () => {
+                    return {
+                        skippedStages: [
+                            'merge-detected-hidden-ranges',
+                            'apply-visibility-settings',
+                            'reconcile-corpus-integrity',
+                            'cache-chat-state',
+                        ],
+                    };
+                });
+                return;
+            }
+
+            await profileLoadStage(loadTrace, 'merge-detected-hidden-ranges', async () => {
+                mergeDetectedHiddenRanges();
+                return {
+                    rangeCount: getChatRanges().length,
+                };
+            });
+
+            // Reapply visibility for THIS chat's ranges (must await to ensure completion before caching)
+            await profileLoadStage(loadTrace, 'apply-visibility-settings', async () => {
+                await applyVisibilitySettings(settings);
+                return {
+                    rangeCount: getChatRanges().length,
+                };
+            });
+
+            await profileLoadStage(loadTrace, 'reconcile-corpus-integrity', async () => {
+                await reconcileCorpusIntegrity({
+                    reason: 'chat-changed',
+                });
+                return {
+                    completed: true,
+                };
+            });
+
+            // Cache chat state for deletion tracking (after visibility is fully applied)
+            await profileLoadStage(loadTrace, 'cache-chat-state', async () => {
+                cacheCurrentChatState();
+                return {
+                    cachedLength: getCachedLength(),
+                };
+            });
+        } finally {
+            finishLoadTrace(loadTrace, {
+                bypassActive: isLoadProfilingBypassEnabled(globalThis),
+            });
+        }
     }, 500);
+}
+
+function onChatLoaded(eventData) {
+    if (!isLoadDebugTracingEnabled(globalThis)) {
+        return;
+    }
+
+    const context = SillyTavern.getContext?.() || null;
+    const detail = eventData?.detail || {};
+    const latestTrace = globalThis.summarySharderLoadProfiler?.getTraces?.()?.[0] || null;
+
+    log.log('[SummarySharder][CHAT_LOADED]', {
+        at: new Date().toISOString(),
+        chatId: context?.chatId || '',
+        detailId: detail?.id ?? null,
+        detailCharacterName: detail?.character?.name || '',
+        messageCount: Array.isArray(context?.chat) ? context.chat.length : 0,
+        profilingBypassActive: isLoadProfilingBypassEnabled(globalThis),
+        latestTraceKind: latestTrace?.meta?.kind || null,
+        latestTraceReason: latestTrace?.meta?.reason || null,
+        latestTraceDurationMs: latestTrace?.durationMs ?? null,
+    });
 }
 
 /**
@@ -560,6 +701,8 @@ jQuery(async () => {
 
     // Initialize themes
     initializeThemes(settings);
+    installLoadTraceDebugApi(globalThis);
+    announceLoadProfilingBypass(log, globalThis);
 
     // Inject CSS (includes theme modal CSS)
     injectStyles();
@@ -743,18 +886,24 @@ jQuery(async () => {
     // Apply visibility on load (use async to properly await)
     setTimeout(async () => {
         await applyVisibilitySettings(settings);
-        await reconcileCurrentChatMessageIdentity({
+        await reconcileCorpusIntegrity({
             reason: 'initial-load',
         });
-        await syncArchivePresentation();
         cacheCurrentChatState();
     }, 1000);
 
     // Register event handlers
     eventSource.on(event_types.MESSAGE_RECEIVED, (messageId, messageType) => onNewMessage(messageId, messageType, event_types.MESSAGE_RECEIVED));
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
-    eventSource.on(event_types.MESSAGE_DELETED, onMessageDeleted);
-    eventSource.on(event_types.MESSAGE_INSERTED, onMessageInserted);
+    if (event_types.CHAT_LOADED) {
+        eventSource.on(event_types.CHAT_LOADED, onChatLoaded);
+    }
+    if (event_types.MESSAGE_DELETED) {
+        eventSource.on(event_types.MESSAGE_DELETED, onMessageDeleted);
+    }
+    if (event_types.MESSAGE_INSERTED) {
+        eventSource.on(event_types.MESSAGE_INSERTED, onMessageInserted);
+    }
     if (event_types.MESSAGE_EDITED) {
         eventSource.on(event_types.MESSAGE_EDITED, onMessageEdited);
     }

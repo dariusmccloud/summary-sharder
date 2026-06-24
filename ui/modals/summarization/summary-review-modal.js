@@ -179,7 +179,7 @@ function buildModalHTML(summary, selectedEvents, coverageAnalysis, tokenCount, i
                     </label>
                     <label class="ss-archive-option">
                         <input type="checkbox" id="ss-archive-cold" />
-                        <span>Log to cold archive</span>
+                        <span>Save to local cold archive (history only, not RAG-retrievable)</span>
                     </label>
                 </div>
             </div>

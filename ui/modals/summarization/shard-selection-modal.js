@@ -48,7 +48,7 @@ function buildRow(item, index) {
                         <strong>${escapeHtml(item.identifier || `Item ${index + 1}`)}</strong>
                         <span class="ss-hint">${escapeHtml(sourceLabel)}</span>
                         ${rangeLabel ? `<span class="ss-hint">Messages ${escapeHtml(rangeLabel)}</span>` : ''}
-                        ${selectable ? '' : '<span class="ss-pill" style="background: rgba(240, 173, 78, 0.18); color: var(--SmartThemeWarningColor, #f0ad4e);">Ignored For This Run</span>'}
+                        ${selectable ? '' : '<span class="ss-pill" style="background: rgba(240, 173, 78, 0.18); color: var(--SmartThemeWarningColor, #f0ad4e);">Reference Only</span>'}
                     </div>
                     <div class="ss-hint" style="font-size:12px; line-height:1.35;">${escapeHtml(preview || '(No preview)')}</div>
                     ${disabledNote}
@@ -163,9 +163,12 @@ export async function openShardSelectionModal(settings, preloadedItems = null, m
     const listHtml = allItems.map((item, index) => buildRow(item, index)).join('');
     const overlapNote = overlappingCount > 0
         ? `<div class="ss-hint" style="font-size:12px; line-height:1.45; margin-top:6px; color: var(--SmartThemeWarningColor, #f0ad4e);">
-                ${overlappingCount} saved shard(s) overlap the current message range and will be ignored for this run. Leave them visible for reference, or go back and revise the selected range if you want to use them as baselines.
+                ${overlappingCount} saved shard(s) overlap the current message range. They are shown here for reference only and cannot be selected in this run. Go back and revise the selected range if you want to use them as baselines.
            </div>`
         : '';
+    const primaryButtonLabel = selectableItems.length > 0
+        ? 'Continue Sharder'
+        : (overlappingCount > 0 ? 'Continue Without Baseline' : 'Run From Scratch');
 
     const modalHtml = `
         <div class="ss-consolidation-modal">
@@ -194,7 +197,7 @@ export async function openShardSelectionModal(settings, preloadedItems = null, m
         POPUP_TYPE.TEXT,
         null,
         {
-            okButton: selectableItems.length > 0 ? 'Continue Sharder' : 'Run From Scratch',
+            okButton: primaryButtonLabel,
             cancelButton: 'Go Back',
             wide: true,
             large: true,

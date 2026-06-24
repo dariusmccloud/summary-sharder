@@ -168,8 +168,9 @@ export function buildArchitecturalBaselineLedger(existingShards = []) {
             }
 
             const projectionRef = shard?.projectionMetadata;
-            const currentRecordVersion = projectionRef?.decisionVersionsById?.[parsed.id];
-            const canonicalHash = projectionRef?.canonicalHashesById?.[parsed.id] || null;
+            const projectionAuthority = projectionRef?.authorityContext?.projectionState?.[parsed.id]?.authority || null;
+            const currentRecordVersion = projectionAuthority?.currentRecordVersion;
+            const canonicalHash = projectionAuthority?.canonicalHash || null;
             if (Number.isFinite(currentRecordVersion)) {
                 parsed.item = {
                     ...parsed.item,
