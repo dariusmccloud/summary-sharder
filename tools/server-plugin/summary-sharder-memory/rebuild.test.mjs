@@ -419,6 +419,10 @@ test('invalid candidate build leaves live DB artifacts unchanged and rejects rer
     assert.equal(result.ok, false);
     assert.equal(result.report.status, 'invalid');
     assert.equal(result.report.liveAuthorityChanged, false);
+    assert.equal(result.report.executionSummary.compileCompleted, true);
+    assert.equal(result.report.executionSummary.tier2ExtractionCompleted, true);
+    assert.equal(result.report.candidateValidity.valid, false);
+    assert.equal(result.report.candidateValidity.structuralBlockers.some((entry) => entry.code === 'REBUILD_DECISION_COLLISION'), true);
     assert.deepEqual(after, before);
     await assert.rejects(
         runCandidateRebuild(request, {

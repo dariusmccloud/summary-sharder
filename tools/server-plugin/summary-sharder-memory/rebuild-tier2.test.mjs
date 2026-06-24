@@ -245,3 +245,25 @@ test('evidence policy exclusion blocks deterministic admission', async () => {
     assert.equal(run.report.inputSummary.tier2ClaimsBlocked, 1);
     assert.equal(run.report.tier2Claims[0].admissionStatus, 'blocked');
 });
+
+test('mention-only detections are compacted without changing detailed counts', async () => {
+    const root = makeTempRoot();
+    await writeChat(root, {
+        messages: [
+            userMessage('e1', '```text\nDecision gain-modulation-boundary: Keep browser-local state non-authoritative.\n```'),
+            userMessage('e2', '```json\n{"decision":"gain-modulation-boundary"}\n```'),
+        ],
+    });
+    const request = buildRequest(root);
+    const init = await initCandidateRebuildRun(request, { memoryScopeId: 'scope_alpha', requestKey: 'tier2-mention-compact', now: Date.now() });
+    const run = await runCandidateRebuild(request, { reconstructionRunId: init.manifest.reconstructionRunId, now: Date.now() });
+
+    assert.equal(run.ok, true);
+    assert.equal(run.report.tier2Summary.mentionOnly, 2);
+    assert.equal(run.report.reviewSummary.reconciliation.mentionOnlySummaryCount, 2);
+    assert.equal(run.report.reviewSummary.reconciliation.mentionOnlyBucketCount, 2);
+    assert.equal(run.report.reviewSummary.reconciliation.mentionOnlyDetailedRowCount, 2);
+    assert.equal(run.report.reviewSummary.reconciliation.mentionOnlyCountsMatch, true);
+    assert.equal(run.report.detailedReview.mentionOnlyRows.length, 2);
+    assert.equal(run.report.detailedReview.mentionOnlyRows[0].stableSourceIdentity.localeCompare(run.report.detailedReview.mentionOnlyRows[1].stableSourceIdentity) <= 0, true);
+});

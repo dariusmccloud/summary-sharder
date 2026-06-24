@@ -17,6 +17,7 @@ import {
     TIER2_CLAIM_CLASS,
     TIER2_CLAIM_RELATIONSHIP,
     TIER2_CLAIM_STATE,
+    TIER2_CLAIM_ZONE_CLASS,
     TIER2_CONFIDENCE_CLASS,
     TIER2_RECONCILIATION_BASIS,
     TIER2_REVIEW_KIND,
@@ -471,6 +472,171 @@ function buildCandidateReviewItemReportEntries(adapter, reconstructionRunId) {
     }));
 }
 
+function summarizeIssueCodes(issues = []) {
+    const counts = new Map();
+    for (const issue of issues) {
+        const code = String(issue?.code || '').trim();
+        if (!code) continue;
+        counts.set(code, Number(counts.get(code) || 0) + 1);
+    }
+    return [...counts.entries()]
+        .map(([code, count]) => ({ code, count }))
+        .sort((left, right) => left.code.localeCompare(right.code));
+}
+
+function deriveTier2SourceClass(claim) {
+    switch (String(claim?.claimZoneClass || '')) {
+        case TIER2_CLAIM_ZONE_CLASS.MENTION_CODE:
+            return 'quoted_or_pasted_spec_material';
+        case TIER2_CLAIM_ZONE_CLASS.MENTION_QUOTE:
+            return 'quoted_dialogue_or_report';
+        case TIER2_CLAIM_ZONE_CLASS.MENTION_LOG:
+            return 'log_or_json_payload';
+        case TIER2_CLAIM_ZONE_CLASS.MENTION_EXAMPLE:
+            return 'example_material';
+        case TIER2_CLAIM_ZONE_CLASS.MENTION_REJECTED_ALTERNATIVE:
+            return 'rejected_alternative_material';
+        case TIER2_CLAIM_ZONE_CLASS.MENTION_ATTRIBUTED:
+            return 'attributed_external_material';
+        case TIER2_CLAIM_ZONE_CLASS.ASSERTED_BODY:
+            return 'asserted_message_body';
+        default:
+            return 'unknown_source_class';
+    }
+}
+
+function buildTier2StableSourceIdentity(claim) {
+    return stableStringify([
+        String(claim?.memoryScopeId || ''),
+        String(claim?.chatInstanceId || ''),
+        String(claim?.sourceMessageId || ''),
+        String(claim?.claimId || ''),
+    ]);
+}
+
+function compareTier2DetailedRows(left, right) {
+    const a = [
+        String(left?.memoryScopeId || ''),
+        String(left?.sourceClass || ''),
+        String(left?.claimZoneClass || ''),
+        String(left?.extractionRuleId || ''),
+        String(left?.stableSourceIdentity || ''),
+    ];
+    const b = [
+        String(right?.memoryScopeId || ''),
+        String(right?.sourceClass || ''),
+        String(right?.claimZoneClass || ''),
+        String(right?.extractionRuleId || ''),
+        String(right?.stableSourceIdentity || ''),
+    ];
+    return stableStringify(a).localeCompare(stableStringify(b));
+}
+
+function compareTier2Buckets(left, right) {
+    const a = [
+        String(left?.memoryScopeId || ''),
+        String(left?.sourceClass || ''),
+        String(left?.claimZoneClass || ''),
+        String(left?.extractionRuleId || ''),
+    ];
+    const b = [
+        String(right?.memoryScopeId || ''),
+        String(right?.sourceClass || ''),
+        String(right?.claimZoneClass || ''),
+        String(right?.extractionRuleId || ''),
+    ];
+    return stableStringify(a).localeCompare(stableStringify(b));
+}
+
+function buildTier2ReviewSurfaces(tier2Claims = [], issues = [], conflicts = [], status = '') {
+    const mentionDetailedRows = tier2Claims
+        .filter((claim) => String(claim?.confidenceClass || '') === TIER2_CONFIDENCE_CLASS.NON_ADMITTED_MENTION)
+        .map((claim) => ({
+            claimId: claim.claimId,
+            memoryScopeId: claim.memoryScopeId,
+            sourceClass: deriveTier2SourceClass(claim),
+            claimZoneClass: claim.claimZoneClass,
+            extractionRuleId: claim.extractionRuleId,
+            sourceMessageId: claim.sourceMessageId,
+            chatInstanceId: claim.chatInstanceId,
+            stableSourceIdentity: buildTier2StableSourceIdentity(claim),
+            admissionStatus: claim.admissionStatus,
+            excerpt: claim.claimTextExcerpt,
+        }))
+        .sort(compareTier2DetailedRows);
+
+    const bucketMap = new Map();
+    for (const row of mentionDetailedRows) {
+        const key = stableStringify([
+            row.memoryScopeId,
+            row.sourceClass,
+            row.claimZoneClass,
+            row.extractionRuleId,
+        ]);
+        const existing = bucketMap.get(key) || {
+            memoryScopeId: row.memoryScopeId,
+            sourceClass: row.sourceClass,
+            claimZoneClass: row.claimZoneClass,
+            extractionRuleId: row.extractionRuleId,
+            count: 0,
+        };
+        existing.count += 1;
+        bucketMap.set(key, existing);
+    }
+    const mentionBuckets = [...bucketMap.values()].sort(compareTier2Buckets);
+    const mentionBucketCount = mentionBuckets.reduce((sum, entry) => sum + Number(entry.count || 0), 0);
+    const mentionDetailedCount = mentionDetailedRows.length;
+
+    const structuralBlockers = summarizeIssueCodes(issues);
+    const structuralBlockerCount = structuralBlockers.reduce((sum, entry) => sum + Number(entry.count || 0), 0);
+
+    const admittedCount = tier2Claims.filter((claim) => String(claim?.admissionStatus || '') === 'admitted').length;
+    const blockedCount = tier2Claims.filter((claim) => String(claim?.admissionStatus || '') === 'blocked').length;
+    const ambiguousCount = tier2Claims.filter((claim) => String(claim?.confidenceClass || '') === TIER2_CONFIDENCE_CLASS.AMBIGUOUS).length;
+    const contextDependentCount = tier2Claims.filter((claim) => String(claim?.reviewKind || claim?.details?.reviewKind || '') === TIER2_REVIEW_KIND.CONTEXT_DEPENDENT_CANDIDATE).length;
+
+    const compileCompleted = status === 'success' || status === 'invalid' || status === 'invalidated_source_mutation';
+    const tier2ExtractionCompleted = status === 'success' || status === 'invalid';
+    const candidateValid = status === 'success';
+
+    return {
+        executionSummary: {
+            compileCompleted,
+            tier2ExtractionCompleted,
+            reportDerived: true,
+            completed: TERMINAL_REPORT_STATUS.has(String(status || '').toLowerCase()),
+        },
+        candidateValidity: {
+            valid: candidateValid,
+            invalidatedBySourceMutation: status === 'invalidated_source_mutation',
+            structuralBlockerCount,
+            structuralBlockers,
+            tier2ConflictCount: Array.isArray(conflicts) ? conflicts.length : 0,
+            nonBlockingMentionOnlyCount: mentionDetailedCount,
+        },
+        tier2Summary: {
+            admitted: admittedCount,
+            blocked: blockedCount,
+            ambiguous: ambiguousCount,
+            contextDependent: contextDependentCount,
+            mentionOnly: mentionDetailedCount,
+        },
+        reviewSummary: {
+            structuralBlockers,
+            mentionOnlyByBucket: mentionBuckets,
+            reconciliation: {
+                mentionOnlySummaryCount: mentionDetailedCount,
+                mentionOnlyBucketCount: mentionBucketCount,
+                mentionOnlyDetailedRowCount: mentionDetailedCount,
+                mentionOnlyCountsMatch: mentionDetailedCount === mentionBucketCount,
+            },
+        },
+        detailedReview: {
+            mentionOnlyRows: mentionDetailedRows,
+        },
+    };
+}
+
 function buildDynamicRetentionState(userRoot, report) {
     if (!report?.memoryScopeId || !report?.reconstructionRunId) {
         return {
@@ -512,8 +678,15 @@ function buildInputSummary(manifest) {
 }
 
 function finalizeReport(userRoot, report) {
+    const tier2ReviewSurfaces = buildTier2ReviewSurfaces(
+        report?.tier2Claims || [],
+        report?.issues || [],
+        report?.conflicts || [],
+        report?.status || '',
+    );
     return {
         ...report,
+        ...tier2ReviewSurfaces,
         retention: buildDynamicRetentionState(userRoot, report),
     };
 }
