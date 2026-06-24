@@ -71,6 +71,10 @@ const REBUILD_TABLE_SPECS = Object.freeze([
     { name: 'reconstruction_candidate_claim_links', ignoredColumns: ['reconstruction_run_id'] },
     { name: 'reconstruction_candidate_conflicts', ignoredColumns: ['reconstruction_run_id'] },
     { name: 'reconstruction_candidate_review_items', ignoredColumns: ['reconstruction_run_id'] },
+    { name: 'reconstruction_occurrence_groups', ignoredColumns: ['reconstruction_run_id'] },
+    { name: 'reconstruction_occurrence_group_members', ignoredColumns: ['reconstruction_run_id'] },
+    { name: 'reconstruction_version_lifecycle_groups', ignoredColumns: ['reconstruction_run_id'] },
+    { name: 'reconstruction_supersession_components', ignoredColumns: ['reconstruction_run_id'] },
 ]);
 
 const TERMINAL_REPORT_STATUS = new Set([
@@ -317,7 +321,7 @@ function buildArtifactReportEntries(manifest) {
 function buildCandidateRecordReportEntries(adapter, reconstructionRunId) {
     const decisions = adapter.all(
         `SELECT memory_scope_id, decision_id, record_version, canonical_hash, canonical_hash_version, hash_algorithm,
-                status, source_chat_instance_id, last_updating_chat_instance_id
+                status, prior_version, source_chat_instance_id, last_updating_chat_instance_id
            FROM decision_records
           ORDER BY decision_id ASC, record_version ASC`,
     );
@@ -365,14 +369,27 @@ function buildCandidateRecordReportEntries(adapter, reconstructionRunId) {
         memoryScopeId: row.memory_scope_id,
         decisionId: row.decision_id,
         recordVersion: Number(row.record_version),
-        recordId: `${row.memory_scope_id}:${row.decision_id}:${row.record_version}`,
+        recordId: buildCanonicalTier1RecordIdV1(
+            row.memory_scope_id,
+            row.decision_id,
+            Number(row.record_version),
+            Number(row.canonical_hash_version),
+            row.canonical_hash,
+        ),
         canonicalHash: row.canonical_hash,
         canonicalHashVersion: Number(row.canonical_hash_version),
         hashAlgorithm: row.hash_algorithm,
         status: row.status,
+        priorVersion: Number.isInteger(Number(row.prior_version)) ? Number(row.prior_version) : null,
         sourceChatInstanceId: row.source_chat_instance_id || null,
         lastUpdatingChatInstanceId: row.last_updating_chat_instance_id || null,
-        provenance: provenanceByRecordId.get(`${row.memory_scope_id}:${row.decision_id}:${row.record_version}`) || [],
+        provenance: provenanceByRecordId.get(buildCanonicalTier1RecordIdV1(
+            row.memory_scope_id,
+            row.decision_id,
+            Number(row.record_version),
+            Number(row.canonical_hash_version),
+            row.canonical_hash,
+        )) || [],
     }));
 }
 
@@ -468,6 +485,99 @@ function buildCandidateReviewItemReportEntries(adapter, reconstructionRunId) {
         claimId: row.claim_id || null,
         reviewKind: row.review_kind,
         severity: row.severity,
+        details: JSON.parse(row.details_json || '{}'),
+    }));
+}
+
+function buildOccurrenceGroupReportEntries(adapter, reconstructionRunId) {
+    const rows = adapter.all(
+        `SELECT *
+           FROM reconstruction_occurrence_groups
+          WHERE reconstruction_run_id = ?
+          ORDER BY decision_id ASC, record_version ASC, collision_evidence_group_id ASC`,
+        [reconstructionRunId],
+    );
+    const memberRows = adapter.all(
+        `SELECT *
+           FROM reconstruction_occurrence_group_members
+          WHERE reconstruction_run_id = ?
+          ORDER BY collision_evidence_group_id ASC, member_evidence_id ASC`,
+        [reconstructionRunId],
+    );
+    const membersByGroupId = new Map();
+    for (const row of memberRows) {
+        const list = membersByGroupId.get(row.collision_evidence_group_id) || [];
+        list.push({
+            memberEvidenceId: row.member_evidence_id,
+            sourceId: row.source_id,
+            sourceManifestId: row.source_manifest_id,
+            artifactMessageId: row.artifact_message_id,
+            chatInstanceId: row.chat_instance_id,
+            sourceRevisionHash: row.source_revision_hash,
+            sourceIdentityHash: row.source_identity_hash,
+            sourceMessageId: row.source_message_id,
+            initFingerprint: row.init_fingerprint,
+            canonicalHash: row.canonical_hash,
+            coveredSourceMessageIds: JSON.parse(row.covered_source_message_ids_json || '[]'),
+            details: JSON.parse(row.details_json || '{}'),
+        });
+        membersByGroupId.set(row.collision_evidence_group_id, list);
+    }
+    return rows.map((row) => ({
+        collisionEvidenceGroupId: row.collision_evidence_group_id,
+        memoryScopeId: row.memory_scope_id,
+        decisionId: row.decision_id,
+        recordVersion: Number(row.record_version),
+        occurrenceClassification: row.occurrence_classification,
+        occurrenceRuleId: row.occurrence_rule_id,
+        evidenceIndependence: row.evidence_independence,
+        independenceBasis: row.independence_basis,
+        canonicalRecordId: row.canonical_record_id || null,
+        reconciliationResult: row.reconciliation_result,
+        blocking: row.blocking_state === 'blocking',
+        unresolvedReason: row.unresolved_reason || null,
+        memberEvidenceIds: (membersByGroupId.get(row.collision_evidence_group_id) || []).map((entry) => entry.memberEvidenceId),
+        members: membersByGroupId.get(row.collision_evidence_group_id) || [],
+        details: JSON.parse(row.details_json || '{}'),
+    }));
+}
+
+function buildVersionLifecycleGroupReportEntries(adapter, reconstructionRunId) {
+    return adapter.all(
+        `SELECT *
+           FROM reconstruction_version_lifecycle_groups
+          WHERE reconstruction_run_id = ?
+          ORDER BY decision_id ASC, version_lifecycle_group_id ASC`,
+        [reconstructionRunId],
+    ).map((row) => ({
+        versionLifecycleGroupId: row.version_lifecycle_group_id,
+        memoryScopeId: row.memory_scope_id,
+        decisionId: row.decision_id,
+        canonicalRecordIds: JSON.parse(row.canonical_record_ids_json || '[]'),
+        versionLifecycleClassification: row.version_lifecycle_classification,
+        versionLifecycleRuleId: row.version_lifecycle_rule_id,
+        blocking: row.blocking_state === 'blocking',
+        unresolvedReason: row.unresolved_reason || null,
+        details: JSON.parse(row.details_json || '{}'),
+    }));
+}
+
+function buildSupersessionComponentReportEntries(adapter, reconstructionRunId) {
+    return adapter.all(
+        `SELECT *
+           FROM reconstruction_supersession_components
+          WHERE reconstruction_run_id = ?
+          ORDER BY supersession_component_id ASC`,
+        [reconstructionRunId],
+    ).map((row) => ({
+        supersessionComponentId: row.supersession_component_id,
+        memoryScopeId: row.memory_scope_id,
+        decisionIds: JSON.parse(row.decision_ids_json || '[]'),
+        canonicalRecordIds: JSON.parse(row.canonical_record_ids_json || '[]'),
+        supersessionLifecycleClassification: row.supersession_lifecycle_classification,
+        supersessionRuleId: row.supersession_rule_id,
+        blocking: row.blocking_state === 'blocking',
+        unresolvedReason: row.unresolved_reason || null,
         details: JSON.parse(row.details_json || '{}'),
     }));
 }
@@ -726,6 +836,9 @@ function buildFailureReport(manifest, candidatePaths, finishedAt, failure, repor
         },
         artifactAdmissions: buildArtifactReportEntries(manifest),
         candidateRecords: [],
+        occurrenceGroups: [],
+        versionLifecycleGroups: [],
+        supersessionComponents: [],
         tier2Claims: [],
         tier2ClaimLinks: [],
         issues: [],
@@ -1145,6 +1258,102 @@ function insertCandidateReviewItem(adapter, reconstructionRunId, reviewItem) {
     );
 }
 
+function insertOccurrenceGroup(adapter, reconstructionRunId, group) {
+    adapter.run(
+        `INSERT INTO reconstruction_occurrence_groups (
+            reconstruction_run_id, collision_evidence_group_id, memory_scope_id, decision_id, record_version,
+            occurrence_classification, occurrence_rule_id, evidence_independence, independence_basis,
+            canonical_record_id, reconciliation_result, blocking_state, unresolved_reason, details_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            reconstructionRunId,
+            group.collisionEvidenceGroupId,
+            group.memoryScopeId,
+            group.decisionId,
+            Number(group.recordVersion || 1),
+            group.occurrenceClassification,
+            group.occurrenceRuleId,
+            group.evidenceIndependence,
+            group.independenceBasis,
+            group.canonicalRecordId || null,
+            group.reconciliationResult,
+            group.blocking ? 'blocking' : 'non_blocking',
+            group.unresolvedReason || null,
+            JSON.stringify(group.details || {}),
+        ],
+    );
+}
+
+function insertOccurrenceGroupMember(adapter, reconstructionRunId, collisionEvidenceGroupId, member) {
+    adapter.run(
+        `INSERT INTO reconstruction_occurrence_group_members (
+            reconstruction_run_id, collision_evidence_group_id, member_evidence_id, source_id, source_manifest_id,
+            artifact_message_id, chat_instance_id, source_revision_hash, source_identity_hash, source_message_id,
+            init_fingerprint, canonical_hash, covered_source_message_ids_json, details_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            reconstructionRunId,
+            collisionEvidenceGroupId,
+            member.memberEvidenceId,
+            member.sourceId,
+            member.sourceManifestId,
+            member.artifactMessageId,
+            member.chatInstanceId,
+            member.sourceRevisionHash,
+            member.sourceIdentityHash,
+            member.sourceMessageId,
+            member.initFingerprint,
+            member.canonicalHash,
+            JSON.stringify(member.coveredSourceMessageIds || []),
+            JSON.stringify(member.details || {}),
+        ],
+    );
+}
+
+function insertVersionLifecycleGroup(adapter, reconstructionRunId, group) {
+    adapter.run(
+        `INSERT INTO reconstruction_version_lifecycle_groups (
+            reconstruction_run_id, version_lifecycle_group_id, memory_scope_id, decision_id,
+            version_lifecycle_classification, version_lifecycle_rule_id, blocking_state, unresolved_reason,
+            canonical_record_ids_json, details_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            reconstructionRunId,
+            group.versionLifecycleGroupId,
+            group.memoryScopeId,
+            group.decisionId,
+            group.versionLifecycleClassification,
+            group.versionLifecycleRuleId,
+            group.blocking ? 'blocking' : 'non_blocking',
+            group.unresolvedReason || null,
+            JSON.stringify(group.canonicalRecordIds || []),
+            JSON.stringify(group.details || {}),
+        ],
+    );
+}
+
+function insertSupersessionComponent(adapter, reconstructionRunId, component) {
+    adapter.run(
+        `INSERT INTO reconstruction_supersession_components (
+            reconstruction_run_id, supersession_component_id, memory_scope_id, decision_ids_json,
+            canonical_record_ids_json, supersession_lifecycle_classification, supersession_rule_id,
+            blocking_state, unresolved_reason, details_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            reconstructionRunId,
+            component.supersessionComponentId,
+            component.memoryScopeId,
+            JSON.stringify(component.decisionIds || []),
+            JSON.stringify(component.canonicalRecordIds || []),
+            component.supersessionLifecycleClassification,
+            component.supersessionRuleId,
+            component.blocking ? 'blocking' : 'non_blocking',
+            component.unresolvedReason || null,
+            JSON.stringify(component.details || {}),
+        ],
+    );
+}
+
 function aggregateDeterministicArtifacts(manifest, corpusByFileId) {
     return manifest.artifacts
         .filter((artifact) => artifact.admissionStatus === 'admitted')
@@ -1191,6 +1400,558 @@ function buildTier2DecisionFields(claim, decisionId) {
 
 function buildTier2RecordId(memoryScopeId, decisionId, recordVersion = 1) {
     return `${memoryScopeId}:${decisionId}:${recordVersion}`;
+}
+
+const OCCURRENCE_CLASSIFICATION = Object.freeze({
+    NONE: 'NONE',
+    DUPLICATE_OCCURRENCE: 'DUPLICATE_OCCURRENCE',
+    BRANCH_LINEAGE_DUPLICATE: 'BRANCH_LINEAGE_DUPLICATE',
+    CORROBORATING_PROVENANCE: 'CORROBORATING_PROVENANCE',
+    GENERATED_ID_COLLISION: 'GENERATED_ID_COLLISION',
+    UNRESOLVED_SEMANTIC_CONFLICT: 'UNRESOLVED_SEMANTIC_CONFLICT',
+    MALFORMED_STRUCTURED_RECORD: 'MALFORMED_STRUCTURED_RECORD',
+});
+
+const EVIDENCE_INDEPENDENCE = Object.freeze({
+    PROVEN_INDEPENDENT: 'PROVEN_INDEPENDENT',
+    SHARED_LINEAGE: 'SHARED_LINEAGE',
+    NOT_PROVEN: 'NOT_PROVEN',
+    UNKNOWN: 'UNKNOWN',
+});
+
+const INDEPENDENCE_BASIS = Object.freeze({
+    SHARED_MESSAGE_ANCESTRY: 'SHARED_MESSAGE_ANCESTRY',
+    EXPLICIT_BRANCH_COPY: 'EXPLICIT_BRANCH_COPY',
+    EXPLICIT_IMPORT_COPY: 'EXPLICIT_IMPORT_COPY',
+    DISTINCT_ORIGIN_PROVEN: 'DISTINCT_ORIGIN_PROVEN',
+    INDEPENDENCE_NOT_PROVEN: 'INDEPENDENCE_NOT_PROVEN',
+    LINEAGE_UNKNOWN: 'LINEAGE_UNKNOWN',
+});
+
+const VERSION_LIFECYCLE_CLASSIFICATION = Object.freeze({
+    SINGLE_VERSION: 'SINGLE_VERSION',
+    VALID_VERSION_CHAIN: 'VALID_VERSION_CHAIN',
+    FORKED_VERSION_CHAIN: 'FORKED_VERSION_CHAIN',
+    INCOMPLETE_VERSION_CHAIN: 'INCOMPLETE_VERSION_CHAIN',
+});
+
+const SUPERSESSION_LIFECYCLE_CLASSIFICATION = Object.freeze({
+    NO_SUPERSESSION: 'NO_SUPERSESSION',
+    VALID_SUPERSESSION_CHAIN: 'VALID_SUPERSESSION_CHAIN',
+    INCOMPLETE_SUPERSESSION_CHAIN: 'INCOMPLETE_SUPERSESSION_CHAIN',
+    CYCLIC_SUPERSESSION_CHAIN: 'CYCLIC_SUPERSESSION_CHAIN',
+    NOT_APPLICABLE: 'NOT_APPLICABLE',
+});
+
+const BLOCKING_CODE = Object.freeze({
+    GENERATED_ID_COLLISION: 'REBUILD_GENERATED_ID_COLLISION',
+    UNRESOLVED_SEMANTIC_CONFLICT: 'REBUILD_UNRESOLVED_SEMANTIC_CONFLICT',
+    MALFORMED_STRUCTURED_RECORD: 'REBUILD_MALFORMED_STRUCTURED_RECORD',
+    OCCURRENCE_CLASSIFICATION_FAILED: 'REBUILD_OCCURRENCE_CLASSIFICATION_FAILED',
+    FORKED_VERSION_CHAIN: 'REBUILD_FORKED_VERSION_CHAIN',
+    INCOMPLETE_VERSION_CHAIN: 'REBUILD_INCOMPLETE_VERSION_CHAIN',
+    VERSION_CLASSIFICATION_FAILED: 'REBUILD_VERSION_CLASSIFICATION_FAILED',
+    INCOMPLETE_SUPERSESSION_CHAIN: 'REBUILD_INCOMPLETE_SUPERSESSION_CHAIN',
+    CYCLIC_SUPERSESSION_CHAIN: 'REBUILD_CYCLIC_SUPERSESSION_CHAIN',
+    SUPERSESSION_CLASSIFICATION_FAILED: 'REBUILD_SUPERSESSION_CLASSIFICATION_FAILED',
+});
+
+const NON_SEMANTIC_VERSION_FIELDS = new Set(['RECORD-VERSION', 'RECORD_VERSION', 'PRIOR-VERSION', 'PRIOR_VERSION']);
+
+function deleteNonSemanticVersionFields(fields = {}) {
+    const normalized = {};
+    for (const [key, value] of Object.entries(fields || {})) {
+        if (NON_SEMANTIC_VERSION_FIELDS.has(String(key || '').trim().toUpperCase())) {
+            continue;
+        }
+        normalized[key] = value;
+    }
+    return normalized;
+}
+
+function firstFieldValue(value) {
+    return Array.isArray(value) ? value[0] : value;
+}
+
+function parsePositiveIntegerHint(value) {
+    const normalized = String(firstFieldValue(value) || '').trim();
+    if (!normalized) return { value: null, malformed: false };
+    if (!/^\d+$/u.test(normalized)) {
+        return { value: null, malformed: true };
+    }
+    const numeric = Number(normalized);
+    if (!Number.isInteger(numeric) || numeric <= 0) {
+        return { value: null, malformed: true };
+    }
+    return { value: numeric, malformed: false };
+}
+
+function extractTier1VersionMetadata(fields = {}) {
+    const recordVersionHint = parsePositiveIntegerHint(fields['RECORD-VERSION'] ?? fields.RECORD_VERSION);
+    const priorVersionHint = parsePositiveIntegerHint(fields['PRIOR-VERSION'] ?? fields.PRIOR_VERSION);
+    const malformedReasons = [];
+    if (recordVersionHint.malformed) malformedReasons.push('invalid_record_version_hint');
+    if (priorVersionHint.malformed) malformedReasons.push('invalid_prior_version_hint');
+    return {
+        recordVersion: recordVersionHint.value ?? 1,
+        priorVersion: priorVersionHint.value ?? null,
+        malformedReasons,
+    };
+}
+
+function buildOccurrenceSemanticFields(fields = {}) {
+    return deleteNonSemanticVersionFields(fields);
+}
+
+function buildTier1CanonicalHash(fields = {}) {
+    const semanticFields = buildOccurrenceSemanticFields(fields);
+    const semanticPayload = stableStringify(semanticFields);
+    return {
+        semanticFields,
+        semanticPayload,
+        canonicalHash: sha256Text(semanticPayload),
+    };
+}
+
+function buildMemberEvidenceIdV1(payload) {
+    return buildDeterministicHashId('evidence', 1, payload);
+}
+
+function buildCollisionEvidenceGroupIdV1(memoryScopeId, decisionId, recordVersion, memberEvidenceIds) {
+    return sha256Text(stableStringify([
+        'collision-evidence-group/v1',
+        String(memoryScopeId || ''),
+        String(decisionId || ''),
+        Number(recordVersion || 1),
+        [...memberEvidenceIds].sort(),
+    ]));
+}
+
+function buildCanonicalTier1RecordIdV1(memoryScopeId, decisionId, recordVersion, canonicalHashVersion, canonicalHash) {
+    return sha256Text(stableStringify([
+        'canonical-tier1-record/v1',
+        String(memoryScopeId || ''),
+        String(decisionId || ''),
+        Number(recordVersion || 1),
+        Number(canonicalHashVersion || 1),
+        String(canonicalHash || ''),
+    ]));
+}
+
+function buildVersionLifecycleGroupIdV1(memoryScopeId, decisionId, canonicalRecordIds) {
+    return sha256Text(stableStringify([
+        'version-lifecycle-group/v1',
+        String(memoryScopeId || ''),
+        String(decisionId || ''),
+        [...canonicalRecordIds].sort(),
+    ]));
+}
+
+function buildSupersessionComponentIdV1(memoryScopeId, decisionIds, canonicalRecordIds) {
+    return sha256Text(stableStringify([
+        'supersession-component/v1',
+        String(memoryScopeId || ''),
+        [...decisionIds].sort(),
+        [...canonicalRecordIds].sort(),
+    ]));
+}
+
+function createOccurrenceGroupIssue(group, code, message, details = {}) {
+    return {
+        issueId: buildDeterministicHashId('issue', 1, {
+            reconstructionRunId: group.reconstructionRunId,
+            collisionEvidenceGroupId: group.collisionEvidenceGroupId,
+            code,
+        }),
+        severity: 'error',
+        code,
+        message,
+        sourceId: group.members?.[0]?.sourceId || null,
+        details,
+    };
+}
+
+function normalizeStructuredFieldList(value) {
+    const rawValues = Array.isArray(value) ? value : [value];
+    const normalized = [];
+    for (const rawValue of rawValues) {
+        const text = String(rawValue || '').trim();
+        if (!text) continue;
+        for (const part of text.split(/[;,]/u)) {
+            const candidate = String(part || '').trim().toLowerCase();
+            if (candidate) {
+                normalized.push(candidate);
+            }
+        }
+    }
+    return [...new Set(normalized)].sort();
+}
+
+function determineEvidenceIndependence(members) {
+    for (let index = 0; index < members.length; index += 1) {
+        const left = members[index];
+        const leftCovered = new Set(left.coveredSourceMessageIds || []);
+        for (let inner = index + 1; inner < members.length; inner += 1) {
+            const right = members[inner];
+            if (left.sourceMessageId && right.sourceMessageId && left.sourceMessageId === right.sourceMessageId) {
+                return { evidenceIndependence: EVIDENCE_INDEPENDENCE.SHARED_LINEAGE, independenceBasis: INDEPENDENCE_BASIS.SHARED_MESSAGE_ANCESTRY };
+            }
+            if (left.initFingerprint && right.initFingerprint && left.initFingerprint === right.initFingerprint) {
+                return { evidenceIndependence: EVIDENCE_INDEPENDENCE.SHARED_LINEAGE, independenceBasis: INDEPENDENCE_BASIS.SHARED_MESSAGE_ANCESTRY };
+            }
+            for (const messageId of right.coveredSourceMessageIds || []) {
+                if (leftCovered.has(messageId)) {
+                    return { evidenceIndependence: EVIDENCE_INDEPENDENCE.SHARED_LINEAGE, independenceBasis: INDEPENDENCE_BASIS.SHARED_MESSAGE_ANCESTRY };
+                }
+            }
+            if (
+                (left.branchedFromChatInstanceId && left.branchedFromChatInstanceId === right.chatInstanceId)
+                || (right.branchedFromChatInstanceId && right.branchedFromChatInstanceId === left.chatInstanceId)
+            ) {
+                return { evidenceIndependence: EVIDENCE_INDEPENDENCE.SHARED_LINEAGE, independenceBasis: INDEPENDENCE_BASIS.EXPLICIT_BRANCH_COPY };
+            }
+            if (
+                (left.importedFromChatInstanceId && left.importedFromChatInstanceId === right.chatInstanceId)
+                || (right.importedFromChatInstanceId && right.importedFromChatInstanceId === left.chatInstanceId)
+            ) {
+                return { evidenceIndependence: EVIDENCE_INDEPENDENCE.SHARED_LINEAGE, independenceBasis: INDEPENDENCE_BASIS.EXPLICIT_IMPORT_COPY };
+            }
+        }
+    }
+
+    const allMembersHaveCoveredSources = members.every((member) => Array.isArray(member.coveredSourceMessageIds) && member.coveredSourceMessageIds.length > 0);
+    if (allMembersHaveCoveredSources) {
+        const seen = new Set();
+        let disjoint = true;
+        for (const member of members) {
+            for (const messageId of member.coveredSourceMessageIds) {
+                if (seen.has(messageId)) {
+                    disjoint = false;
+                    break;
+                }
+                seen.add(messageId);
+            }
+            if (!disjoint) break;
+        }
+        if (disjoint) {
+            return { evidenceIndependence: EVIDENCE_INDEPENDENCE.PROVEN_INDEPENDENT, independenceBasis: INDEPENDENCE_BASIS.DISTINCT_ORIGIN_PROVEN };
+        }
+    }
+
+    const hasIdentityGaps = members.some((member) => !member.chatInstanceId || (!member.sourceMessageId && (!Array.isArray(member.coveredSourceMessageIds) || member.coveredSourceMessageIds.length === 0)));
+    if (hasIdentityGaps) {
+        return { evidenceIndependence: EVIDENCE_INDEPENDENCE.UNKNOWN, independenceBasis: INDEPENDENCE_BASIS.LINEAGE_UNKNOWN };
+    }
+
+    return { evidenceIndependence: EVIDENCE_INDEPENDENCE.NOT_PROVEN, independenceBasis: INDEPENDENCE_BASIS.INDEPENDENCE_NOT_PROVEN };
+}
+
+function classifyOccurrenceGroup(group) {
+    const members = group.members || [];
+    const uniqueSemanticHashes = [...new Set(members.map((member) => member.canonicalHash))];
+    const uniquePriorVersions = [...new Set(members.map((member) => member.priorVersion).filter((value) => value !== null))];
+    const malformedMembers = members.filter((member) => Array.isArray(member.malformedReasons) && member.malformedReasons.length > 0);
+
+    if (malformedMembers.length > 0) {
+        return {
+            occurrenceClassification: OCCURRENCE_CLASSIFICATION.MALFORMED_STRUCTURED_RECORD,
+            occurrenceRuleId: 'OCC-MALFORMED-001',
+            reconciliationResult: 'BLOCKED_MALFORMED',
+            blocking: true,
+            unresolvedReason: 'malformed_structured_record',
+            classificationBasis: {
+                malformedMemberEvidenceIds: malformedMembers.map((member) => member.memberEvidenceId),
+                malformedReasons: malformedMembers.flatMap((member) => member.malformedReasons),
+            },
+        };
+    }
+
+    if (uniquePriorVersions.length > 1) {
+        return {
+            occurrenceClassification: OCCURRENCE_CLASSIFICATION.GENERATED_ID_COLLISION,
+            occurrenceRuleId: 'OCC-GENID-001',
+            reconciliationResult: 'BLOCKED_GENERATED_ID_COLLISION',
+            blocking: true,
+            unresolvedReason: 'generated_identity_collision',
+            classificationBasis: {
+                priorVersions: uniquePriorVersions,
+            },
+        };
+    }
+
+    if (uniqueSemanticHashes.length > 1) {
+        return {
+            occurrenceClassification: OCCURRENCE_CLASSIFICATION.UNRESOLVED_SEMANTIC_CONFLICT,
+            occurrenceRuleId: 'OCC-HASH-001',
+            reconciliationResult: 'BLOCKED_UNRESOLVED_SEMANTIC_CONFLICT',
+            blocking: true,
+            unresolvedReason: 'incompatible_same_version_canonical_hashes',
+            classificationBasis: {
+                canonicalHashes: uniqueSemanticHashes,
+            },
+        };
+    }
+
+    if (members.length === 1) {
+        return {
+            occurrenceClassification: OCCURRENCE_CLASSIFICATION.NONE,
+            occurrenceRuleId: 'OCC-NONE-001',
+            reconciliationResult: 'CANONICAL_SINGLE_MEMBER',
+            blocking: false,
+            unresolvedReason: null,
+            classificationBasis: {
+                memberEvidenceIds: members.map((member) => member.memberEvidenceId),
+            },
+        };
+    }
+
+    if (group.evidenceIndependence === EVIDENCE_INDEPENDENCE.SHARED_LINEAGE) {
+        return {
+            occurrenceClassification: OCCURRENCE_CLASSIFICATION.BRANCH_LINEAGE_DUPLICATE,
+            occurrenceRuleId: 'OCC-BRANCH-001',
+            reconciliationResult: 'MERGED_BRANCH_LINEAGE',
+            blocking: false,
+            unresolvedReason: null,
+            classificationBasis: {
+                evidenceIndependence: group.evidenceIndependence,
+                independenceBasis: group.independenceBasis,
+            },
+        };
+    }
+
+    if (group.evidenceIndependence === EVIDENCE_INDEPENDENCE.PROVEN_INDEPENDENT) {
+        return {
+            occurrenceClassification: OCCURRENCE_CLASSIFICATION.CORROBORATING_PROVENANCE,
+            occurrenceRuleId: 'OCC-CORR-001',
+            reconciliationResult: 'MERGED_PROVENANCE',
+            blocking: false,
+            unresolvedReason: null,
+            classificationBasis: {
+                evidenceIndependence: group.evidenceIndependence,
+                independenceBasis: group.independenceBasis,
+            },
+        };
+    }
+
+    return {
+        occurrenceClassification: OCCURRENCE_CLASSIFICATION.DUPLICATE_OCCURRENCE,
+        occurrenceRuleId: 'OCC-DUP-001',
+        reconciliationResult: 'MERGED_DUPLICATE',
+        blocking: false,
+        unresolvedReason: null,
+        classificationBasis: {
+            evidenceIndependence: group.evidenceIndependence,
+            independenceBasis: group.independenceBasis,
+        },
+    };
+}
+
+function classifyVersionLifecycle(records) {
+    const ordered = [...records].sort((left, right) => left.recordVersion - right.recordVersion || left.recordId.localeCompare(right.recordId));
+    if (ordered.length === 1) {
+        return {
+            versionLifecycleClassification: VERSION_LIFECYCLE_CLASSIFICATION.SINGLE_VERSION,
+            versionLifecycleRuleId: 'VERSION-CHAIN-001',
+            blocking: false,
+            unresolvedReason: null,
+            details: {
+                versions: ordered.map((record) => record.recordVersion),
+            },
+        };
+    }
+
+    const byVersion = new Map();
+    const childCounts = new Map();
+    let hasInvalidPrior = false;
+    let hasMissingParent = false;
+
+    for (const record of ordered) {
+        if (byVersion.has(record.recordVersion)) {
+            return {
+                versionLifecycleClassification: VERSION_LIFECYCLE_CLASSIFICATION.FORKED_VERSION_CHAIN,
+                versionLifecycleRuleId: 'VERSION-CHAIN-003',
+                blocking: true,
+                unresolvedReason: 'duplicate_version_number',
+                details: {
+                    versions: ordered.map((entry) => entry.recordVersion),
+                },
+            };
+        }
+        byVersion.set(record.recordVersion, record);
+    }
+
+    for (const record of ordered) {
+        if (record.priorVersion === null) {
+            continue;
+        }
+        if (record.priorVersion >= record.recordVersion) {
+            hasInvalidPrior = true;
+            continue;
+        }
+        if (!byVersion.has(record.priorVersion)) {
+            hasMissingParent = true;
+            continue;
+        }
+        childCounts.set(record.priorVersion, Number(childCounts.get(record.priorVersion) || 0) + 1);
+    }
+
+    if ([...childCounts.values()].some((count) => count > 1)) {
+        return {
+            versionLifecycleClassification: VERSION_LIFECYCLE_CLASSIFICATION.FORKED_VERSION_CHAIN,
+            versionLifecycleRuleId: 'VERSION-CHAIN-003',
+            blocking: true,
+            unresolvedReason: 'multiple_children_from_same_prior_version',
+            details: {
+                childCounts: Object.fromEntries(childCounts.entries()),
+            },
+        };
+    }
+
+    const contiguous = ordered.every((record, index) => index === 0 || record.recordVersion === ordered[index - 1].recordVersion + 1);
+    const deterministicContinuity = ordered.every((record, index) => {
+        if (index === 0) {
+            return record.priorVersion === null;
+        }
+        return record.priorVersion === null || record.priorVersion === ordered[index - 1].recordVersion;
+    });
+
+    if (!hasInvalidPrior && !hasMissingParent && contiguous && deterministicContinuity) {
+        return {
+            versionLifecycleClassification: VERSION_LIFECYCLE_CLASSIFICATION.VALID_VERSION_CHAIN,
+            versionLifecycleRuleId: 'VERSION-CHAIN-002',
+            blocking: false,
+            unresolvedReason: null,
+            details: {
+                versions: ordered.map((record) => ({ recordVersion: record.recordVersion, priorVersion: record.priorVersion })),
+            },
+        };
+    }
+
+    return {
+        versionLifecycleClassification: VERSION_LIFECYCLE_CLASSIFICATION.INCOMPLETE_VERSION_CHAIN,
+        versionLifecycleRuleId: 'VERSION-CHAIN-004',
+        blocking: true,
+        unresolvedReason: hasInvalidPrior ? 'invalid_prior_version_reference' : 'missing_version_continuity',
+        details: {
+            contiguous,
+            deterministicContinuity,
+            hasInvalidPrior,
+            hasMissingParent,
+            versions: ordered.map((record) => ({ recordVersion: record.recordVersion, priorVersion: record.priorVersion })),
+        },
+    };
+}
+
+function classifySupersessionComponent(recordsByDecisionId, componentDecisionIds) {
+    const componentRecords = componentDecisionIds.flatMap((decisionId) => recordsByDecisionId.get(decisionId) || []);
+    const pairSupport = new Map();
+    const missingTargets = new Set();
+
+    for (const record of componentRecords) {
+        const supersedesTargets = normalizeStructuredFieldList(record.fields?.SUPERSEDES);
+        const supersededByTargets = normalizeStructuredFieldList(record.fields?.['SUPERSEDED-BY']);
+
+        for (const targetDecisionId of supersedesTargets) {
+            const pairKey = `${targetDecisionId}\u0000${record.decisionId}`;
+            const entry = pairSupport.get(pairKey) || { oldDecisionId: targetDecisionId, newDecisionId: record.decisionId, fromOld: false, fromNew: false };
+            entry.fromNew = true;
+            pairSupport.set(pairKey, entry);
+            if (!recordsByDecisionId.has(targetDecisionId)) {
+                missingTargets.add(targetDecisionId);
+            }
+        }
+
+        for (const targetDecisionId of supersededByTargets) {
+            const pairKey = `${record.decisionId}\u0000${targetDecisionId}`;
+            const entry = pairSupport.get(pairKey) || { oldDecisionId: record.decisionId, newDecisionId: targetDecisionId, fromOld: false, fromNew: false };
+            entry.fromOld = true;
+            pairSupport.set(pairKey, entry);
+            if (!recordsByDecisionId.has(targetDecisionId)) {
+                missingTargets.add(targetDecisionId);
+            }
+        }
+    }
+
+    if (pairSupport.size === 0) {
+        return {
+            supersessionLifecycleClassification: SUPERSESSION_LIFECYCLE_CLASSIFICATION.NO_SUPERSESSION,
+            supersessionRuleId: 'SUPERSESSION-001',
+            blocking: false,
+            unresolvedReason: null,
+            details: {
+                decisionIds: componentDecisionIds,
+            },
+        };
+    }
+
+    const incompletePairs = [...pairSupport.values()].filter((entry) => !(entry.fromOld && entry.fromNew));
+    const directedEdges = [...pairSupport.values()]
+        .filter((entry) => entry.fromOld && entry.fromNew && recordsByDecisionId.has(entry.oldDecisionId) && recordsByDecisionId.has(entry.newDecisionId))
+        .map((entry) => [entry.oldDecisionId, entry.newDecisionId]);
+
+    const adjacency = new Map();
+    for (const [fromDecisionId, toDecisionId] of directedEdges) {
+        const list = adjacency.get(fromDecisionId) || [];
+        list.push(toDecisionId);
+        adjacency.set(fromDecisionId, list);
+    }
+
+    const visitState = new Map();
+    let cyclic = false;
+    const visit = (decisionId) => {
+        if (cyclic) return;
+        const currentState = visitState.get(decisionId);
+        if (currentState === 'active') {
+            cyclic = true;
+            return;
+        }
+        if (currentState === 'done') {
+            return;
+        }
+        visitState.set(decisionId, 'active');
+        for (const nextDecisionId of adjacency.get(decisionId) || []) {
+            visit(nextDecisionId);
+        }
+        visitState.set(decisionId, 'done');
+    };
+    for (const decisionId of componentDecisionIds) {
+        visit(decisionId);
+    }
+
+    if (cyclic) {
+        return {
+            supersessionLifecycleClassification: SUPERSESSION_LIFECYCLE_CLASSIFICATION.CYCLIC_SUPERSESSION_CHAIN,
+            supersessionRuleId: 'SUPERSESSION-004',
+            blocking: true,
+            unresolvedReason: 'cyclic_supersession_component',
+            details: {
+                edges: directedEdges,
+            },
+        };
+    }
+
+    if (missingTargets.size > 0 || incompletePairs.length > 0) {
+        return {
+            supersessionLifecycleClassification: SUPERSESSION_LIFECYCLE_CLASSIFICATION.INCOMPLETE_SUPERSESSION_CHAIN,
+            supersessionRuleId: 'SUPERSESSION-003',
+            blocking: true,
+            unresolvedReason: 'incomplete_supersession_links',
+            details: {
+                missingTargets: [...missingTargets].sort(),
+                incompletePairs,
+            },
+        };
+    }
+
+    return {
+        supersessionLifecycleClassification: SUPERSESSION_LIFECYCLE_CLASSIFICATION.VALID_SUPERSESSION_CHAIN,
+        supersessionRuleId: 'SUPERSESSION-002',
+        blocking: false,
+        unresolvedReason: null,
+        details: {
+            edges: directedEdges,
+        },
+    };
 }
 
 function normalizeTier2ComparisonText(value) {
@@ -1312,7 +2073,7 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
 
     const registry = getSharderSectionRegistry(ARCHITECTURAL_PROFILE);
     const artifacts = aggregateDeterministicArtifacts(manifest, corpusByFileId);
-    const decisionGroups = new Map();
+    const occurrenceGroups = new Map();
     const admittedArtifactMessageIds = new Set();
     const issues = [];
     const conflicts = [];
@@ -1358,22 +2119,65 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
             }
 
             admittedArtifactMessageIds.add(String(artifact.artifactMessageId || '').trim());
+            const versionMetadata = extractTier1VersionMetadata(authorityInput.fields || {});
+            const canonical = buildTier1CanonicalHash(authorityInput.fields || {});
+            const messageIdentity = outputMessage?.extra?.summary_sharder?.messageIdentity || {};
+            const binding = artifact.corpus?.header?.summary_sharder?.architecturalMemoryBinding || {};
+            const sourceMessageId = String(coveredSourceMessageIds[0] || artifact.artifactMessageId || '').trim();
             const occurrence = {
                 artifact,
                 authorityInput,
                 outputMessage,
+                decisionId: authorityInput.decisionId,
+                recordVersion: versionMetadata.recordVersion,
+                priorVersion: versionMetadata.priorVersion,
+                malformedReasons: versionMetadata.malformedReasons,
+                canonicalHash: canonical.canonicalHash,
+                canonicalHashVersion: authorityInput.canonicalHashVersion,
+                hashAlgorithm: authorityInput.hashAlgorithm,
+                semanticPayload: canonical.semanticPayload,
+                semanticFields: canonical.semanticFields,
                 coveredSourceMessageIds,
+                sourceMessageId,
                 sourceRevisionHash: normalizedManifest?.sourceRevisionHash || '',
                 sourceIdentityHash: normalizedManifest?.sourceIdentityHash || '',
+                initFingerprint: String(messageIdentity.initFingerprint || '').trim(),
+                chatInstanceId: String(artifact.corpus?.fileEntry?.chatInstanceId || ''),
+                branchedFromChatInstanceId: String(binding.branchedFromChatInstanceId || ''),
+                importedFromChatInstanceId: String(binding.importedFromChatInstanceId || ''),
+                speakerEntityId: String(outputMessage?.extra?.summary_sharder?.speakerIdentity?.speakerEntityId || ''),
+                artifactMessageId: String(artifact.artifactMessageId || ''),
+                sourceManifestId: String(artifact.sourceManifestId || ''),
+                sourceId: String(artifact.sourceId || ''),
+                memberEvidenceId: buildMemberEvidenceIdV1({
+                    sourceManifestId: artifact.sourceManifestId,
+                    artifactMessageId: artifact.artifactMessageId,
+                    chatInstanceId: artifact.corpus?.fileEntry?.chatInstanceId || '',
+                    sourceMessageId,
+                    decisionId: authorityInput.decisionId,
+                    recordVersion: versionMetadata.recordVersion,
+                    initFingerprint: String(messageIdentity.initFingerprint || '').trim(),
+                    sourceRevisionHash: normalizedManifest?.sourceRevisionHash || '',
+                    sourceIdentityHash: normalizedManifest?.sourceIdentityHash || '',
+                    semanticCanonicalHash: canonical.canonicalHash,
+                }),
             };
-            if (!decisionGroups.has(authorityInput.decisionId)) {
-                decisionGroups.set(authorityInput.decisionId, []);
+            const groupKey = stableStringify([manifest.memoryScopeId, authorityInput.decisionId, versionMetadata.recordVersion]);
+            if (!occurrenceGroups.has(groupKey)) {
+                occurrenceGroups.set(groupKey, {
+                    reconstructionRunId: manifest.reconstructionRunId,
+                    memoryScopeId: manifest.memoryScopeId,
+                    decisionId: authorityInput.decisionId,
+                    recordVersion: versionMetadata.recordVersion,
+                    members: [],
+                });
             }
-            decisionGroups.get(authorityInput.decisionId).push(occurrence);
+            occurrenceGroups.get(groupKey).members.push(occurrence);
         }
     }
 
-    const recordByDecisionId = new Map();
+    const canonicalRecordsByDecisionId = new Map();
+    const currentCanonicalRecordByDecisionId = new Map();
     const decisionTextToRecords = new Map();
     let candidateAuthorityRecordCount = 0;
     let exactCount = 0;
@@ -1381,80 +2185,138 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
     let deltaRecoveredCount = 0;
     let reconstructedCount = 0;
     let conflictedCount = 0;
+    let occurrenceGroupCount = 0;
+    let versionLifecycleGroupCount = 0;
+    let supersessionComponentCount = 0;
 
-    function indexRecord(decisionId, recordVersion, authorityInput, fields = authorityInput.fields || {}) {
-        const recordId = buildTier2RecordId(manifest.memoryScopeId, decisionId, recordVersion);
-        const decisionText = String(fields?.DECISION || '').trim();
+    function indexCanonicalRecord(record) {
+        const list = canonicalRecordsByDecisionId.get(record.decisionId) || [];
+        list.push(record);
+        list.sort((left, right) => left.recordVersion - right.recordVersion || left.recordId.localeCompare(right.recordId));
+        canonicalRecordsByDecisionId.set(record.decisionId, list);
+        currentCanonicalRecordByDecisionId.set(record.decisionId, list[list.length - 1]);
+        const decisionText = String(record.fields?.DECISION || '').trim();
         const decisionComparisonText = normalizeTier2ComparisonText(decisionText);
-        const indexed = {
-            decisionId,
-            recordId,
-            recordVersion,
-            canonicalHash: authorityInput.canonicalHash,
-            fields,
-            decisionText,
-            decisionComparisonText,
-        };
-        recordByDecisionId.set(decisionId, indexed);
+        record.decisionText = decisionText;
+        record.decisionComparisonText = decisionComparisonText;
         if (decisionComparisonText) {
-            const key = decisionComparisonText;
-            const list = decisionTextToRecords.get(key) || [];
-            list.push(indexed);
-            decisionTextToRecords.set(key, list);
+            const matches = decisionTextToRecords.get(decisionComparisonText) || [];
+            matches.push(record);
+            matches.sort((left, right) => left.recordId.localeCompare(right.recordId));
+            decisionTextToRecords.set(decisionComparisonText, matches);
         }
-        return indexed;
     }
 
-    for (const [decisionId, occurrences] of [...decisionGroups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-        const hashes = [...new Set(occurrences.map((entry) => entry.authorityInput.canonicalHash))];
-        if (hashes.length > 1) {
-            conflictedCount += 1;
-            issues.push({
-                issueId: createId('issue'),
-                severity: 'error',
-                code: 'REBUILD_DECISION_COLLISION',
-                message: `Decision ${decisionId} has conflicting canonical hashes across admitted artifacts.`,
-                sourceId: occurrences[0]?.artifact?.sourceId || null,
+    for (const group of [...occurrenceGroups.values()].sort((left, right) =>
+        stableStringify([left.decisionId, left.recordVersion]).localeCompare(stableStringify([right.decisionId, right.recordVersion])))) {
+        group.members.sort((left, right) => left.memberEvidenceId.localeCompare(right.memberEvidenceId));
+        const independence = determineEvidenceIndependence(group.members);
+        group.evidenceIndependence = independence.evidenceIndependence;
+        group.independenceBasis = independence.independenceBasis;
+        group.collisionEvidenceGroupId = buildCollisionEvidenceGroupIdV1(
+            group.memoryScopeId,
+            group.decisionId,
+            group.recordVersion,
+            group.members.map((member) => member.memberEvidenceId),
+        );
+
+        const classification = classifyOccurrenceGroup(group);
+        const firstMember = group.members[0];
+        const canonicalRecordId = classification.blocking
+            ? null
+            : buildCanonicalTier1RecordIdV1(
+                group.memoryScopeId,
+                group.decisionId,
+                group.recordVersion,
+                firstMember.canonicalHashVersion,
+                firstMember.canonicalHash,
+            );
+        insertOccurrenceGroup(adapter, manifest.reconstructionRunId, {
+            collisionEvidenceGroupId: group.collisionEvidenceGroupId,
+            memoryScopeId: group.memoryScopeId,
+            decisionId: group.decisionId,
+            recordVersion: group.recordVersion,
+            occurrenceClassification: classification.occurrenceClassification,
+            occurrenceRuleId: classification.occurrenceRuleId,
+            evidenceIndependence: group.evidenceIndependence,
+            independenceBasis: group.independenceBasis,
+            canonicalRecordId,
+            reconciliationResult: classification.reconciliationResult,
+            blocking: classification.blocking,
+            unresolvedReason: classification.unresolvedReason,
+            details: {
+                classifierVersion: 1,
+                classificationBasis: classification.classificationBasis,
+                memberEvidenceIds: group.members.map((member) => member.memberEvidenceId),
+            },
+        });
+        occurrenceGroupCount += 1;
+
+        for (const member of group.members) {
+            insertOccurrenceGroupMember(adapter, manifest.reconstructionRunId, group.collisionEvidenceGroupId, {
+                memberEvidenceId: member.memberEvidenceId,
+                sourceId: member.sourceId,
+                sourceManifestId: member.sourceManifestId,
+                artifactMessageId: member.artifactMessageId,
+                chatInstanceId: member.chatInstanceId,
+                sourceRevisionHash: member.sourceRevisionHash,
+                sourceIdentityHash: member.sourceIdentityHash,
+                sourceMessageId: member.sourceMessageId,
+                initFingerprint: member.initFingerprint,
+                canonicalHash: member.canonicalHash,
+                coveredSourceMessageIds: member.coveredSourceMessageIds,
                 details: {
-                    decisionId,
-                    sourceIds: occurrences.map((entry) => entry.artifact.sourceId),
-                    canonicalHashes: hashes,
+                    branchedFromChatInstanceId: member.branchedFromChatInstanceId || null,
+                    importedFromChatInstanceId: member.importedFromChatInstanceId || null,
                 },
             });
+        }
+
+        if (classification.blocking) {
+            conflictedCount += 1;
+            issues.push(createOccurrenceGroupIssue(
+                {
+                    reconstructionRunId: manifest.reconstructionRunId,
+                    collisionEvidenceGroupId: group.collisionEvidenceGroupId,
+                    members: group.members,
+                },
+                BLOCKING_CODE[classification.occurrenceClassification] || BLOCKING_CODE.OCCURRENCE_CLASSIFICATION_FAILED,
+                `Decision ${group.decisionId} version ${group.recordVersion} classified as ${classification.occurrenceClassification}.`,
+                {
+                    decisionId: group.decisionId,
+                    recordVersion: group.recordVersion,
+                    occurrenceClassification: classification.occurrenceClassification,
+                    occurrenceRuleId: classification.occurrenceRuleId,
+                    evidenceIndependence: group.evidenceIndependence,
+                    independenceBasis: group.independenceBasis,
+                },
+            ));
             continue;
         }
 
-        const canonical = occurrences[0].authorityInput;
-        const recordVersion = 1;
-        const recordId = buildTier2RecordId(manifest.memoryScopeId, decisionId, recordVersion);
-        const provenanceEntries = [];
-
-        for (const occurrence of occurrences) {
-            const provenanceId = createId('prov');
-            provenanceEntries.push({
-                provenanceId,
-                recordId,
-                memoryScopeId: manifest.memoryScopeId,
-                speakerEntityId: String(occurrence.outputMessage?.extra?.summary_sharder?.speakerIdentity?.speakerEntityId || ''),
-                chatInstanceId: String(occurrence.artifact.corpus?.fileEntry?.chatInstanceId || ''),
-                artifactMessageId: String(occurrence.artifact.artifactMessageId || ''),
-                sourceManifestId: String(occurrence.artifact.sourceManifestId || ''),
-                sourceRevisionHash: occurrence.sourceRevisionHash,
-                sourceIdentityHash: occurrence.sourceIdentityHash,
-                coveredSourceMessageIds: occurrence.coveredSourceMessageIds,
-            });
-        }
-
-        const provenanceJson = [];
-        for (const occurrence of occurrences) {
-            if (occurrence.authorityInput.sourceRef) {
-                provenanceJson.push({
-                    chatId: occurrence.artifact.corpus?.fileEntry?.chatInstanceId || null,
-                    collectionId: null,
-                    sourceRef: occurrence.authorityInput.sourceRef,
-                });
-            }
-        }
+        const provenanceJson = group.members
+            .filter((member) => member.authorityInput.sourceRef)
+            .map((member) => ({
+                chatId: member.chatInstanceId || null,
+                collectionId: null,
+                sourceRef: member.authorityInput.sourceRef,
+            }));
+        const canonicalRecord = {
+            decisionId: group.decisionId,
+            recordId: canonicalRecordId,
+            recordVersion: group.recordVersion,
+            priorVersion: firstMember.priorVersion,
+            canonicalHash: firstMember.canonicalHash,
+            canonicalHashVersion: firstMember.canonicalHashVersion,
+            hashAlgorithm: firstMember.hashAlgorithm,
+            semanticPayload: firstMember.semanticPayload,
+            fields: firstMember.semanticFields,
+            status: firstMember.authorityInput.status || '',
+            sourceChatInstanceId: firstMember.chatInstanceId || null,
+            lastUpdatingChatInstanceId: firstMember.chatInstanceId || null,
+            provenanceJson,
+            members: group.members,
+        };
 
         adapter.run(
             `INSERT INTO decision_records (
@@ -1464,23 +2326,78 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 manifest.memoryScopeId,
-                decisionId,
-                recordVersion,
-                canonical.canonicalHash,
-                canonical.canonicalHashVersion,
-                canonical.hashAlgorithm,
-                canonical.semanticPayload,
-                JSON.stringify(canonical.fields || {}),
-                canonical.status || '',
-                null,
-                occurrences[0].artifact.corpus?.fileEntry?.chatInstanceId || null,
-                occurrences[0].artifact.corpus?.fileEntry?.chatInstanceId || null,
-                JSON.stringify(provenanceJson),
+                canonicalRecord.decisionId,
+                canonicalRecord.recordVersion,
+                canonicalRecord.canonicalHash,
+                canonicalRecord.canonicalHashVersion,
+                canonicalRecord.hashAlgorithm,
+                canonicalRecord.semanticPayload,
+                JSON.stringify(canonicalRecord.fields || {}),
+                canonicalRecord.status,
+                canonicalRecord.priorVersion,
+                canonicalRecord.sourceChatInstanceId,
+                canonicalRecord.lastUpdatingChatInstanceId,
+                JSON.stringify(canonicalRecord.provenanceJson || []),
                 timestamp,
                 timestamp,
             ],
         );
 
+        for (const member of group.members) {
+            insertCandidateProvenanceRecord(adapter, manifest, canonicalRecord.recordId, member.sourceManifestId, {
+                speakerEntityId: member.speakerEntityId,
+                chatInstanceId: member.chatInstanceId,
+                artifactMessageId: member.artifactMessageId,
+                sourceRevisionHash: member.sourceRevisionHash,
+                sourceIdentityHash: member.sourceIdentityHash,
+                coveredSourceMessageIds: member.coveredSourceMessageIds,
+            });
+        }
+
+        indexCanonicalRecord(canonicalRecord);
+        candidateAuthorityRecordCount += 1;
+        if (classification.occurrenceClassification === OCCURRENCE_CLASSIFICATION.CORROBORATING_PROVENANCE) {
+            corroboratedCount += 1;
+        } else {
+            exactCount += 1;
+        }
+    }
+
+    const canonicalRecordIndex = [...canonicalRecordsByDecisionId.entries()].sort((left, right) => left[0].localeCompare(right[0]));
+    for (const [decisionId, records] of canonicalRecordIndex) {
+        const lifecycle = classifyVersionLifecycle(records);
+        insertVersionLifecycleGroup(adapter, manifest.reconstructionRunId, {
+            versionLifecycleGroupId: buildVersionLifecycleGroupIdV1(manifest.memoryScopeId, decisionId, records.map((record) => record.recordId)),
+            memoryScopeId: manifest.memoryScopeId,
+            decisionId,
+            canonicalRecordIds: records.map((record) => record.recordId),
+            versionLifecycleClassification: lifecycle.versionLifecycleClassification,
+            versionLifecycleRuleId: lifecycle.versionLifecycleRuleId,
+            blocking: lifecycle.blocking,
+            unresolvedReason: lifecycle.unresolvedReason,
+            details: lifecycle.details,
+        });
+        versionLifecycleGroupCount += 1;
+        if (lifecycle.blocking) {
+            issues.push({
+                issueId: buildDeterministicHashId('issue', 1, {
+                    reconstructionRunId: manifest.reconstructionRunId,
+                    decisionId,
+                    code: BLOCKING_CODE[lifecycle.versionLifecycleClassification] || BLOCKING_CODE.VERSION_CLASSIFICATION_FAILED,
+                }),
+                severity: 'error',
+                code: BLOCKING_CODE[lifecycle.versionLifecycleClassification] || BLOCKING_CODE.VERSION_CLASSIFICATION_FAILED,
+                message: `Decision ${decisionId} version lifecycle classified as ${lifecycle.versionLifecycleClassification}.`,
+                sourceId: records[0]?.members?.[0]?.sourceId || null,
+                details: {
+                    decisionId,
+                    versionLifecycleClassification: lifecycle.versionLifecycleClassification,
+                    versionLifecycleRuleId: lifecycle.versionLifecycleRuleId,
+                },
+            });
+        }
+
+        const currentRecord = records[records.length - 1];
         adapter.run(
             `INSERT INTO current_decisions (
                 memory_scope_id, decision_id, current_record_version, canonical_hash, canonical_hash_version,
@@ -1489,49 +2406,93 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
             [
                 manifest.memoryScopeId,
                 decisionId,
-                recordVersion,
-                canonical.canonicalHash,
-                canonical.canonicalHashVersion,
-                canonical.hashAlgorithm,
+                currentRecord.recordVersion,
+                currentRecord.canonicalHash,
+                currentRecord.canonicalHashVersion,
+                currentRecord.hashAlgorithm,
                 'active',
                 JSON.stringify(null),
                 JSON.stringify(null),
                 timestamp,
             ],
         );
+    }
 
-        for (const provenance of provenanceEntries) {
-            adapter.run(
-                `INSERT INTO reconstruction_candidate_provenance (
-                    reconstruction_run_id, provenance_id, record_id, memory_scope_id, speaker_entity_id,
-                    chat_instance_id, artifact_message_id, source_manifest_id, source_revision_hash, source_identity_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [
-                    manifest.reconstructionRunId,
-                    provenance.provenanceId,
-                    provenance.recordId,
-                    provenance.memoryScopeId,
-                    provenance.speakerEntityId,
-                    provenance.chatInstanceId,
-                    provenance.artifactMessageId,
-                    provenance.sourceManifestId,
-                    provenance.sourceRevisionHash,
-                    provenance.sourceIdentityHash,
-                ],
-            );
-            for (const messageId of provenance.coveredSourceMessageIds) {
-                adapter.run(
-                    `INSERT INTO reconstruction_candidate_provenance_sources (
-                        reconstruction_run_id, provenance_id, covered_source_message_id
-                    ) VALUES (?, ?, ?)`,
-                    [manifest.reconstructionRunId, provenance.provenanceId, messageId],
-                );
+    const supersessionAdjacency = new Map();
+    for (const [decisionId, records] of canonicalRecordIndex) {
+        const neighbors = supersessionAdjacency.get(decisionId) || new Set();
+        for (const record of records) {
+            for (const targetDecisionId of [
+                ...normalizeStructuredFieldList(record.fields?.SUPERSEDES),
+                ...normalizeStructuredFieldList(record.fields?.['SUPERSEDED-BY']),
+            ]) {
+                if (canonicalRecordsByDecisionId.has(targetDecisionId)) {
+                    neighbors.add(targetDecisionId);
+                    const reverse = supersessionAdjacency.get(targetDecisionId) || new Set();
+                    reverse.add(decisionId);
+                    supersessionAdjacency.set(targetDecisionId, reverse);
+                }
+            }
+        }
+        supersessionAdjacency.set(decisionId, neighbors);
+    }
+
+    const visitedSupersessionDecisionIds = new Set();
+    for (const decisionId of [...canonicalRecordsByDecisionId.keys()].sort()) {
+        if (visitedSupersessionDecisionIds.has(decisionId)) {
+            continue;
+        }
+        const queue = [decisionId];
+        const componentDecisionIds = [];
+        while (queue.length > 0) {
+            const nextDecisionId = queue.shift();
+            if (!nextDecisionId || visitedSupersessionDecisionIds.has(nextDecisionId)) {
+                continue;
+            }
+            visitedSupersessionDecisionIds.add(nextDecisionId);
+            componentDecisionIds.push(nextDecisionId);
+            for (const neighbor of supersessionAdjacency.get(nextDecisionId) || []) {
+                if (!visitedSupersessionDecisionIds.has(neighbor)) {
+                    queue.push(neighbor);
+                }
             }
         }
 
-        indexRecord(decisionId, recordVersion, canonical, canonical.fields || {});
-        candidateAuthorityRecordCount += 1;
-        exactCount += 1;
+        const sortedComponentDecisionIds = componentDecisionIds.sort();
+        const lifecycle = classifySupersessionComponent(canonicalRecordsByDecisionId, sortedComponentDecisionIds);
+        const canonicalRecordIds = sortedComponentDecisionIds.flatMap((entryDecisionId) =>
+            (canonicalRecordsByDecisionId.get(entryDecisionId) || []).map((record) => record.recordId)).sort();
+        const supersessionComponentId = buildSupersessionComponentIdV1(manifest.memoryScopeId, sortedComponentDecisionIds, canonicalRecordIds);
+        insertSupersessionComponent(adapter, manifest.reconstructionRunId, {
+            supersessionComponentId,
+            memoryScopeId: manifest.memoryScopeId,
+            decisionIds: sortedComponentDecisionIds,
+            canonicalRecordIds,
+            supersessionLifecycleClassification: lifecycle.supersessionLifecycleClassification,
+            supersessionRuleId: lifecycle.supersessionRuleId,
+            blocking: lifecycle.blocking,
+            unresolvedReason: lifecycle.unresolvedReason,
+            details: lifecycle.details,
+        });
+        supersessionComponentCount += 1;
+        if (lifecycle.blocking) {
+            issues.push({
+                issueId: buildDeterministicHashId('issue', 1, {
+                    reconstructionRunId: manifest.reconstructionRunId,
+                    supersessionComponentId,
+                    code: BLOCKING_CODE[lifecycle.supersessionLifecycleClassification] || BLOCKING_CODE.SUPERSESSION_CLASSIFICATION_FAILED,
+                }),
+                severity: 'error',
+                code: BLOCKING_CODE[lifecycle.supersessionLifecycleClassification] || BLOCKING_CODE.SUPERSESSION_CLASSIFICATION_FAILED,
+                message: `Supersession component ${supersessionComponentId} classified as ${lifecycle.supersessionLifecycleClassification}.`,
+                sourceId: null,
+                details: {
+                    decisionIds: sortedComponentDecisionIds,
+                    supersessionLifecycleClassification: lifecycle.supersessionLifecycleClassification,
+                    supersessionRuleId: lifecycle.supersessionRuleId,
+                },
+            });
+        }
     }
 
     const tier2Claims = collectTier2Claims(manifest, corpusByFileId, admittedArtifactMessageIds);
@@ -1561,7 +2522,7 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
             const explicitDecisionId = String(payload.explicitDecisionId || '').trim().toLowerCase() || null;
             const decisionText = String(payload.decisionText || '').trim();
             const decisionComparisonText = normalizeTier2ComparisonText(decisionText);
-            const relatedRecord = explicitDecisionId ? recordByDecisionId.get(explicitDecisionId) : null;
+            const relatedRecord = explicitDecisionId ? currentCanonicalRecordByDecisionId.get(explicitDecisionId) : null;
 
             if (relatedRecord && decisionText) {
                 const authorityInput = await buildTier2AuthorityInput(mutableClaim, explicitDecisionId);
@@ -1639,7 +2600,13 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
             const effectiveDecisionId = explicitDecisionId || `tier2-occurrence-${mutableClaim.claimId.replace(/^claimv1:sha256:/u, '').slice(0, 24)}`;
             const authorityInput = await buildTier2AuthorityInput(mutableClaim, effectiveDecisionId);
             const recordVersion = 1;
-            const recordId = buildTier2RecordId(manifest.memoryScopeId, effectiveDecisionId, recordVersion);
+            const recordId = buildCanonicalTier1RecordIdV1(
+                manifest.memoryScopeId,
+                effectiveDecisionId,
+                recordVersion,
+                authorityInput.canonicalHashVersion,
+                authorityInput.canonicalHash,
+            );
             adapter.run(
                 `INSERT INTO decision_records (
                     memory_scope_id, decision_id, record_version, canonical_hash, canonical_hash_version,
@@ -1698,7 +2665,22 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
                 relationshipType: TIER2_CLAIM_RELATIONSHIP.CREATES_RECORD,
                 reconciliationBasis: TIER2_RECONCILIATION_BASIS.SELF_CONTAINED_TIER2_DECISION,
             });
-            indexRecord(effectiveDecisionId, recordVersion, authorityInput, authorityInput.fields || {});
+            indexCanonicalRecord({
+                decisionId: effectiveDecisionId,
+                recordId,
+                recordVersion,
+                priorVersion: null,
+                canonicalHash: authorityInput.canonicalHash,
+                canonicalHashVersion: authorityInput.canonicalHashVersion,
+                hashAlgorithm: authorityInput.hashAlgorithm,
+                semanticPayload: authorityInput.semanticPayload,
+                fields: authorityInput.fields || {},
+                status: authorityInput.status || mutableClaim.claimState || '',
+                sourceChatInstanceId: mutableClaim.chatInstanceId || null,
+                lastUpdatingChatInstanceId: mutableClaim.chatInstanceId || null,
+                provenanceJson: [],
+                members: [],
+            });
             candidateAuthorityRecordCount += 1;
             reconstructedCount += 1;
             continue;
@@ -1706,7 +2688,7 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
 
         if (mutableClaim.claimClass === TIER2_CLAIM_CLASS.CORRECTION) {
             const targetDecisionId = String(payload.targetDecisionId || '').trim().toLowerCase() || null;
-            if (!targetDecisionId || !recordByDecisionId.has(targetDecisionId)) {
+            if (!targetDecisionId || !currentCanonicalRecordByDecisionId.has(targetDecisionId)) {
                 mutableClaim.admissionStatus = 'review_only';
                 mutableClaim.admissionReason = 'target_record_missing';
                 mutableClaim.reviewKind = TIER2_REVIEW_KIND.TARGET_RECORD_MISSING;
@@ -1719,7 +2701,7 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
                 insertCandidateReviewItem(adapter, manifest.reconstructionRunId, reviewItem);
                 continue;
             }
-            const target = recordByDecisionId.get(targetDecisionId);
+            const target = currentCanonicalRecordByDecisionId.get(targetDecisionId);
             mutableClaim.relatedRecordIds.push(target.recordId);
             insertCandidateClaim(adapter, manifest.reconstructionRunId, mutableClaim);
             insertCandidateClaimLink(adapter, manifest.reconstructionRunId, {
@@ -1751,7 +2733,7 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
                 insertCandidateReviewItem(adapter, manifest.reconstructionRunId, reviewItem);
                 continue;
             }
-            if (!recordByDecisionId.has(supersededDecisionId)) {
+            if (!currentCanonicalRecordByDecisionId.has(supersededDecisionId)) {
                 mutableClaim.admissionStatus = 'review_only';
                 mutableClaim.admissionReason = 'target_record_missing';
                 mutableClaim.reviewKind = TIER2_REVIEW_KIND.TARGET_RECORD_MISSING;
@@ -1765,7 +2747,7 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
                 insertCandidateReviewItem(adapter, manifest.reconstructionRunId, reviewItem);
                 continue;
             }
-            const supersededRecord = recordByDecisionId.get(supersededDecisionId);
+            const supersededRecord = currentCanonicalRecordByDecisionId.get(supersededDecisionId);
             mutableClaim.relatedRecordIds.push(supersededRecord.recordId);
             insertCandidateClaim(adapter, manifest.reconstructionRunId, mutableClaim);
             insertCandidateClaimLink(adapter, manifest.reconstructionRunId, {
@@ -1796,6 +2778,9 @@ async function compileCandidate(adapter, manifest, corpusByFileId) {
         tier2ClaimsBlocked: tier2Claims.filter((entry) => entry.admissionStatus === 'blocked').length,
         tier2MentionsDetected: tier2Claims.filter((entry) => entry.reviewKind === TIER2_REVIEW_KIND.NON_ADMITTED_MENTION).length,
         tier2ContextDependent: tier2Claims.filter((entry) => entry.reviewKind === TIER2_REVIEW_KIND.CONTEXT_DEPENDENT_CANDIDATE).length,
+        occurrenceGroupCount,
+        versionLifecycleGroupCount,
+        supersessionComponentCount,
         candidateClaimCount: tier2Claims.length,
         candidateConflictCount: conflicts.length,
         candidateReviewItemCount: reviewItems.length,
@@ -1822,8 +2807,9 @@ function validateCandidateState(adapter, manifest, compileResult, liveAuthorityC
         issues.push('candidate_scope_consistency_failed');
     }
     const decisionRecordCount = Number(adapter.scalar('SELECT COUNT(*) FROM decision_records WHERE memory_scope_id = ?', [manifest.memoryScopeId]) || 0);
+    const distinctDecisionCount = Number(adapter.scalar('SELECT COUNT(DISTINCT decision_id) FROM decision_records WHERE memory_scope_id = ?', [manifest.memoryScopeId]) || 0);
     const currentDecisionCount = Number(adapter.scalar('SELECT COUNT(*) FROM current_decisions WHERE memory_scope_id = ?', [manifest.memoryScopeId]) || 0);
-    if (decisionRecordCount !== currentDecisionCount) {
+    if (distinctDecisionCount !== currentDecisionCount) {
         issues.push('candidate_pointer_count_mismatch');
     }
     const provenanceRecordCount = Number(adapter.scalar('SELECT COUNT(DISTINCT record_id) FROM reconstruction_candidate_provenance WHERE reconstruction_run_id = ?', [manifest.reconstructionRunId]) || 0);
@@ -1833,6 +2819,18 @@ function validateCandidateState(adapter, manifest, compileResult, liveAuthorityC
     const claimCount = Number(adapter.scalar('SELECT COUNT(*) FROM reconstruction_candidate_claims WHERE reconstruction_run_id = ?', [manifest.reconstructionRunId]) || 0);
     if (claimCount !== Number(compileResult.candidateClaimCount || 0)) {
         issues.push('candidate_claim_count_mismatch');
+    }
+    const occurrenceGroupCount = Number(adapter.scalar('SELECT COUNT(*) FROM reconstruction_occurrence_groups WHERE reconstruction_run_id = ?', [manifest.reconstructionRunId]) || 0);
+    if (occurrenceGroupCount !== Number(compileResult.occurrenceGroupCount || 0)) {
+        issues.push('candidate_occurrence_group_count_mismatch');
+    }
+    const versionLifecycleGroupCount = Number(adapter.scalar('SELECT COUNT(*) FROM reconstruction_version_lifecycle_groups WHERE reconstruction_run_id = ?', [manifest.reconstructionRunId]) || 0);
+    if (versionLifecycleGroupCount !== Number(compileResult.versionLifecycleGroupCount || 0)) {
+        issues.push('candidate_version_lifecycle_group_count_mismatch');
+    }
+    const supersessionComponentCount = Number(adapter.scalar('SELECT COUNT(*) FROM reconstruction_supersession_components WHERE reconstruction_run_id = ?', [manifest.reconstructionRunId]) || 0);
+    if (supersessionComponentCount !== Number(compileResult.supersessionComponentCount || 0)) {
+        issues.push('candidate_supersession_component_count_mismatch');
     }
     if (Number(compileResult.candidateIssueCount || 0) > 0) {
         issues.push('candidate_issues_present');
@@ -2064,6 +3062,9 @@ export async function runCandidateRebuild(request, options = {}) {
                     },
                     artifactAdmissions: buildArtifactReportEntries(manifest),
                     candidateRecords: [],
+                    occurrenceGroups: [],
+                    versionLifecycleGroups: [],
+                    supersessionComponents: [],
                     tier2Claims: [],
                     tier2ClaimLinks: [],
                     issues: [],
@@ -2152,6 +3153,9 @@ export async function runCandidateRebuild(request, options = {}) {
                 },
                 artifactAdmissions: buildArtifactReportEntries(manifest),
                 candidateRecords: buildCandidateRecordReportEntries(adapter, manifest.reconstructionRunId),
+                occurrenceGroups: buildOccurrenceGroupReportEntries(adapter, manifest.reconstructionRunId),
+                versionLifecycleGroups: buildVersionLifecycleGroupReportEntries(adapter, manifest.reconstructionRunId),
+                supersessionComponents: buildSupersessionComponentReportEntries(adapter, manifest.reconstructionRunId),
                 tier2Claims: buildCandidateClaimReportEntries(adapter, manifest.reconstructionRunId),
                 tier2ClaimLinks: buildCandidateClaimLinkReportEntries(adapter, manifest.reconstructionRunId),
                 issues: buildCandidateIssueReportEntries(adapter, manifest.reconstructionRunId),
@@ -2261,6 +3265,9 @@ export async function runCandidateRebuild(request, options = {}) {
             },
             artifactAdmissions: buildArtifactReportEntries(manifest),
             candidateRecords: buildCandidateRecordReportEntries(adapter, manifest.reconstructionRunId),
+            occurrenceGroups: buildOccurrenceGroupReportEntries(adapter, manifest.reconstructionRunId),
+            versionLifecycleGroups: buildVersionLifecycleGroupReportEntries(adapter, manifest.reconstructionRunId),
+            supersessionComponents: buildSupersessionComponentReportEntries(adapter, manifest.reconstructionRunId),
             tier2Claims: buildCandidateClaimReportEntries(adapter, manifest.reconstructionRunId),
             tier2ClaimLinks: buildCandidateClaimLinkReportEntries(adapter, manifest.reconstructionRunId),
             issues: buildCandidateIssueReportEntries(adapter, manifest.reconstructionRunId),

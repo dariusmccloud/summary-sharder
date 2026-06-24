@@ -180,6 +180,81 @@ Schema: architectural-memory/v1
     fs.writeFileSync(chatFilePath, `${[JSON.stringify(header), ...messages.map((message) => JSON.stringify(message))].join('\n')}\n`, 'utf8');
 }
 
+async function writeArchitecturalChatWithShardMessages(root, shardMessages, options = {}) {
+    const memoryScopeId = options.memoryScopeId || 'scope_alpha';
+    const chatInstanceId = options.chatInstanceId || 'chat_alpha';
+    const chatsRoot = path.join(root, 'chats');
+    const charDir = path.join(chatsRoot, 'Jeep');
+    fs.mkdirSync(charDir, { recursive: true });
+    const chatFilePath = path.join(charDir, `${options.chatFileName || 'Session B'}.jsonl`);
+
+    const sourceMessage = {
+        name: 'Chris',
+        is_user: true,
+        is_system: false,
+        send_date: '2026-06-24T10:00:00.000Z',
+        mes: options.sourceMes || 'Source discussion.',
+        extra: {
+            summary_sharder: {
+                messageIdentity: {
+                    schemaVersion: 1,
+                    messageId: makeMessageId('aa1'),
+                    initFingerprint: 'sha256:init-aa1',
+                    revisionHash: 'sha256:rev-aa1',
+                },
+                speakerIdentity: {
+                    speakerEntityId: 'user:Chris',
+                    sourceType: 'user',
+                },
+            },
+        },
+    };
+
+    const messages = [sourceMessage];
+    const shardManifests = [];
+    for (const shardMessage of shardMessages) {
+        messages.push(shardMessage);
+        const manifest = await buildManagedShardManifest(messages, {
+            startIndex: 0,
+            endIndex: 0,
+            artifactKind: 'system-shard',
+            outputUID: shardMessage.send_date,
+            promptPolicy: 'replace_source',
+            now: Date.now(),
+            cryptoApi: globalThis.crypto,
+        });
+        shardManifests.push(manifest);
+    }
+
+    const header = {
+        chat_metadata: {
+            summary_sharder: {
+                messageIdentity: {
+                    schemaVersion: 1,
+                    status: 'IDENTITY_COMPLETE',
+                },
+                architecturalMemoryBinding: {
+                    memoryScopeId,
+                    chatInstanceId,
+                    chatId: options.chatFileName || 'Session B',
+                    scopeAlias: '',
+                    boundAt: Date.now(),
+                    updatedAt: Date.now(),
+                    branchedFromChatInstanceId: options.branchedFromChatInstanceId || null,
+                    importedFromChatInstanceId: options.importedFromChatInstanceId || null,
+                },
+                shardManifests,
+            },
+        },
+        user_name: 'Chris',
+        character_name: 'Jeep',
+    };
+
+    const lines = [JSON.stringify(header), ...messages.map((message) => JSON.stringify(message))];
+    fs.writeFileSync(chatFilePath, `${lines.join('\n')}\n`, 'utf8');
+    return { chatFilePath, memoryScopeId };
+}
+
 function buildRequest(root) {
     return {
         user: {
@@ -422,7 +497,8 @@ test('invalid candidate build leaves live DB artifacts unchanged and rejects rer
     assert.equal(result.report.executionSummary.compileCompleted, true);
     assert.equal(result.report.executionSummary.tier2ExtractionCompleted, true);
     assert.equal(result.report.candidateValidity.valid, false);
-    assert.equal(result.report.candidateValidity.structuralBlockers.some((entry) => entry.code === 'REBUILD_DECISION_COLLISION'), true);
+    assert.equal(result.report.candidateValidity.structuralBlockers.some((entry) => entry.code === 'REBUILD_UNRESOLVED_SEMANTIC_CONFLICT'), true);
+    assert.equal(result.report.occurrenceGroups.some((entry) => entry.occurrenceClassification === 'UNRESOLVED_SEMANTIC_CONFLICT'), true);
     assert.deepEqual(after, before);
     await assert.rejects(
         runCandidateRebuild(request, {
@@ -431,6 +507,423 @@ test('invalid candidate build leaves live DB artifacts unchanged and rejects rer
         }),
         /not ready to compile/i,
     );
+});
+
+test('occurrence group ids remain stable across repeated runs on the same frozen corpus', async () => {
+    const root = makeTempRoot();
+    const duplicateShard = {
+        name: 'System',
+        is_user: false,
+        is_system: true,
+        send_date: '2026-06-24T10:12:00.000Z',
+        mes: `[MEMORY SHARD: Messages 0-0]
+
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+[S1:1] | STATUS: PROPOSED | ID: stable-group-decision | DECISION: Preserve the same semantic occurrence across runs.
+
+===END===`,
+        extra: {
+            summary_sharder: {
+                messageIdentity: {
+                    schemaVersion: 1,
+                    messageId: makeMessageId('e55'),
+                    initFingerprint: 'sha256:init-e55',
+                    revisionHash: 'sha256:rev-e55',
+                },
+                speakerIdentity: {
+                    speakerEntityId: 'system:system',
+                    sourceType: 'system',
+                },
+            },
+        },
+    };
+    await writeArchitecturalChatWithShardMessages(root, [duplicateShard], {
+        memoryScopeId: 'scope_stable',
+        chatInstanceId: 'chat_parent',
+        chatFileName: 'Stable Parent',
+        sourceMes: 'Parent source.',
+    });
+    await writeArchitecturalChatWithShardMessages(root, [{
+        ...duplicateShard,
+        send_date: '2026-06-24T10:12:10.000Z',
+        extra: {
+            summary_sharder: {
+                messageIdentity: {
+                    schemaVersion: 1,
+                    messageId: makeMessageId('f66'),
+                    initFingerprint: 'sha256:init-f66',
+                    revisionHash: 'sha256:rev-f66',
+                },
+                speakerIdentity: {
+                    speakerEntityId: 'system:system',
+                    sourceType: 'system',
+                },
+            },
+        },
+    }], {
+        memoryScopeId: 'scope_stable',
+        chatInstanceId: 'chat_branch',
+        branchedFromChatInstanceId: 'chat_parent',
+        chatFileName: 'Stable Branch',
+        sourceMes: 'Branch source.',
+    });
+
+    const request = buildRequest(root);
+    const firstInit = await initCandidateRebuildRun(request, { memoryScopeId: 'scope_stable', requestKey: 'stable-run-1', now: Date.now() });
+    const firstRun = await runCandidateRebuild(request, { reconstructionRunId: firstInit.manifest.reconstructionRunId, now: Date.now() });
+    const secondInit = await initCandidateRebuildRun(request, { memoryScopeId: 'scope_stable', requestKey: 'stable-run-2', now: Date.now() });
+    const secondRun = await runCandidateRebuild(request, { reconstructionRunId: secondInit.manifest.reconstructionRunId, now: Date.now() });
+
+    assert.equal(firstRun.ok, true);
+    assert.equal(secondRun.ok, true);
+    assert.equal(firstRun.report.occurrenceGroups.length, 1);
+    assert.equal(secondRun.report.occurrenceGroups.length, 1);
+    assert.equal(firstRun.report.occurrenceGroups[0].collisionEvidenceGroupId, secondRun.report.occurrenceGroups[0].collisionEvidenceGroupId);
+    assert.equal(firstRun.report.occurrenceGroups[0].canonicalRecordId, secondRun.report.occurrenceGroups[0].canonicalRecordId);
+});
+
+test('malformed same-version member blocks canonicalization while preserving occurrence evidence', async () => {
+    const root = makeTempRoot();
+    const shardMessages = [
+        {
+            name: 'System',
+            is_user: false,
+            is_system: true,
+            send_date: '2026-06-24T10:13:00.000Z',
+            mes: `[MEMORY SHARD: Messages 0-0]
+
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+[S1:1] | STATUS: PROPOSED | ID: malformed-version-decision | RECORD-VERSION: 1 | DECISION: Keep the candidate deterministic.
+
+===END===`,
+            extra: {
+                summary_sharder: {
+                    messageIdentity: {
+                        schemaVersion: 1,
+                        messageId: makeMessageId('g77'),
+                        initFingerprint: 'sha256:init-g77',
+                        revisionHash: 'sha256:rev-g77',
+                    },
+                    speakerIdentity: {
+                        speakerEntityId: 'system:system',
+                        sourceType: 'system',
+                    },
+                },
+            },
+        },
+        {
+            name: 'System',
+            is_user: false,
+            is_system: true,
+            send_date: '2026-06-24T10:13:10.000Z',
+            mes: `[MEMORY SHARD: Messages 0-0]
+
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+[S1:1] | STATUS: PROPOSED | ID: malformed-version-decision | RECORD-VERSION: not-a-number | DECISION: Keep the candidate deterministic.
+
+===END===`,
+            extra: {
+                summary_sharder: {
+                    messageIdentity: {
+                        schemaVersion: 1,
+                        messageId: makeMessageId('h88'),
+                        initFingerprint: 'sha256:init-h88',
+                        revisionHash: 'sha256:rev-h88',
+                    },
+                    speakerIdentity: {
+                        speakerEntityId: 'system:system',
+                        sourceType: 'system',
+                    },
+                },
+            },
+        },
+    ];
+    const { memoryScopeId } = await writeArchitecturalChatWithShardMessages(root, shardMessages, {
+        chatFileName: 'Malformed Member',
+        sourceMes: 'Malformed metadata should block the group.',
+    });
+    const request = buildRequest(root);
+    const init = await initCandidateRebuildRun(request, { memoryScopeId, requestKey: 'req-malformed', now: Date.now() });
+    const result = await runCandidateRebuild(request, { reconstructionRunId: init.manifest.reconstructionRunId, now: Date.now() });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.report.occurrenceGroups.some((entry) => entry.occurrenceClassification === 'MALFORMED_STRUCTURED_RECORD'), true);
+    assert.equal(result.report.occurrenceGroups.some((entry) => entry.canonicalRecordId === null), true);
+    assert.equal(result.report.candidateValidity.structuralBlockers.some((entry) => entry.code === 'REBUILD_MALFORMED_STRUCTURED_RECORD'), true);
+});
+
+test('duplicate occurrence may coexist with a valid version chain', async () => {
+    const root = makeTempRoot();
+    const versionOneShard = {
+        name: 'System',
+        is_user: false,
+        is_system: true,
+        send_date: '2026-06-24T10:14:00.000Z',
+        mes: `[MEMORY SHARD: Messages 0-0]
+
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+[S1:1] | STATUS: PROPOSED | ID: chained-duplicate-decision | RECORD-VERSION: 1 | DECISION: Preserve duplicate provenance inside a versioned chain.
+
+===END===`,
+        extra: {
+            summary_sharder: {
+                messageIdentity: {
+                    schemaVersion: 1,
+                    messageId: makeMessageId('i99'),
+                    initFingerprint: 'sha256:init-i99',
+                    revisionHash: 'sha256:rev-i99',
+                },
+                speakerIdentity: {
+                    speakerEntityId: 'system:system',
+                    sourceType: 'system',
+                },
+            },
+        },
+    };
+    await writeArchitecturalChatWithShardMessages(root, [versionOneShard], {
+        memoryScopeId: 'scope_chain_duplicate',
+        chatInstanceId: 'chat_chain_parent',
+        chatFileName: 'Chain Parent',
+        sourceMes: 'Parent version one.',
+    });
+    await writeArchitecturalChatWithShardMessages(root, [{
+        ...versionOneShard,
+        send_date: '2026-06-24T10:14:05.000Z',
+        extra: {
+            summary_sharder: {
+                messageIdentity: {
+                    schemaVersion: 1,
+                    messageId: makeMessageId('j0a'),
+                    initFingerprint: 'sha256:init-j0a',
+                    revisionHash: 'sha256:rev-j0a',
+                },
+                speakerIdentity: {
+                    speakerEntityId: 'system:system',
+                    sourceType: 'system',
+                },
+            },
+        },
+    }], {
+        memoryScopeId: 'scope_chain_duplicate',
+        chatInstanceId: 'chat_chain_branch',
+        branchedFromChatInstanceId: 'chat_chain_parent',
+        chatFileName: 'Chain Branch',
+        sourceMes: 'Branch duplicate version one.',
+    });
+    await writeArchitecturalChatWithShardMessages(root, [{
+        ...versionOneShard,
+        send_date: '2026-06-24T10:14:10.000Z',
+        mes: `[MEMORY SHARD: Messages 0-0]
+
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+[S1:1] | STATUS: ACCEPTED | ID: chained-duplicate-decision | RECORD-VERSION: 2 | PRIOR-VERSION: 1 | DECISION: Preserve duplicate provenance inside a versioned chain.
+
+===END===`,
+        extra: {
+            summary_sharder: {
+                messageIdentity: {
+                    schemaVersion: 1,
+                    messageId: makeMessageId('k1b'),
+                    initFingerprint: 'sha256:init-k1b',
+                    revisionHash: 'sha256:rev-k1b',
+                },
+                speakerIdentity: {
+                    speakerEntityId: 'system:system',
+                    sourceType: 'system',
+                },
+            },
+        },
+    }], {
+        memoryScopeId: 'scope_chain_duplicate',
+        chatInstanceId: 'chat_chain_update',
+        chatFileName: 'Chain Update',
+        sourceMes: 'Version two.',
+    });
+
+    const request = buildRequest(root);
+    const init = await initCandidateRebuildRun(request, { memoryScopeId: 'scope_chain_duplicate', requestKey: 'req-chain-duplicate', now: Date.now() });
+    const result = await runCandidateRebuild(request, { reconstructionRunId: init.manifest.reconstructionRunId, now: Date.now() });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.report.occurrenceGroups.some((entry) => entry.occurrenceClassification === 'BRANCH_LINEAGE_DUPLICATE'), true);
+    assert.equal(result.report.versionLifecycleGroups.some((entry) => entry.versionLifecycleClassification === 'VALID_VERSION_CHAIN'), true);
+});
+
+test('version-hinted structured records classify as a valid version lifecycle chain', async () => {
+    const root = makeTempRoot();
+    const shardMessages = [
+        {
+            name: 'System',
+            is_user: false,
+            is_system: true,
+            send_date: '2026-06-24T10:10:00.000Z',
+            mes: `[MEMORY SHARD: Messages 0-0]
+
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+[S1:1] | STATUS: PROPOSED | ID: gain-modulation-boundary | RECORD-VERSION: 1 | DECISION: Keep browser-local state non-authoritative.
+
+===END===`,
+            extra: {
+                summary_sharder: {
+                    messageIdentity: {
+                        schemaVersion: 1,
+                        messageId: makeMessageId('a11'),
+                        initFingerprint: 'sha256:init-a11',
+                        revisionHash: 'sha256:rev-a11',
+                    },
+                    speakerIdentity: {
+                        speakerEntityId: 'system:system',
+                        sourceType: 'system',
+                    },
+                },
+            },
+        },
+        {
+            name: 'System',
+            is_user: false,
+            is_system: true,
+            send_date: '2026-06-24T10:10:10.000Z',
+            mes: `[MEMORY SHARD: Messages 0-0]
+
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+[S1:1] | STATUS: ACCEPTED | ID: gain-modulation-boundary | RECORD-VERSION: 2 | PRIOR-VERSION: 1 | DECISION: Keep browser-local state non-authoritative.
+
+===END===`,
+            extra: {
+                summary_sharder: {
+                    messageIdentity: {
+                        schemaVersion: 1,
+                        messageId: makeMessageId('b22'),
+                        initFingerprint: 'sha256:init-b22',
+                        revisionHash: 'sha256:rev-b22',
+                    },
+                    speakerIdentity: {
+                        speakerEntityId: 'system:system',
+                        sourceType: 'system',
+                    },
+                },
+            },
+        },
+    ];
+    const { memoryScopeId } = await writeArchitecturalChatWithShardMessages(root, shardMessages, {
+        chatFileName: 'Version Chain',
+        sourceMes: 'We refined the same decision.',
+    });
+    const request = buildRequest(root);
+    const init = await initCandidateRebuildRun(request, { memoryScopeId, requestKey: 'req-version-chain', now: Date.now() });
+    const result = await runCandidateRebuild(request, { reconstructionRunId: init.manifest.reconstructionRunId, now: Date.now() });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.report.versionLifecycleGroups.length, 1);
+    assert.equal(result.report.versionLifecycleGroups[0].versionLifecycleClassification, 'VALID_VERSION_CHAIN');
+    assert.equal(result.report.occurrenceGroups.every((entry) => entry.blocking === false), true);
+    assert.equal(result.report.outputSummary.candidateAuthorityRecordCount, 2);
+});
+
+test('explicit structured supersession links classify as a valid supersession chain', async () => {
+    const root = makeTempRoot();
+    const shardMessages = [
+        {
+            name: 'System',
+            is_user: false,
+            is_system: true,
+            send_date: '2026-06-24T10:11:00.000Z',
+            mes: `[MEMORY SHARD: Messages 0-0]
+
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+[S1:1] | STATUS: SUPERSEDED | ID: browser-local-authority | SUPERSEDED-BY: db-authority | DECISION: Keep browser-local state authoritative.
+
+===END===`,
+            extra: {
+                summary_sharder: {
+                    messageIdentity: {
+                        schemaVersion: 1,
+                        messageId: makeMessageId('c33'),
+                        initFingerprint: 'sha256:init-c33',
+                        revisionHash: 'sha256:rev-c33',
+                    },
+                    speakerIdentity: {
+                        speakerEntityId: 'system:system',
+                        sourceType: 'system',
+                    },
+                },
+            },
+        },
+        {
+            name: 'System',
+            is_user: false,
+            is_system: true,
+            send_date: '2026-06-24T10:11:10.000Z',
+            mes: `[MEMORY SHARD: Messages 0-0]
+
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+[S1:1] | STATUS: ACCEPTED | ID: db-authority | SUPERSEDES: browser-local-authority | DECISION: Move authority into the operational database.
+
+===END===`,
+            extra: {
+                summary_sharder: {
+                    messageIdentity: {
+                        schemaVersion: 1,
+                        messageId: makeMessageId('d44'),
+                        initFingerprint: 'sha256:init-d44',
+                        revisionHash: 'sha256:rev-d44',
+                    },
+                    speakerIdentity: {
+                        speakerEntityId: 'system:system',
+                        sourceType: 'system',
+                    },
+                },
+            },
+        },
+    ];
+    const { memoryScopeId } = await writeArchitecturalChatWithShardMessages(root, shardMessages, {
+        chatFileName: 'Supersession Chain',
+        sourceMes: 'We replaced one decision with another.',
+    });
+    const request = buildRequest(root);
+    const init = await initCandidateRebuildRun(request, { memoryScopeId, requestKey: 'req-supersession-chain', now: Date.now() });
+    const result = await runCandidateRebuild(request, { reconstructionRunId: init.manifest.reconstructionRunId, now: Date.now() });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.report.supersessionComponents.length, 1);
+    assert.equal(result.report.supersessionComponents[0].supersessionLifecycleClassification, 'VALID_SUPERSESSION_CHAIN');
+    assert.equal(result.report.candidateValidity.valid, true);
 });
 
 test('one active candidate run per scope is enforced', async () => {
@@ -531,6 +1024,46 @@ test('failed candidate run emits a retrievable failed report', async () => {
     assert.equal(loaded.report.failure.code.length > 0, true);
     assert.equal(loaded.report.retention.cleanupEligible, false);
     assert.deepEqual(loaded.report.retention.retainedBecause, ['latest_non_success']);
+});
+
+test('older candidate reports load without C0.5C arrays and preserve historical blockers verbatim', () => {
+    const root = makeTempRoot();
+    const request = buildRequest(root);
+    const reconstructionRunId = 'rebuild_legacy000000000000000000000000';
+    const storageRoot = getStoragePaths(root).storageRoot;
+    const candidatesRoot = path.join(storageRoot, 'candidates');
+    fs.mkdirSync(candidatesRoot, { recursive: true });
+    const baseName = `architectural-memory.candidate.${reconstructionRunId}`;
+    const reportPath = path.join(candidatesRoot, `${baseName}.report.json`);
+
+    fs.writeFileSync(reportPath, JSON.stringify({
+        schemaVersion: 1,
+        protocolVersion: 1,
+        reconstructionRunId,
+        memoryScopeId: 'scope_legacy',
+        status: 'invalid',
+        candidateArtifactId: `candidate_${reconstructionRunId}`,
+        candidateRelativePath: `summary-sharder/candidates/${baseName}.db`,
+        manifestRelativePath: `summary-sharder/candidates/${baseName}.manifest.json`,
+        reportRelativePath: `summary-sharder/candidates/${baseName}.report.json`,
+        liveAuthorityChanged: false,
+        promotionAvailable: false,
+        tier2Claims: [],
+        conflicts: [],
+        issues: [{
+            issueId: 'issue_legacy',
+            severity: 'error',
+            code: 'REBUILD_DECISION_COLLISION',
+            message: 'legacy generic blocker',
+            sourceId: 'src_legacy',
+            details: {},
+        }],
+    }, null, 2));
+
+    const loaded = loadCandidateRebuildReport(request, reconstructionRunId);
+    assert.equal(loaded.report.issues[0].code, 'REBUILD_DECISION_COLLISION');
+    assert.equal(Object.prototype.hasOwnProperty.call(loaded.report, 'occurrenceGroups'), false);
+    assert.equal(loaded.report.candidateValidity.structuralBlockers.some((entry) => entry.code === 'REBUILD_DECISION_COLLISION'), true);
 });
 
 test('candidate retention cleanup keeps latest success, latest non-success, and pinned candidates only', async () => {

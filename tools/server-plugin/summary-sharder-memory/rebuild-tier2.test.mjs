@@ -267,3 +267,58 @@ test('mention-only detections are compacted without changing detailed counts', a
     assert.equal(run.report.detailedReview.mentionOnlyRows.length, 2);
     assert.equal(run.report.detailedReview.mentionOnlyRows[0].stableSourceIdentity.localeCompare(run.report.detailedReview.mentionOnlyRows[1].stableSourceIdentity) <= 0, true);
 });
+
+test('Tier-2 links remap to canonical Tier-1 ids after duplicate occurrence reconciliation', async () => {
+    const root = makeTempRoot();
+    await writeChat(root, {
+        chatInstanceId: 'chat_parent',
+        chatLocator: 'Parent Session',
+        messages: [
+            userMessage('f1', 'Decision gain-modulation-boundary: Keep browser-local state non-authoritative.', { initFingerprint: 'sha256:shared-tier1-parent' }),
+            shardMessage('f2', `[MEMORY SHARD: Messages 0-0]
+
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+[S1:1] | STATUS: PROPOSED | ID: gain-modulation-boundary | DECISION: Keep browser-local state non-authoritative.
+
+===END===`),
+        ],
+    });
+    await writeChat(root, {
+        chatInstanceId: 'chat_branch',
+        branchedFromChatInstanceId: 'chat_parent',
+        chatLocator: 'Branch Session',
+        messages: [
+            userMessage('f3', 'Decision gain-modulation-boundary: Keep browser-local state non-authoritative.', { initFingerprint: 'sha256:shared-tier1-parent' }),
+            shardMessage('f4', `[MEMORY SHARD: Messages 0-0]
+
+[KEY]
+Profile: architectural-memory
+Schema: architectural-memory/v1
+
+[DECISIONS]
+[S1:1] | STATUS: PROPOSED | ID: gain-modulation-boundary | DECISION: Keep browser-local state non-authoritative.
+
+===END===`),
+            userMessage('f5', 'Decision gain-modulation-boundary: Keep browser-local state non-authoritative.', {
+                send_date: '2026-06-24T10:00:30.000Z',
+                initFingerprint: 'sha256:corroborating-tier2',
+                revisionHash: 'sha256:corroborating-tier2',
+            }),
+        ],
+    });
+    const request = buildRequest(root);
+    const init = await initCandidateRebuildRun(request, { memoryScopeId: 'scope_alpha', requestKey: 'tier2-remap-canonical', now: Date.now() });
+    const run = await runCandidateRebuild(request, { reconstructionRunId: init.manifest.reconstructionRunId, now: Date.now() });
+
+    assert.equal(run.ok, true);
+    assert.equal(run.report.candidateRecords.length, 1);
+    assert.equal(run.report.occurrenceGroups.some((entry) => entry.occurrenceClassification === 'BRANCH_LINEAGE_DUPLICATE'), true);
+    const canonicalRecordId = run.report.candidateRecords[0].recordId;
+    assert.equal(run.report.tier2ClaimLinks.length >= 1, true);
+    assert.equal(run.report.tier2ClaimLinks.every((entry) => entry.relatedRecordId === canonicalRecordId), true);
+    assert.equal(run.report.tier2Claims.some((entry) => Array.isArray(entry.details?.relatedRecordIds) && entry.details.relatedRecordIds.includes(canonicalRecordId)), true);
+});
