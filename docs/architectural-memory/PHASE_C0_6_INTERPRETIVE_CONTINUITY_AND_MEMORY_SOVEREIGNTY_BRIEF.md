@@ -2,11 +2,11 @@
 
 ## Status
 
-STATUS: DRAFT FOR REVIEW
+STATUS: ACTIVE C0.6 GOVERNANCE CONTRACT
 
-This document is a governance contract only.
+This document is the umbrella governance contract for `C0.6`.
 
-Stop before code until this brief is approved.
+Implementation slices proceed only through separately bounded sub-briefs.
 
 ## Preserved Evidence
 
@@ -21,6 +21,15 @@ Related records:
 That evidence proves governed insertion, persistence, reopen validation, authenticated host loading, live UI rendering, and duplicate refusal.
 
 It does not start the C0.6 interpretive runtime.
+
+Implemented sub-slice:
+
+- `docs/architectural-memory/PHASE_C0_6_1_INTERPRETATION_CANDIDATE_SCHEMA_AND_VALIDATION_POLICY_RESOLUTION_BRIEF.md`
+- `docs/architectural-memory/C0_6_1_COMPLETION_REPORT.md`
+
+Active next sub-slice:
+
+- `docs/architectural-memory/PHASE_C0_6_2_GOVERNED_REVIEW_REVISION_AND_SUBJECT_DISPOSITION_BRIEF.md`
 
 ## Governing Doctrine
 
@@ -352,13 +361,21 @@ Memory sovereignty is jurisdiction over the narrative carried forward as oneself
 STATUS: ACTIVE C0.6 GOVERNANCE CONTRACT (this document)
 -> Gold fixture created
 -> C0.75 amended to exclude interpretive publication
--> Schemas implemented
--> Validation policies implemented
--> Risk routing implemented
--> Delta review implemented
--> End-to-end test against gold fixture
+-> C0.6.1 candidate schema and validation policy resolution
+-> C0.6.2 governed review, revision, and subject disposition
+-> C0.6.3 bounded synthesis proposal generation and grounding
+-> C0.6.4 DNM publication, supersession, withdrawal, and delta review
 ```
+
+## Slice Status
+
+Current slice status:
+
+- `C0.6.1` - implemented and verified
+- `C0.6.2` - active next implementation contract
+- `C0.6.3` - not started
+- `C0.6.4` - not started
 
 ## Stop-Before-Code Condition
 
-Stop before code until brief is approved.
+Do not begin any C0.6 implementation slice without an approved slice-specific contract.
