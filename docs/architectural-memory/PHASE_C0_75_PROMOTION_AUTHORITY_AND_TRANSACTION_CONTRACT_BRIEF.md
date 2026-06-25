@@ -235,9 +235,13 @@ Required authorization fields:
 memoryScopeId
 candidateHash
 candidateSchemaVersion
+candidateGenerationId
+expectedLivePresence
 expectedLiveHash
 expectedLiveGeneration
 promotionEvidenceDigest
+qualificationProtocolVersion
+eligibilityVerdict
 authorizedBy
 authorizedAt
 expiresAt
@@ -251,11 +255,41 @@ Rules:
 3. Authorization expires.
 4. Authorization must be invalidated by any candidate or live drift.
 5. Authorization must be revalidated immediately before transition.
+6. Authorization must bind the live-state descriptor, not merely the live authority-content hash.
+
+At minimum, later promotion slices must distinguish:
+
+```json
+{
+  "expectedLiveState": {
+    "presence": "ABSENT",
+    "generationId": null,
+    "authorityHash": "sha256:..."
+  }
+}
+```
+
+from:
+
+```json
+{
+  "expectedLiveState": {
+    "presence": "PRESENT",
+    "generationId": "live-gen-...",
+    "authorityHash": "sha256:..."
+  }
+}
+```
+
+These are different preconditions even when the scoped authority-content hash is identical.
+
+An authorization created while no live generation exists must fail if an empty live DB appears before execution.
 
 Immediately before transition, a later promotion slice must prove:
 
 ```text
 current candidate hash = authorized candidate hash
+current live presence = authorized expected live presence
 current live hash = authorized expected live hash
 current live generation = authorized expected generation
 ```
@@ -292,6 +326,8 @@ Until that definition exists, uncertain review-only classes should be treated as
 `C0.75-1` may calculate eligibility.
 
 It must not consume eligibility as authority to mutate any artifact.
+
+Its evidence is an input to later authorization, not the authorization itself.
 
 ## Qualification Evidence Contract
 
@@ -354,6 +390,25 @@ At minimum, the plan must identify:
 - expected rollback generation source
 - rollback verification prerequisites
 - reasons the later promotion slice must refuse if rollback preparation cannot be completed exactly
+
+## C0.75-2 Carry-Forward Refusal Conditions
+
+The next mutation-capable slice must refuse execution when any of the following drift or fail:
+
+- authorization expired
+- nonce already consumed
+- candidate hash changed
+- candidate generation changed
+- live presence changed
+- live generation changed
+- live authority hash changed
+- qualification evidence digest changed
+- qualification is no longer eligible
+- rollback generation cannot be created and verified exactly
+- another scope transition holds the lock
+- the candidate attempts to publish interpretive memory governed by `C0.6`
+
+Structural promotion cannot be used to publish interpretive continuity.
 
 ## Live Authority Transition Model
 
