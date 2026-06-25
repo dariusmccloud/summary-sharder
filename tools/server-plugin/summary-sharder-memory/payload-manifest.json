@@ -7,6 +7,7 @@
     "README.md",
     "index.js",
     "core.js",
+    "interpretive.js",
     "promotion.js",
     "rebuild.js",
     "schema.js",
@@ -78,11 +79,15 @@
   "payloadFiles": [
     {
       "relativePath": "core.js",
-      "sha256": "595bc3390104fb077438652d2738bb622bbf079073e1a5a574fb5d7f01b44beb"
+      "sha256": "72635e6941cf068ffae1a43cdb7b43c8858dcec45c9d3fdb50a5df7bec0b71d8"
     },
     {
       "relativePath": "index.js",
-      "sha256": "30f4abb6228bef2fa6ad751d0e2af0a30fe7d2956fd45880d0c7d90252a32610"
+      "sha256": "55869f0f2c71b03f0ca35be75c0b5f38f55de549754b14fdbe9a56d6be725350"
+    },
+    {
+      "relativePath": "interpretive.js",
+      "sha256": "50211e0a955b011be1aac63a9b4a47025cda7eb9e7c21b3e73818704e374cbe8"
     },
     {
       "relativePath": "lib/core/chat/archive-policy.js",
@@ -142,7 +147,7 @@
     },
     {
       "relativePath": "promotion.js",
-      "sha256": "b390d271bdf6f190e5f920b71ca41255ce8c3e13a67fd3004e309fd63732774d"
+      "sha256": "d0647a7486df57c5fd665fadd4018b17e7db997bc11c2c5caae2f4bfe0f88384"
     },
     {
       "relativePath": "README.md",
@@ -154,7 +159,7 @@
     },
     {
       "relativePath": "schema.js",
-      "sha256": "21c57a06cf6048bbc030c73775f56346aafc4ad8aa3ebb25563a96dc85dd46d9"
+      "sha256": "83425acd8fa7a8dce4e33a7c6dcf943d6cb46728518d3326f1a7d3b84e9a990f"
     },
     {
       "relativePath": "sqlite-bun.js",

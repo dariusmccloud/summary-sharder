@@ -58,6 +58,15 @@ export const CAPABILITIES = Object.freeze({
         automaticPromotion: false,
         liveAuthorityMutation: true,
     }),
+    c0_6_1: Object.freeze({
+        interpretiveLedgerAuthority: true,
+        interpretiveCandidateStorage: true,
+        deterministicPolicyRouting: true,
+        deterministicReviewerResolution: true,
+        continuityPublicationAvailable: false,
+        structuralAuthorityMutation: false,
+        modelInterpretationAvailable: false,
+    }),
     c0_5: false,
     c1: false,
     c2: false,
@@ -137,6 +146,7 @@ export function getStoragePaths(userRoot) {
     const dbPath = path.join(storageRoot, 'architectural-memory.db');
     const snapshotPath = path.join(storageRoot, 'architectural-memory.snapshot.db');
     const statePath = path.join(storageRoot, 'architectural-memory.state.json');
+    const interpretiveGovernanceLedgerPath = path.join(storageRoot, 'interpretive-governance-ledger.jsonl');
     const generationsRoot = path.join(storageRoot, 'generations');
     const promotionsRoot = path.join(storageRoot, 'promotions');
     const promotionAuthorizationsRoot = path.join(promotionsRoot, 'authorizations');
@@ -148,6 +158,7 @@ export function getStoragePaths(userRoot) {
         dbPath,
         snapshotPath,
         statePath,
+        interpretiveGovernanceLedgerPath,
         generationsRoot,
         promotionsRoot,
         promotionAuthorizationsRoot,

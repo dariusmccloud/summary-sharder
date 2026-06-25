@@ -92,6 +92,119 @@ export function schemaStatements() {
             summary_json TEXT NOT NULL,
             created_at INTEGER NOT NULL
         )`,
+        `CREATE TABLE IF NOT EXISTS interpretation_revisions (
+            interpretation_revision_id TEXT PRIMARY KEY,
+            interpretation_id TEXT NOT NULL,
+            parent_revision_id TEXT,
+            created_from_disposition_id TEXT,
+            revision_reason TEXT NOT NULL,
+            memory_scope_id TEXT NOT NULL,
+            memory_subject_id TEXT NOT NULL,
+            interpretation_type TEXT NOT NULL,
+            statement_text TEXT NOT NULL,
+            assertion_domains_json TEXT NOT NULL,
+            shared_relationship_asserted INTEGER NOT NULL,
+            personal_meaning_asserted INTEGER NOT NULL,
+            material_participant_entity_ids_json TEXT NOT NULL,
+            candidate_state TEXT NOT NULL,
+            grounding_state TEXT NOT NULL,
+            review_state TEXT NOT NULL,
+            subject_disposition_state TEXT NOT NULL,
+            publication_state TEXT NOT NULL,
+            authority_effect TEXT NOT NULL,
+            proposal_content_hash TEXT NOT NULL,
+            review_envelope_hash TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )`,
+        `CREATE TABLE IF NOT EXISTS interpretation_grounding_links (
+            interpretation_revision_id TEXT NOT NULL,
+            grounding_link_id TEXT NOT NULL,
+            basis_type TEXT NOT NULL,
+            basis_record_id TEXT,
+            basis_record_version INTEGER,
+            basis_record_hash TEXT,
+            chat_instance_id TEXT,
+            message_id TEXT,
+            message_revision_hash TEXT,
+            speaker_entity_id TEXT NOT NULL,
+            grounding_role TEXT NOT NULL,
+            grounding_assessment TEXT NOT NULL,
+            details_json TEXT NOT NULL,
+            PRIMARY KEY (interpretation_revision_id, grounding_link_id)
+        )`,
+        `CREATE TABLE IF NOT EXISTS interpretation_grounding_aggregates (
+            interpretation_revision_id TEXT PRIMARY KEY,
+            grounding_outcome TEXT NOT NULL,
+            evaluated_at INTEGER NOT NULL
+        )`,
+        `CREATE TABLE IF NOT EXISTS interpretation_risk_classifications (
+            interpretation_revision_id TEXT PRIMARY KEY,
+            risk_class TEXT NOT NULL,
+            risk_reasons_json TEXT NOT NULL,
+            resolution_input_hash TEXT NOT NULL
+        )`,
+        `CREATE TABLE IF NOT EXISTS interpretation_policy_definitions (
+            validation_policy_id TEXT NOT NULL,
+            policy_version INTEGER NOT NULL,
+            policy_hash TEXT NOT NULL,
+            required_grounding_outcome TEXT NOT NULL,
+            required_reviewers_json TEXT NOT NULL,
+            final_disposition_authority TEXT NOT NULL,
+            auto_approval_allowed INTEGER NOT NULL,
+            on_disagreement TEXT NOT NULL,
+            details_json TEXT NOT NULL,
+            PRIMARY KEY (validation_policy_id, policy_version)
+        )`,
+        `CREATE TABLE IF NOT EXISTS interpretation_policy_bindings (
+            interpretation_revision_id TEXT PRIMARY KEY,
+            validation_policy_id TEXT NOT NULL,
+            policy_version INTEGER NOT NULL,
+            policy_hash TEXT NOT NULL,
+            matched_rule_ids_json TEXT NOT NULL,
+            resolution_input_hash TEXT NOT NULL
+        )`,
+        `CREATE TABLE IF NOT EXISTS interpretation_review_obligations (
+            review_obligation_id TEXT PRIMARY KEY,
+            interpretation_revision_id TEXT NOT NULL,
+            reviewer_role TEXT NOT NULL,
+            reviewer_entity_id TEXT,
+            obligation_state TEXT NOT NULL,
+            blocking_reason TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )`,
+        `CREATE TABLE IF NOT EXISTS interpretation_review_requests (
+            review_request_id TEXT PRIMARY KEY,
+            review_obligation_id TEXT NOT NULL,
+            interpretation_revision_id TEXT NOT NULL,
+            reviewer_role TEXT NOT NULL,
+            reviewer_entity_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            review_envelope_hash TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )`,
+        `CREATE TABLE IF NOT EXISTS interpretation_review_dispositions (
+            review_disposition_id TEXT PRIMARY KEY,
+            review_request_id TEXT NOT NULL,
+            interpretation_revision_id TEXT NOT NULL,
+            reviewer_role TEXT NOT NULL,
+            reviewer_entity_id TEXT NOT NULL,
+            disposition TEXT NOT NULL,
+            reason_codes_json TEXT NOT NULL,
+            commentary TEXT,
+            review_envelope_hash TEXT NOT NULL,
+            submitted_at INTEGER NOT NULL
+        )`,
+        `CREATE TABLE IF NOT EXISTS interpretation_subject_dispositions (
+            interpretation_revision_id TEXT PRIMARY KEY,
+            memory_subject_id TEXT NOT NULL,
+            state TEXT NOT NULL,
+            final_disposition_authority TEXT NOT NULL,
+            reason_codes_json TEXT NOT NULL,
+            commentary TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )`,
     ];
 }
 

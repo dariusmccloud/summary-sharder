@@ -38,6 +38,11 @@ import {
     executePromotionAuthorization,
     recoverPromotionState,
 } from './promotion.js';
+import {
+    createInterpretiveCandidate,
+    getInterpretiveCandidate,
+    listInterpretivePolicyDefinitions,
+} from './interpretive.js';
 
 export const info = {
     id: PLUGIN_ID,
@@ -466,6 +471,33 @@ export async function init(router) {
                 authorizationId: request.body?.authorizationId,
                 now: request.body?.now,
             });
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.get('/interpretive/policies', async (request, response) => {
+        try {
+            const result = listInterpretivePolicyDefinitions(request);
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/interpretive/candidates', async (request, response) => {
+        try {
+            const result = createInterpretiveCandidate(request, request.body || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.get('/interpretive/candidates/:interpretationRevisionId', async (request, response) => {
+        try {
+            const result = getInterpretiveCandidate(request, request.params.interpretationRevisionId);
             return response.send(result);
         } catch (error) {
             return handleError(response, error);

@@ -226,6 +226,9 @@ test('route surface exposes candidate lifecycle routes and separate promotion ro
     assert.equal(router.routes.post.has('/rebuild/promote'), false);
     assert.equal(router.routes.post.has('/rebuild/promotion/authorize'), true);
     assert.equal(router.routes.post.has('/rebuild/promotion/execute'), true);
+    assert.equal(router.routes.get.has('/interpretive/policies'), true);
+    assert.equal(router.routes.get.has('/interpretive/candidates/:interpretationRevisionId'), true);
+    assert.equal(router.routes.post.has('/interpretive/candidates'), true);
 });
 
 test('capabilities and candidate lifecycle routes report no promotion and support report, pin, and cleanup', async () => {
@@ -242,6 +245,8 @@ test('capabilities and candidate lifecycle routes report no promotion and suppor
     assert.equal(capabilities.payload.capabilities.c0_75_1.candidateQualification, true);
     assert.equal(capabilities.payload.capabilities.c0_75_1.promotionAvailable, false);
     assert.equal(capabilities.payload.capabilities.c0_75_2.promotionAvailable, true);
+    assert.equal(capabilities.payload.capabilities.c0_6_1.interpretiveLedgerAuthority, true);
+    assert.equal(capabilities.payload.capabilities.c0_6_1.continuityPublicationAvailable, false);
 
     const initResult = await invoke(
         router.routes.post.get('/rebuild/candidate/init'),
@@ -316,6 +321,66 @@ test('capabilities and candidate lifecycle routes report no promotion and suppor
     assert.equal(cleanupResult.statusCode, 200);
     assert.deepEqual(cleanupResult.payload.removedRunIds, []);
     assert.equal(cleanupResult.payload.promotionAvailable, false);
+});
+
+test('interpretive routes create pending governed candidates without publication', async () => {
+    const root = makeTempRoot();
+    const router = createMockRouter();
+    await init(router);
+
+    const createResult = await invoke(
+        router.routes.post.get('/interpretive/candidates'),
+        buildRequest(root, {
+            body: {
+                interpretationId: 'interp_route_case',
+                interpretationRevisionId: 'interprev_route_case_v1',
+                memoryScopeId: 'scope_alpha',
+                memorySubjectId: 'character:jeep.png',
+                type: 'ROLE_EVOLUTION',
+                statement: 'Jeep evolved into the primary continuity authority within a shared architecture.',
+                assertionDomains: ['ROLE', 'AUTHORITY', 'RELATIONSHIP'],
+                sharedRelationshipAsserted: true,
+                personalMeaningAsserted: true,
+                materialParticipantEntityIds: ['character:jeep.png', 'user:Chris'],
+                groundingLinks: [
+                    {
+                        basisType: 'STRUCTURAL_RECORD',
+                        basisRecordId: 'decision:promotion-jurisdiction',
+                        basisRecordVersion: 1,
+                        basisRecordHash: 'sha256:promotion-jurisdiction',
+                        speakerEntityId: 'character:jeep.png',
+                        groundingRole: 'PRIMARY',
+                        groundingAssessment: 'SUPPORTS',
+                    },
+                ],
+                now: Date.parse('2026-06-25T13:00:00.000Z'),
+            },
+        }),
+    );
+
+    assert.equal(createResult.statusCode, 200);
+    assert.equal(createResult.payload.interpretation.publicationState, 'NOT_PUBLISHED');
+    assert.equal(createResult.payload.interpretation.authorityEffect, 'DESCRIPTIVE_ONLY');
+    assert.equal(createResult.payload.interpretation.policyBinding.validationPolicyId, 'shared-role-memory');
+
+    const getResult = await invoke(
+        router.routes.get.get('/interpretive/candidates/:interpretationRevisionId'),
+        buildRequest(root, {
+            params: {
+                interpretationRevisionId: 'interprev_route_case_v1',
+            },
+        }),
+    );
+    assert.equal(getResult.statusCode, 200);
+    assert.equal(getResult.payload.interpretation.reviewState, 'PENDING');
+
+    const policiesResult = await invoke(
+        router.routes.get.get('/interpretive/policies'),
+        buildRequest(root),
+    );
+    assert.equal(policiesResult.statusCode, 200);
+    assert.equal(Array.isArray(policiesResult.payload.policies), true);
+    assert.equal(policiesResult.payload.policies.some((entry) => entry.validationPolicyId === 'shared-role-memory'), true);
 });
 
 test('health route reconciles verifying promotion state before opening live authority', async () => {
