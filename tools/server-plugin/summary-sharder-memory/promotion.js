@@ -228,6 +228,14 @@ function buildGenerationPaths(paths, promotionId) {
     };
 }
 
+function loadGenerationManifest(paths, promotionId) {
+    const manifestPath = buildGenerationPaths(paths, promotionId).manifestPath;
+    if (!fs.existsSync(manifestPath)) {
+        throw createError(500, `Promotion manifest for ${promotionId} is missing`, 'ARCH_PROMOTION_MANIFEST_MISSING');
+    }
+    return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+}
+
 function computeLivePresenceDescriptor(liveState) {
     return {
         presence: liveState?.dbPresent ? 'PRESENT' : 'ABSENT',
@@ -250,6 +258,164 @@ function assertPromotionEligible(report) {
             structuralBlockers: report?.candidateValidity?.structuralBlockers || [],
         });
     }
+}
+
+function verifyDatabaseIntegrity(dbPath) {
+    if (!dbPath || !fs.existsSync(dbPath)) {
+        return false;
+    }
+    const adapter = createAdapter(dbPath);
+    try {
+        initializeDatabase(adapter);
+        return adapter.verifyIntegrity();
+    } catch {
+        return false;
+    } finally {
+        adapter.close();
+    }
+}
+
+function buildPendingPromotionState({
+    promotionId,
+    authorizationId,
+    nextGenerationId,
+    liveDbRelativePath,
+    rollbackDbRelativePath,
+    parentLiveAuthority,
+    fullAuthorityHash,
+    now,
+}) {
+    return {
+        lastPromotionId: promotionId,
+        lastState: 'PREPARED',
+        authorizationId,
+        nextGenerationId,
+        liveDbRelativePath,
+        rollbackDbRelativePath,
+        parentLiveAuthority,
+        fullAuthorityHash,
+        updatedAt: now,
+    };
+}
+
+function restoreParentLiveAuthority(paths, promotionState, now) {
+    const parent = promotionState?.parentLiveAuthority || null;
+    const nextLive = parent?.presence === 'PRESENT'
+        ? {
+            generationId: parent.generationId,
+            dbRelativePath: parent.dbRelativePath,
+            authorityHash: parent.authorityHash,
+        }
+        : null;
+    writeOperationalStateMarkerDescriptor(paths, {
+        liveAuthority: nextLive,
+        promotionJournal: {
+            ...promotionState,
+            lastState: 'ROLLED_BACK',
+            updatedAt: now,
+        },
+    }, now);
+}
+
+export function recoverPromotionState(request, options = {}) {
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    ensurePromotionRoots(paths);
+    const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
+    const marker = readOperationalStateMarker(paths);
+    const promotionState = marker?.promotionJournal || null;
+    const liveAuthority = marker?.liveAuthority || null;
+
+    if (!promotionState?.lastPromotionId || !promotionState?.lastState) {
+        return { recovered: false, state: 'NONE' };
+    }
+
+    const lastState = String(promotionState.lastState || '').trim().toUpperCase();
+    if (!lastState || lastState === 'COMMITTED' || lastState === 'FAILED' || lastState === 'ROLLED_BACK') {
+        return { recovered: false, state: lastState || 'NONE' };
+    }
+
+    const manifest = loadGenerationManifest(paths, promotionState.lastPromotionId);
+    const stagedDbPath = path.join(paths.storageRoot, manifest.liveDbRelativePath);
+    const pointerTargetsStaged = liveAuthority?.generationId === manifest.generationId
+        && liveAuthority?.dbRelativePath === manifest.liveDbRelativePath;
+    const stagedValid = verifyDatabaseIntegrity(stagedDbPath);
+
+    if (lastState === 'PREPARED') {
+        if (pointerTargetsStaged) {
+            if (!stagedValid) {
+                restoreParentLiveAuthority(paths, promotionState, now);
+                return { recovered: true, state: 'ROLLED_BACK', reason: 'prepared-pointed-at-invalid-staged-live' };
+            }
+            writeOperationalStateMarkerDescriptor(paths, {
+                promotionJournal: {
+                    ...promotionState,
+                    lastState: 'COMMITTED',
+                    updatedAt: now,
+                },
+            }, now);
+            appendPromotionJournal(paths, {
+                type: 'PROMOTION_COMMITTED',
+                promotionId: promotionState.lastPromotionId,
+                authorizationId: promotionState.authorizationId || manifest.authorizationId || null,
+                memoryScopeId: manifest.promotedMemoryScopeId,
+                generationId: manifest.generationId,
+                parentGenerationId: manifest.parentGenerationId,
+                fullAuthorityHash: manifest.fullAuthorityHash,
+                committedAt: now,
+                recoveryCommit: true,
+            });
+            return { recovered: true, state: 'COMMITTED', reason: 'prepared-pointer-already-new-and-valid' };
+        }
+        writeOperationalStateMarkerDescriptor(paths, {
+            promotionJournal: {
+                ...promotionState,
+                lastState: 'FAILED',
+                updatedAt: now,
+            },
+        }, now);
+        return { recovered: true, state: 'FAILED', reason: 'prepared-pointer-never-moved' };
+    }
+
+    if (lastState === 'VERIFYING' || lastState === 'COMMITTING') {
+        if (pointerTargetsStaged && stagedValid) {
+            writeOperationalStateMarkerDescriptor(paths, {
+                promotionJournal: {
+                    ...promotionState,
+                    lastState: 'COMMITTED',
+                    updatedAt: now,
+                },
+            }, now);
+            appendPromotionJournal(paths, {
+                type: 'PROMOTION_COMMITTED',
+                promotionId: promotionState.lastPromotionId,
+                authorizationId: promotionState.authorizationId || manifest.authorizationId || null,
+                memoryScopeId: manifest.promotedMemoryScopeId,
+                generationId: manifest.generationId,
+                parentGenerationId: manifest.parentGenerationId,
+                fullAuthorityHash: manifest.fullAuthorityHash,
+                committedAt: now,
+                recoveryCommit: true,
+            });
+            return { recovered: true, state: 'COMMITTED', reason: 'verifying-staged-live-valid' };
+        }
+        writeOperationalStateMarkerDescriptor(paths, {
+            promotionJournal: {
+                ...promotionState,
+                lastState: 'ROLLING_BACK',
+                updatedAt: now,
+            },
+        }, now);
+        restoreParentLiveAuthority(paths, promotionState, now);
+        return { recovered: true, state: 'ROLLED_BACK', reason: 'verifying-staged-live-invalid' };
+    }
+
+    if (lastState === 'ROLLING_BACK') {
+        restoreParentLiveAuthority(paths, promotionState, now);
+        return { recovered: true, state: 'ROLLED_BACK', reason: 'completed-rollback-on-restart' };
+    }
+
+    throw createError(500, `Unsupported promotion recovery state ${lastState}`, 'ARCH_PROMOTION_RECOVERY_STATE_UNSUPPORTED');
 }
 
 export function createPromotionAuthorization(request, options = {}) {
@@ -372,6 +538,19 @@ export function executePromotionAuthorization(request, options = {}) {
         const currentLiveDbPath = resolveOperationalDbPath(paths, currentStateMarker);
         const generationPaths = buildGenerationPaths(paths, promotionId);
         const livePresent = liveDescriptor.presence === 'PRESENT';
+        const parentLiveAuthority = livePresent
+            ? {
+                presence: 'PRESENT',
+                generationId: authorization.expectedLiveState.generationId,
+                dbRelativePath: currentStateMarker?.liveAuthority?.dbRelativePath || toRelativeStoragePath(paths, currentLiveDbPath),
+                authorityHash: authorization.expectedLiveState.authorityHash,
+            }
+            : {
+                presence: 'ABSENT',
+                generationId: null,
+                dbRelativePath: null,
+                authorityHash: authorization.expectedLiveState.authorityHash,
+            };
 
         const parentTargetScopeHash = livePresent
             ? computeScopedAuthorityState(currentLiveDbPath, authorization.memoryScopeId).canonicalAuthorityHash
@@ -443,6 +622,9 @@ export function executePromotionAuthorization(request, options = {}) {
             createdAt: now,
             liveDbRelativePath: toRelativeStoragePath(paths, generationPaths.stagedDbPath),
             rollbackDbRelativePath: livePresent ? toRelativeStoragePath(paths, generationPaths.rollbackDbPath) : null,
+            parentLiveDbRelativePath: parentLiveAuthority.dbRelativePath,
+            parentLiveAuthorityHash: parentLiveAuthority.authorityHash,
+            parentLivePresence: parentLiveAuthority.presence,
         };
         atomicWriteFile(generationPaths.manifestPath, JSON.stringify(generationManifest, null, 2));
 
@@ -462,6 +644,21 @@ export function executePromotionAuthorization(request, options = {}) {
             createdAt: now,
         });
 
+        const pendingPromotionState = buildPendingPromotionState({
+            promotionId,
+            authorizationId,
+            nextGenerationId,
+            liveDbRelativePath: toRelativeStoragePath(paths, generationPaths.stagedDbPath),
+            rollbackDbRelativePath: livePresent ? toRelativeStoragePath(paths, generationPaths.rollbackDbPath) : null,
+            parentLiveAuthority,
+            fullAuthorityHash: fullAuthorityState.canonicalAuthorityHash,
+            now,
+        });
+
+        writeOperationalStateMarkerDescriptor(paths, {
+            promotionJournal: pendingPromotionState,
+        }, now);
+
         writeOperationalStateMarkerDescriptor(paths, {
             liveAuthority: {
                 generationId: nextGenerationId,
@@ -474,8 +671,8 @@ export function executePromotionAuthorization(request, options = {}) {
                 createdAt: now,
             },
             promotionJournal: {
-                lastPromotionId: promotionId,
-                lastState: 'PREPARED',
+                ...pendingPromotionState,
+                lastState: 'VERIFYING',
                 updatedAt: now,
             },
         }, now);
@@ -507,7 +704,7 @@ export function executePromotionAuthorization(request, options = {}) {
         });
         writeOperationalStateMarkerDescriptor(paths, {
             promotionJournal: {
-                lastPromotionId: promotionId,
+                ...pendingPromotionState,
                 lastState: 'COMMITTED',
                 updatedAt: now,
             },

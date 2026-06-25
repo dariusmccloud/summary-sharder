@@ -82,7 +82,7 @@
     },
     {
       "relativePath": "index.js",
-      "sha256": "c44af77abd9ba124b33d6d77fdc88c814fc5662bed34b417ffae662b0f63ae3f"
+      "sha256": "30f4abb6228bef2fa6ad751d0e2af0a30fe7d2956fd45880d0c7d90252a32610"
     },
     {
       "relativePath": "lib/core/chat/archive-policy.js",
@@ -142,7 +142,7 @@
     },
     {
       "relativePath": "promotion.js",
-      "sha256": "81ebdf954e3bef8cf7b710c866a6bb952d7d46aab7547d0e2b6374dd26fb5ad5"
+      "sha256": "b390d271bdf6f190e5f920b71ca41255ce8c3e13a67fd3004e309fd63732774d"
     },
     {
       "relativePath": "README.md",

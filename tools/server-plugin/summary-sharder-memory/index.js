@@ -36,6 +36,7 @@ import {
 import {
     createPromotionAuthorization,
     executePromotionAuthorization,
+    recoverPromotionState,
 } from './promotion.js';
 
 export const info = {
@@ -48,6 +49,7 @@ export async function init(router) {
     router.get('/health', async (request, response) => {
         try {
             const paths = getStoragePaths(getAuthenticatedUserRoot(request));
+            recoverPromotionState(request);
             const adapter = openOperationalDatabase(paths);
             try {
                 const manifest = loadManifest(adapter);
@@ -100,6 +102,7 @@ export async function init(router) {
     router.post('/init', async (request, response) => {
         try {
             const paths = getStoragePaths(getAuthenticatedUserRoot(request));
+            recoverPromotionState(request);
             const adapter = openOperationalDatabase(paths);
             try {
                 const manifest = loadManifest(adapter);
@@ -121,6 +124,7 @@ export async function init(router) {
     router.get('/manifest', async (request, response) => {
         try {
             const paths = getStoragePaths(getAuthenticatedUserRoot(request));
+            recoverPromotionState(request);
             const adapter = openOperationalDatabase(paths);
             try {
                 const manifest = loadManifest(adapter);
@@ -139,6 +143,7 @@ export async function init(router) {
     router.post('/scopes/ensure', async (request, response) => {
         try {
             const paths = getStoragePaths(getAuthenticatedUserRoot(request));
+            recoverPromotionState(request);
             const memoryScopeId = sanitizeIdentifier(request.body?.memoryScopeId, 'memoryScopeId');
             const scopeAlias = String(request.body?.scopeAlias || '').trim();
             const timestamp = nowTimestamp(request.body?.now);
@@ -159,6 +164,7 @@ export async function init(router) {
     router.get('/scopes/:memoryScopeId', async (request, response) => {
         try {
             const paths = getStoragePaths(getAuthenticatedUserRoot(request));
+            recoverPromotionState(request);
             const memoryScopeId = sanitizeIdentifier(request.params.memoryScopeId, 'memoryScopeId');
             const adapter = openOperationalDatabase(paths);
             try {
@@ -178,6 +184,7 @@ export async function init(router) {
     router.post('/scopes/:memoryScopeId/bind-chat', async (request, response) => {
         try {
             const paths = getStoragePaths(getAuthenticatedUserRoot(request));
+            recoverPromotionState(request);
             const memoryScopeId = sanitizeIdentifier(request.params.memoryScopeId, 'memoryScopeId');
             const chatInstanceId = sanitizeIdentifier(request.body?.chatInstanceId, 'chatInstanceId');
             const chatLocator = normalizeChatLocator(request.body?.chatLocator);
@@ -219,6 +226,7 @@ export async function init(router) {
     router.get('/scopes/:memoryScopeId/decisions/current', async (request, response) => {
         try {
             const paths = getStoragePaths(getAuthenticatedUserRoot(request));
+            recoverPromotionState(request);
             const memoryScopeId = sanitizeIdentifier(request.params.memoryScopeId, 'memoryScopeId');
             const ids = String(request.query?.ids || '')
                 .split(',')
@@ -247,6 +255,7 @@ export async function init(router) {
     router.get('/scopes/:memoryScopeId/decisions/:decisionId', async (request, response) => {
         try {
             const paths = getStoragePaths(getAuthenticatedUserRoot(request));
+            recoverPromotionState(request);
             const memoryScopeId = sanitizeIdentifier(request.params.memoryScopeId, 'memoryScopeId');
             const decisionId = sanitizeIdentifier(request.params.decisionId, 'decisionId');
             const adapter = openOperationalDatabase(paths);
@@ -267,6 +276,7 @@ export async function init(router) {
     router.get('/scopes/:memoryScopeId/projections/:chatInstanceId', async (request, response) => {
         try {
             const paths = getStoragePaths(getAuthenticatedUserRoot(request));
+            recoverPromotionState(request);
             const memoryScopeId = sanitizeIdentifier(request.params.memoryScopeId, 'memoryScopeId');
             const chatInstanceId = sanitizeIdentifier(request.params.chatInstanceId, 'chatInstanceId');
             const adapter = openOperationalDatabase(paths);
@@ -302,6 +312,7 @@ export async function init(router) {
     router.post('/scopes/:memoryScopeId/commit', async (request, response) => {
         try {
             const paths = getStoragePaths(getAuthenticatedUserRoot(request));
+            recoverPromotionState(request);
             const memoryScopeId = sanitizeIdentifier(request.params.memoryScopeId, 'memoryScopeId');
             const scopeAlias = String(request.body?.scopeAlias || '').trim();
             const sourceChatInstanceId = request.body?.sourceChatInstanceId
@@ -349,6 +360,7 @@ export async function init(router) {
     router.post('/migrate-browser-store', async (request, response) => {
         try {
             const paths = getStoragePaths(getAuthenticatedUserRoot(request));
+            recoverPromotionState(request);
             const payload = normalizeBrowserMigrationPayload(request.body?.payload || {});
             const timestamp = nowTimestamp(request.body?.now);
             const adapter = openOperationalDatabase(paths);

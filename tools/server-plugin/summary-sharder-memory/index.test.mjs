@@ -5,7 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { buildManagedShardManifest } from '../../../core/summarization/shard-integrity-core.js';
+import { writeOperationalStateMarkerDescriptor, readOperationalStateMarker, getStoragePaths } from './core.js';
 import { init } from './index.js';
+import { initCandidateRebuildRun, runCandidateRebuild } from './rebuild.js';
+import { createPromotionAuthorization, executePromotionAuthorization } from './promotion.js';
 
 function makeTempRoot() {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'summary-sharder-routes-'));
@@ -186,6 +189,29 @@ async function invoke(handler, request) {
     return state;
 }
 
+async function buildPromotedScope(root, memoryScopeId) {
+    const request = buildRequest(root);
+    const initResult = await initCandidateRebuildRun(request, {
+        memoryScopeId,
+        requestKey: `route-promo-${memoryScopeId}`,
+        now: Date.now(),
+    });
+    await runCandidateRebuild(request, {
+        reconstructionRunId: initResult.manifest.reconstructionRunId,
+        now: Date.now(),
+    });
+    const auth = createPromotionAuthorization(request, {
+        reconstructionRunId: initResult.manifest.reconstructionRunId,
+        authorizedBy: 'route-test',
+        now: Date.now(),
+        expiresAt: Date.now() + 60000,
+    });
+    return executePromotionAuthorization(request, {
+        authorizationId: auth.authorization.authorizationId,
+        now: Date.now(),
+    });
+}
+
 test('route surface exposes candidate lifecycle routes and separate promotion routes', async () => {
     const router = createMockRouter();
     await init(router);
@@ -290,4 +316,28 @@ test('capabilities and candidate lifecycle routes report no promotion and suppor
     assert.equal(cleanupResult.statusCode, 200);
     assert.deepEqual(cleanupResult.payload.removedRunIds, []);
     assert.equal(cleanupResult.payload.promotionAvailable, false);
+});
+
+test('health route reconciles verifying promotion state before opening live authority', async () => {
+    const root = makeTempRoot();
+    const { memoryScopeId } = await writeArchitecturalChat(root);
+    await buildPromotedScope(root, memoryScopeId);
+    const paths = getStoragePaths(root);
+    const marker = readOperationalStateMarker(paths);
+    writeOperationalStateMarkerDescriptor(paths, {
+        promotionJournal: {
+            ...marker.promotionJournal,
+            lastState: 'VERIFYING',
+            updatedAt: Date.now(),
+        },
+    });
+
+    const router = createMockRouter();
+    await init(router);
+    const health = await invoke(router.routes.get.get('/health'), buildRequest(root));
+    const after = readOperationalStateMarker(paths);
+
+    assert.equal(health.statusCode, 200);
+    assert.equal(health.payload.ok, true);
+    assert.equal(after.promotionJournal.lastState, 'COMMITTED');
 });

@@ -10,6 +10,7 @@ import {
     openOperationalDatabase,
     readOperationalStateMarker,
     resolveOperationalDbPath,
+    writeOperationalStateMarkerDescriptor,
 } from './core.js';
 import {
     initCandidateRebuildRun,
@@ -20,6 +21,7 @@ import {
 import {
     createPromotionAuthorization,
     executePromotionAuthorization,
+    recoverPromotionState,
 } from './promotion.js';
 
 function makeTempRoot() {
@@ -294,4 +296,212 @@ test('promotion refuses execution if live state drifts after authorization', asy
         }),
         /drifted/u,
     );
+});
+
+test('startup recovery marks prepared-with-old-pointer promotions as failed without moving live authority', async () => {
+    const root = makeTempRoot();
+    const request = buildRequest(root);
+
+    const seed = await writeArchitecturalChat(root, {
+        memoryScopeId: 'scope_parent',
+        chatInstanceId: 'chat_parent',
+        chatFileName: 'Parent Session',
+        decisionId: 'parent-decision',
+        decisionText: 'Establish parent live authority.',
+    });
+    const seedInit = await initCandidateRebuildRun(request, {
+        memoryScopeId: seed.memoryScopeId,
+        requestKey: 'seed-parent',
+        now: Date.now(),
+    });
+    await runCandidateRebuild(request, {
+        reconstructionRunId: seedInit.manifest.reconstructionRunId,
+        now: Date.now(),
+    });
+    const seedAuth = createPromotionAuthorization(request, {
+        reconstructionRunId: seedInit.manifest.reconstructionRunId,
+        authorizedBy: 'test-suite',
+        now: Date.now(),
+        expiresAt: Date.now() + 60000,
+    });
+    executePromotionAuthorization(request, {
+        authorizationId: seedAuth.authorization.authorizationId,
+        now: Date.now(),
+    });
+
+    const target = await writeArchitecturalChat(root, {
+        memoryScopeId: 'scope_target',
+        chatInstanceId: 'chat_target',
+        chatFileName: 'Target Session',
+        decisionId: 'target-decision',
+        decisionText: 'Promote target scope.',
+    });
+    const targetInit = await initCandidateRebuildRun(request, {
+        memoryScopeId: target.memoryScopeId,
+        requestKey: 'target-parent',
+        now: Date.now(),
+    });
+    await runCandidateRebuild(request, {
+        reconstructionRunId: targetInit.manifest.reconstructionRunId,
+        now: Date.now(),
+    });
+    const targetAuth = createPromotionAuthorization(request, {
+        reconstructionRunId: targetInit.manifest.reconstructionRunId,
+        authorizedBy: 'test-suite',
+        now: Date.now(),
+        expiresAt: Date.now() + 60000,
+    });
+    const execute = executePromotionAuthorization(request, {
+        authorizationId: targetAuth.authorization.authorizationId,
+        now: Date.now(),
+    });
+
+    const paths = getStoragePaths(root);
+    const marker = readOperationalStateMarker(paths);
+    writeOperationalStateMarkerDescriptor(paths, {
+        liveAuthority: {
+            generationId: marker.promotionJournal.parentLiveAuthority.generationId,
+            dbRelativePath: marker.promotionJournal.parentLiveAuthority.dbRelativePath,
+            authorityHash: marker.promotionJournal.parentLiveAuthority.authorityHash,
+        },
+        promotionJournal: {
+            ...marker.promotionJournal,
+            lastState: 'PREPARED',
+            updatedAt: Date.now(),
+        },
+    });
+
+    const recovered = recoverPromotionState(request, { now: Date.now() });
+    const after = readOperationalStateMarker(paths);
+
+    assert.equal(recovered.recovered, true);
+    assert.equal(recovered.state, 'FAILED');
+    assert.equal(after.promotionJournal.lastState, 'FAILED');
+    assert.equal(after.liveAuthority.generationId, marker.promotionJournal.parentLiveAuthority.generationId);
+    assert.equal(after.liveAuthority.dbRelativePath, marker.promotionJournal.parentLiveAuthority.dbRelativePath);
+    assert.equal(execute.ok, true);
+});
+
+test('startup recovery completes verifying state when staged live generation is valid', async () => {
+    const root = makeTempRoot();
+    const { memoryScopeId } = await writeArchitecturalChat(root);
+    const request = buildRequest(root);
+
+    const init = await initCandidateRebuildRun(request, {
+        memoryScopeId,
+        requestKey: 'recover-valid',
+        now: Date.now(),
+    });
+    await runCandidateRebuild(request, {
+        reconstructionRunId: init.manifest.reconstructionRunId,
+        now: Date.now(),
+    });
+    const auth = createPromotionAuthorization(request, {
+        reconstructionRunId: init.manifest.reconstructionRunId,
+        authorizedBy: 'test-suite',
+        now: Date.now(),
+        expiresAt: Date.now() + 60000,
+    });
+    executePromotionAuthorization(request, {
+        authorizationId: auth.authorization.authorizationId,
+        now: Date.now(),
+    });
+
+    const paths = getStoragePaths(root);
+    const marker = readOperationalStateMarker(paths);
+    writeOperationalStateMarkerDescriptor(paths, {
+        promotionJournal: {
+            ...marker.promotionJournal,
+            lastState: 'VERIFYING',
+            updatedAt: Date.now(),
+        },
+    });
+
+    const recovered = recoverPromotionState(request, { now: Date.now() });
+    const after = readOperationalStateMarker(paths);
+
+    assert.equal(recovered.recovered, true);
+    assert.equal(recovered.state, 'COMMITTED');
+    assert.equal(after.promotionJournal.lastState, 'COMMITTED');
+    assert.equal(after.liveAuthority.generationId, marker.liveAuthority.generationId);
+});
+
+test('startup recovery rolls back verifying state when staged live generation is invalid', async () => {
+    const root = makeTempRoot();
+    const request = buildRequest(root);
+
+    const seed = await writeArchitecturalChat(root, {
+        memoryScopeId: 'scope_parent',
+        chatInstanceId: 'chat_parent',
+        chatFileName: 'Parent Session',
+        decisionId: 'parent-decision',
+        decisionText: 'Establish parent live authority.',
+    });
+    const seedInit = await initCandidateRebuildRun(request, {
+        memoryScopeId: seed.memoryScopeId,
+        requestKey: 'seed-parent-recover',
+        now: Date.now(),
+    });
+    await runCandidateRebuild(request, {
+        reconstructionRunId: seedInit.manifest.reconstructionRunId,
+        now: Date.now(),
+    });
+    const seedAuth = createPromotionAuthorization(request, {
+        reconstructionRunId: seedInit.manifest.reconstructionRunId,
+        authorizedBy: 'test-suite',
+        now: Date.now(),
+        expiresAt: Date.now() + 60000,
+    });
+    executePromotionAuthorization(request, {
+        authorizationId: seedAuth.authorization.authorizationId,
+        now: Date.now(),
+    });
+
+    const target = await writeArchitecturalChat(root, {
+        memoryScopeId: 'scope_target',
+        chatInstanceId: 'chat_target',
+        chatFileName: 'Target Session',
+        decisionId: 'target-decision',
+        decisionText: 'Promote target scope.',
+    });
+    const targetInit = await initCandidateRebuildRun(request, {
+        memoryScopeId: target.memoryScopeId,
+        requestKey: 'target-recover-invalid',
+        now: Date.now(),
+    });
+    await runCandidateRebuild(request, {
+        reconstructionRunId: targetInit.manifest.reconstructionRunId,
+        now: Date.now(),
+    });
+    const targetAuth = createPromotionAuthorization(request, {
+        reconstructionRunId: targetInit.manifest.reconstructionRunId,
+        authorizedBy: 'test-suite',
+        now: Date.now(),
+        expiresAt: Date.now() + 60000,
+    });
+    executePromotionAuthorization(request, {
+        authorizationId: targetAuth.authorization.authorizationId,
+        now: Date.now(),
+    });
+
+    const paths = getStoragePaths(root);
+    const marker = readOperationalStateMarker(paths);
+    const stagedPath = path.join(paths.storageRoot, marker.promotionJournal.liveDbRelativePath);
+    fs.writeFileSync(stagedPath, Buffer.from('corrupt-staged-live'));
+    writeOperationalStateMarkerDescriptor(paths, {
+        promotionJournal: {
+            ...marker.promotionJournal,
+            lastState: 'VERIFYING',
+            updatedAt: Date.now(),
+        },
+    });
+
+    const recovered = recoverPromotionState(request, { now: Date.now() });
+    const after = readOperationalStateMarker(paths);
+
+    assert.equal(recovered.recovered, true);
+    assert.equal(recovered.state, 'ROLLED_BACK');
+    assert.equal(after.promotionJournal.lastState, 'ROLLED_BACK');
+    assert.equal(after.liveAuthority.generationId, marker.promotionJournal.parentLiveAuthority.generationId);
+    assert.equal(after.liveAuthority.dbRelativePath, marker.promotionJournal.parentLiveAuthority.dbRelativePath);
 });
