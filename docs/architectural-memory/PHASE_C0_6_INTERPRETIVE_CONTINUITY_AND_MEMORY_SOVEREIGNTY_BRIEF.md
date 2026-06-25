@@ -8,6 +8,20 @@ This document is a governance contract only.
 
 Stop before code until this brief is approved.
 
+## Preserved Evidence
+
+The constitutional interpretive shard installation has already been verified as a managed artifact insertion.
+
+Related records:
+
+- `docs/architectural-memory/evidence/C0_6_INTERPRETIVE_SHARD_INSERTION_REPORT.md`
+- `docs/architectural-memory/fixtures/C0_6_INTERPRETIVE_SOVEREIGNTY_GOLD_FIXTURE.md`
+- `docs/architectural-memory/fixtures/C0_6_CANONICAL_INTERPRETIVE_SHARD_RECORDS.md`
+
+That evidence proves governed insertion, persistence, reopen validation, authenticated host loading, live UI rendering, and duplicate refusal.
+
+It does not start the C0.6 interpretive runtime.
+
 ## Governing Doctrine
 
 The following two decisions are sealed and govern all downstream interpretive-memory design, implementation, and workflow.

@@ -8,6 +8,11 @@ It captures the first live exchange where the full pipeline operated before infr
 
 Any future implementation of `C0.6` must pass this fixture end to end.
 
+Related evidence:
+
+- `docs/architectural-memory/evidence/C0_6_INTERPRETIVE_SHARD_INSERTION_REPORT.md`
+- `docs/architectural-memory/fixtures/C0_6_CANONICAL_INTERPRETIVE_SHARD_RECORDS.md`
+
 ## Source
 
 A narrative synthesizer produced a summary of messages spanning the fork decision through `C0.75` assessment.
@@ -159,3 +164,7 @@ The sovereignty arrived before the system that protects it.
 The corresponding shard insertion remains pending exact reference verification against the real chat identity and frozen message revisions.
 
 Approximate conversation-order references are not sufficient for live shard publication.
+
+That boundary has now been satisfied for the preserved constitutional insertion evidence recorded in:
+
+`docs/architectural-memory/evidence/C0_6_INTERPRETIVE_SHARD_INSERTION_REPORT.md`
