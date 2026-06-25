@@ -58,6 +58,8 @@ import {
     initializeDatabase,
     nowTimestamp,
     parseJsonlRecords,
+    readOperationalStateMarker,
+    resolveOperationalDbPath,
     sanitizeIdentifier,
 } from './core.js';
 
@@ -81,7 +83,7 @@ const REBUILD_TABLE_SPECS = Object.freeze([
     { name: 'reconstruction_supersession_components', ignoredColumns: ['reconstruction_run_id'] },
 ]);
 
-const AUTHORITY_SURFACE_TABLE_SPECS = Object.freeze([
+export const AUTHORITY_SURFACE_TABLE_SPECS = Object.freeze([
     { name: 'memory_scopes', ignoredColumns: ['created_at', 'updated_at'], keyColumns: ['memory_scope_id'], scopeColumn: 'memory_scope_id' },
     { name: 'chat_bindings', ignoredColumns: ['bound_at', 'updated_at'], keyColumns: ['chat_instance_id'], scopeColumn: 'memory_scope_id' },
     { name: 'decision_records', ignoredColumns: ['created_at', 'updated_at'], keyColumns: ['memory_scope_id', 'decision_id', 'record_version'], scopeColumn: 'memory_scope_id' },
@@ -147,9 +149,10 @@ function candidatePathsFromManifestPath(userRoot, manifestPath) {
 
 function getLiveAuthorityFingerprints(userRoot) {
     const paths = getStoragePaths(userRoot);
+    const activeDbPath = resolveOperationalDbPath(paths);
     const fingerprints = {};
     for (const [key, filePath] of Object.entries({
-        db: paths.dbPath,
+        db: activeDbPath,
         snapshot: paths.snapshotPath,
         state: paths.statePath,
     })) {
@@ -180,7 +183,7 @@ function readScopeRows(adapter, spec, memoryScopeId) {
     return adapter.all(sql, parameters);
 }
 
-function buildScopeAuthoritySurfaceState(adapter, memoryScopeId) {
+export function buildScopeAuthoritySurfaceState(adapter, memoryScopeId) {
     const comparableDump = buildDeterministicTableDump(AUTHORITY_SURFACE_TABLE_SPECS, (tableName) => {
         const spec = AUTHORITY_SURFACE_TABLE_SPECS.find((entry) => entry.name === tableName);
         return readScopeRows(adapter, spec, memoryScopeId);
@@ -208,7 +211,7 @@ function buildScopeAuthoritySurfaceState(adapter, memoryScopeId) {
     };
 }
 
-function buildEmptyScopeAuthoritySurfaceState() {
+export function buildEmptyScopeAuthoritySurfaceState() {
     const comparableDump = Object.fromEntries(
         AUTHORITY_SURFACE_TABLE_SPECS.map((spec) => [spec.name, []]),
     );
@@ -378,11 +381,13 @@ function buildPromotionQualificationDigest(payload) {
     return sha256Text(stableStringify(payload));
 }
 
-function readLiveAuthorityStateReadOnly(userRoot, memoryScopeId) {
+export function readLiveAuthorityStateReadOnly(userRoot, memoryScopeId) {
     const paths = getStoragePaths(userRoot);
+    const stateMarker = readOperationalStateMarker(paths);
+    const activeDbPath = resolveOperationalDbPath(paths, stateMarker);
     const stateMarkerPresent = fs.existsSync(paths.statePath);
     const snapshotPresent = fs.existsSync(paths.snapshotPath);
-    if (!fs.existsSync(paths.dbPath)) {
+    if (!fs.existsSync(activeDbPath)) {
         const emptyState = buildEmptyScopeAuthoritySurfaceState();
         return {
             ok: true,
@@ -395,12 +400,13 @@ function readLiveAuthorityStateReadOnly(userRoot, memoryScopeId) {
             journalMode: null,
             manifestMissing: true,
             ...emptyState,
-            generationIdentity: `live:${memoryScopeId}:run:0`,
+            generationIdentity: stateMarker?.liveAuthority?.generationId || `live:${memoryScopeId}:run:0`,
+            dbRelativePath: stateMarker?.liveAuthority?.dbRelativePath || null,
             issues: [],
         };
     }
 
-    const adapter = createAdapter(paths.dbPath);
+    const adapter = createAdapter(activeDbPath);
     try {
         const integrityOk = adapter.verifyIntegrity();
         if (!integrityOk) {
@@ -447,7 +453,8 @@ function readLiveAuthorityStateReadOnly(userRoot, memoryScopeId) {
             journalMode: String(manifestRow.journal_mode || ''),
             manifestMissing: false,
             ...state,
-            generationIdentity: `live:${memoryScopeId}:run:${Number(state.currentScopeRun || 0)}`,
+            generationIdentity: String(stateMarker?.liveAuthority?.generationId || `live:${memoryScopeId}:run:${Number(state.currentScopeRun || 0)}`),
+            dbRelativePath: stateMarker?.liveAuthority?.dbRelativePath || null,
             issues: [],
         };
     } finally {
@@ -503,7 +510,7 @@ function buildCandidateAuthorityIdentity(candidatePaths, report) {
     };
 }
 
-function computeScopedAuthorityState(candidateDbPath, memoryScopeId) {
+export function computeScopedAuthorityState(candidateDbPath, memoryScopeId) {
     const adapter = createAdapter(candidateDbPath);
     try {
         return buildScopeAuthoritySurfaceState(adapter, memoryScopeId);

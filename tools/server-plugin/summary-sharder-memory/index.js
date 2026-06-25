@@ -19,6 +19,7 @@ import {
     openOperationalDatabase,
     parseNullableJson,
     readCurrentDecision,
+    resolveOperationalDbPath,
     scanPersistedChatMetadata,
     sanitizeIdentifier,
     snapshotOperationalDatabase,
@@ -32,6 +33,10 @@ import {
     runCandidateRebuild,
     setCandidateRebuildPinned,
 } from './rebuild.js';
+import {
+    createPromotionAuthorization,
+    executePromotionAuthorization,
+} from './promotion.js';
 
 export const info = {
     id: PLUGIN_ID,
@@ -428,13 +433,39 @@ export async function init(router) {
             return handleError(response, error);
         }
     });
+
+    router.post('/rebuild/promotion/authorize', async (request, response) => {
+        try {
+            const result = createPromotionAuthorization(request, {
+                reconstructionRunId: request.body?.reconstructionRunId,
+                authorizedBy: request.body?.authorizedBy,
+                expiresAt: request.body?.expiresAt,
+                now: request.body?.now,
+            });
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/rebuild/promotion/execute', async (request, response) => {
+        try {
+            const result = executePromotionAuthorization(request, {
+                authorizationId: request.body?.authorizationId,
+                now: request.body?.now,
+            });
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
 }
 
 function buildManifestPayload(paths, adapter, manifest) {
     return {
         ...manifest,
         pluginId: PLUGIN_ID,
-        dbPath: paths.dbPath,
+        dbPath: resolveOperationalDbPath(paths),
         snapshotPath: paths.snapshotPath,
         runtime: adapter.runtime,
         capabilities: CAPABILITIES,

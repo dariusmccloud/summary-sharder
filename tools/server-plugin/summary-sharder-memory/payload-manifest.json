@@ -7,6 +7,7 @@
     "README.md",
     "index.js",
     "core.js",
+    "promotion.js",
     "rebuild.js",
     "schema.js",
     "sqlite-node.js",
@@ -31,7 +32,7 @@
     {
       "canonicalRelativePath": "core/summarization/architectural-rebuild-protocol.js",
       "packagedRelativePath": "lib/core/summarization/architectural-rebuild-protocol.js",
-      "sha256": "9cd0f5b41fd508990639a79be2aca9bed0f092979f33c4117939d12de72db089"
+      "sha256": "5d83b60ca0e21c1cce8424af1339fa403cd9525aeed560e72c0172cbd81bddbe"
     },
     {
       "canonicalRelativePath": "core/summarization/architectural-record-parser.js",
@@ -77,11 +78,11 @@
   "payloadFiles": [
     {
       "relativePath": "core.js",
-      "sha256": "67ff82b3087c7d9d120074c818c04aedae4a1d11f4840267bb08f9d1d43d35cf"
+      "sha256": "595bc3390104fb077438652d2738bb622bbf079073e1a5a574fb5d7f01b44beb"
     },
     {
       "relativePath": "index.js",
-      "sha256": "8e769fb0cbd160de88dc225023c273f3482694905ce5e6a095fef1ab49e6ac61"
+      "sha256": "c44af77abd9ba124b33d6d77fdc88c814fc5662bed34b417ffae662b0f63ae3f"
     },
     {
       "relativePath": "lib/core/chat/archive-policy.js",
@@ -97,7 +98,7 @@
     },
     {
       "relativePath": "lib/core/summarization/architectural-rebuild-protocol.js",
-      "sha256": "9cd0f5b41fd508990639a79be2aca9bed0f092979f33c4117939d12de72db089"
+      "sha256": "5d83b60ca0e21c1cce8424af1339fa403cd9525aeed560e72c0172cbd81bddbe"
     },
     {
       "relativePath": "lib/core/summarization/architectural-record-parser.js",
@@ -133,11 +134,15 @@
     },
     {
       "relativePath": "lib/packaged-shared-manifest.json",
-      "sha256": "fc63f0c4caa3e3e4f795c881df94814573e37691f375d74f89a8836aba484cc3"
+      "sha256": "fd935ee1ae6d97d122b24aa1a6afd3b7df0673316b58d190e6ef5f36d86476d7"
     },
     {
       "relativePath": "package.json",
       "sha256": "f9fc8bb4895cca3fa4293a6c76d0debf149f5f64a8df0cd9ac17cc85da46488f"
+    },
+    {
+      "relativePath": "promotion.js",
+      "sha256": "81ebdf954e3bef8cf7b710c866a6bb952d7d46aab7547d0e2b6374dd26fb5ad5"
     },
     {
       "relativePath": "README.md",
@@ -145,7 +150,7 @@
     },
     {
       "relativePath": "rebuild.js",
-      "sha256": "177196eae01e7a6a8d3bed13724d99c35479e179c58a57f89b26ae828552a4e7"
+      "sha256": "8ce6b1db7905af765c99ecd1e366a3d2200f158dbe557118c06cd83763cce6bd"
     },
     {
       "relativePath": "schema.js",

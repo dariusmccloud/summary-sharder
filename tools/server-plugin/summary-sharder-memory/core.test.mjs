@@ -7,6 +7,8 @@ import path from 'node:path';
 import {
     JOURNAL_MODE,
     MESSAGE_IDENTITY_SCAN_SCHEMA,
+    readOperationalStateMarker,
+    resolveOperationalDbPath,
     SCHEMA_VERSION,
     SERVICE_VERSION,
     getStoragePaths,
@@ -16,6 +18,7 @@ import {
     scanPersistedChatMetadata,
     snapshotOperationalDatabase,
     summarizePersistedChatMetadata,
+    writeOperationalStateMarkerDescriptor,
 } from './core.js';
 
 function makeTempRoot() {
@@ -71,6 +74,24 @@ test('reopening operational database does not rewrite an unchanged state marker'
 
     const after = fs.readFileSync(paths.statePath, 'utf8');
     assert.equal(after, before);
+});
+
+test('state marker can point live authority to a generation-local DB path', () => {
+    const root = makeTempRoot();
+    const paths = getStoragePaths(root);
+    writeOperationalStateMarkerDescriptor(paths, {
+        liveAuthority: {
+            generationId: 'livegen_test',
+            dbRelativePath: 'generations/architectural-memory.live.livegen_test.db',
+        },
+    });
+
+    const marker = readOperationalStateMarker(paths);
+    assert.equal(marker.liveAuthority.generationId, 'livegen_test');
+    assert.equal(
+        resolveOperationalDbPath(paths, marker),
+        path.join(paths.storageRoot, 'generations', 'architectural-memory.live.livegen_test.db'),
+    );
 });
 
 test('corrupt operational database restores from verified snapshot', () => {

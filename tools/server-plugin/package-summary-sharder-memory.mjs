@@ -13,6 +13,7 @@ const STATIC_PAYLOAD_FILES = Object.freeze([
     'README.md',
     'index.js',
     'core.js',
+    'promotion.js',
     'rebuild.js',
     'schema.js',
     'sqlite-node.js',

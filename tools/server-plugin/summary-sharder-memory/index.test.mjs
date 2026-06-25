@@ -186,7 +186,7 @@ async function invoke(handler, request) {
     return state;
 }
 
-test('route surface exposes candidate lifecycle routes and no promotion route', async () => {
+test('route surface exposes candidate lifecycle routes and separate promotion routes', async () => {
     const router = createMockRouter();
     await init(router);
 
@@ -198,6 +198,8 @@ test('route surface exposes candidate lifecycle routes and no promotion route', 
     assert.equal(router.routes.post.has('/rebuild/candidate/cleanup'), true);
     assert.equal(router.routes.post.has('/rebuild/candidate/promote'), false);
     assert.equal(router.routes.post.has('/rebuild/promote'), false);
+    assert.equal(router.routes.post.has('/rebuild/promotion/authorize'), true);
+    assert.equal(router.routes.post.has('/rebuild/promotion/execute'), true);
 });
 
 test('capabilities and candidate lifecycle routes report no promotion and support report, pin, and cleanup', async () => {
@@ -213,6 +215,7 @@ test('capabilities and candidate lifecycle routes report no promotion and suppor
     assert.equal(capabilities.payload.capabilities.c0_5a.candidateCleanup, true);
     assert.equal(capabilities.payload.capabilities.c0_75_1.candidateQualification, true);
     assert.equal(capabilities.payload.capabilities.c0_75_1.promotionAvailable, false);
+    assert.equal(capabilities.payload.capabilities.c0_75_2.promotionAvailable, true);
 
     const initResult = await invoke(
         router.routes.post.get('/rebuild/candidate/init'),

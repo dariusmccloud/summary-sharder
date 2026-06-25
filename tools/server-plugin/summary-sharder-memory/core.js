@@ -49,6 +49,15 @@ export const CAPABILITIES = Object.freeze({
         liveAuthorityMutation: false,
         readOnlyOnly: true,
     }),
+    c0_75_2: Object.freeze({
+        manualAuthorization: true,
+        atomicGenerationTransition: true,
+        globalTransitionLock: true,
+        fullGenerationMerge: true,
+        promotionAvailable: true,
+        automaticPromotion: false,
+        liveAuthorityMutation: true,
+    }),
     c0_5: false,
     c1: false,
     c2: false,
@@ -128,11 +137,23 @@ export function getStoragePaths(userRoot) {
     const dbPath = path.join(storageRoot, 'architectural-memory.db');
     const snapshotPath = path.join(storageRoot, 'architectural-memory.snapshot.db');
     const statePath = path.join(storageRoot, 'architectural-memory.state.json');
+    const generationsRoot = path.join(storageRoot, 'generations');
+    const promotionsRoot = path.join(storageRoot, 'promotions');
+    const promotionAuthorizationsRoot = path.join(promotionsRoot, 'authorizations');
+    const promotionJournalPath = path.join(promotionsRoot, 'promotion-journal.jsonl');
+    const locksRoot = path.join(storageRoot, 'locks');
+    const authorityTransitionLockPath = path.join(locksRoot, 'authority-transition.lock');
     return {
         storageRoot,
         dbPath,
         snapshotPath,
         statePath,
+        generationsRoot,
+        promotionsRoot,
+        promotionAuthorizationsRoot,
+        promotionJournalPath,
+        locksRoot,
+        authorityTransitionLockPath,
     };
 }
 
@@ -151,34 +172,82 @@ export function quarantinePath(filePath, reason = 'invalid') {
     return `${filePath}.quarantine.${reason}.${stamp}`;
 }
 
-function writeOperationalStateMarker(paths, adapter, now = Date.now()) {
-    let existing = null;
-    if (fs.existsSync(paths.statePath)) {
-        try {
-            existing = JSON.parse(fs.readFileSync(paths.statePath, 'utf8'));
-        } catch {
-            existing = null;
-        }
+export function readOperationalStateMarker(paths) {
+    if (!fs.existsSync(paths.statePath)) {
+        return null;
     }
+    try {
+        return JSON.parse(fs.readFileSync(paths.statePath, 'utf8'));
+    } catch {
+        return null;
+    }
+}
 
-    const adoptedAt = Number.isFinite(Number(existing?.adoptedAt))
-        ? Number(existing.adoptedAt)
-        : nowTimestamp(now);
+function buildOperationalStateMarker(existing, descriptor = {}, now = Date.now()) {
+    const adoptedAt = Number.isFinite(Number(descriptor?.adoptedAt))
+        ? Number(descriptor.adoptedAt)
+        : Number.isFinite(Number(existing?.adoptedAt))
+            ? Number(existing.adoptedAt)
+            : nowTimestamp(now);
     const marker = {
+        schemaVersion: Number.isFinite(Number(descriptor?.schemaVersion))
+            ? Number(descriptor.schemaVersion)
+            : Number.isFinite(Number(existing?.schemaVersion))
+                ? Number(existing.schemaVersion)
+                : SCHEMA_VERSION,
+        serviceVersion: String(descriptor?.serviceVersion || existing?.serviceVersion || SERVICE_VERSION),
+        runtimeAdapter: String(descriptor?.runtimeAdapter || existing?.runtimeAdapter || ''),
+        journalMode: String(descriptor?.journalMode || existing?.journalMode || JOURNAL_MODE),
+        adoptedAt,
+    };
+    if (descriptor?.liveAuthority !== undefined) {
+        marker.liveAuthority = cloneJson(descriptor.liveAuthority);
+    } else if (existing?.liveAuthority !== undefined) {
+        marker.liveAuthority = cloneJson(existing.liveAuthority);
+    }
+    if (descriptor?.promotionJournal !== undefined) {
+        marker.promotionJournal = cloneJson(descriptor.promotionJournal);
+    } else if (existing?.promotionJournal !== undefined) {
+        marker.promotionJournal = cloneJson(existing.promotionJournal);
+    }
+    return marker;
+}
+
+export function writeOperationalStateMarkerDescriptor(paths, descriptor = {}, now = Date.now()) {
+    ensureStorageRoot(paths.storageRoot);
+    const existing = readOperationalStateMarker(paths);
+    const marker = buildOperationalStateMarker(existing, descriptor, now);
+    if (existing && stableStringify(existing) === stableStringify(marker)) {
+        return marker;
+    }
+    atomicWriteFile(paths.statePath, JSON.stringify(marker, null, 2));
+    return marker;
+}
+
+function writeOperationalStateMarker(paths, adapter, now = Date.now()) {
+    return writeOperationalStateMarkerDescriptor(paths, {
         schemaVersion: SCHEMA_VERSION,
         serviceVersion: SERVICE_VERSION,
         runtimeAdapter: adapter.runtime,
         journalMode: JOURNAL_MODE,
-        adoptedAt,
-    };
-    if (existing && stableStringify(existing) === stableStringify(marker)) {
-        return;
-    }
-    atomicWriteFile(paths.statePath, JSON.stringify(marker, null, 2));
+    }, now);
 }
 
 function hasOperationalStateMarker(paths) {
     return fs.existsSync(paths.statePath);
+}
+
+export function resolveOperationalDbPath(paths, stateMarker = readOperationalStateMarker(paths)) {
+    const relativePath = String(stateMarker?.liveAuthority?.dbRelativePath || '').trim();
+    if (!relativePath) {
+        return paths.dbPath;
+    }
+    const resolved = path.resolve(paths.storageRoot, relativePath);
+    const storageRoot = path.resolve(paths.storageRoot);
+    if (!resolved.startsWith(storageRoot)) {
+        throw createError(500, 'Resolved live DB path escaped storage root', 'ARCH_LIVE_DB_PATH_INVALID');
+    }
+    return resolved;
 }
 
 export function createAdapter(dbPath) {
@@ -264,7 +333,7 @@ function openSnapshotForVerification(snapshotPath) {
     }
 }
 
-function restoreFromSnapshot(paths) {
+function restoreFromSnapshot(paths, targetDbPath = resolveOperationalDbPath(paths)) {
     const verification = openSnapshotForVerification(paths.snapshotPath);
     if (!verification.ok) {
         if (fs.existsSync(paths.snapshotPath)) {
@@ -273,37 +342,40 @@ function restoreFromSnapshot(paths) {
         throw createError(503, 'Operational database requires rebuild; no verified snapshot is available.', 'ARCH_REBUILD_REQUIRED');
     }
 
-    if (fs.existsSync(paths.dbPath)) {
-        fs.renameSync(paths.dbPath, quarantinePath(paths.dbPath, 'corrupt'));
+    fs.mkdirSync(path.dirname(targetDbPath), { recursive: true });
+    if (fs.existsSync(targetDbPath)) {
+        fs.renameSync(targetDbPath, quarantinePath(targetDbPath, 'corrupt'));
     }
-    if (fs.existsSync(`${paths.dbPath}-wal`)) {
-        fs.renameSync(`${paths.dbPath}-wal`, quarantinePath(`${paths.dbPath}-wal`, 'wal'));
+    if (fs.existsSync(`${targetDbPath}-wal`)) {
+        fs.renameSync(`${targetDbPath}-wal`, quarantinePath(`${targetDbPath}-wal`, 'wal'));
     }
-    if (fs.existsSync(`${paths.dbPath}-shm`)) {
-        fs.renameSync(`${paths.dbPath}-shm`, quarantinePath(`${paths.dbPath}-shm`, 'shm'));
+    if (fs.existsSync(`${targetDbPath}-shm`)) {
+        fs.renameSync(`${targetDbPath}-shm`, quarantinePath(`${targetDbPath}-shm`, 'shm'));
     }
-    fs.copyFileSync(paths.snapshotPath, paths.dbPath);
+    fs.copyFileSync(paths.snapshotPath, targetDbPath);
 }
 
 export function openOperationalDatabase(paths, options = {}) {
     ensureStorageRoot(paths.storageRoot);
+    const activeDbPath = resolveOperationalDbPath(paths);
+    fs.mkdirSync(path.dirname(activeDbPath), { recursive: true });
 
-    if (!fs.existsSync(paths.dbPath)) {
+    if (!fs.existsSync(activeDbPath)) {
         if (fs.existsSync(paths.snapshotPath)) {
-            restoreFromSnapshot(paths);
+            restoreFromSnapshot(paths, activeDbPath);
         } else if (hasOperationalStateMarker(paths)) {
             throw createError(503, 'Operational database requires rebuild; both primary and snapshot copies are unavailable.', 'ARCH_REBUILD_REQUIRED');
         }
     }
 
-    let adapter = createAdapter(paths.dbPath);
+    let adapter = createAdapter(activeDbPath);
     try {
         initializeDatabase(adapter, options.now);
         writeOperationalStateMarker(paths, adapter, options.now);
         if (!adapter.verifyIntegrity()) {
             adapter.close();
-            restoreFromSnapshot(paths);
-            adapter = createAdapter(paths.dbPath);
+            restoreFromSnapshot(paths, activeDbPath);
+            adapter = createAdapter(activeDbPath);
             initializeDatabase(adapter, options.now);
             writeOperationalStateMarker(paths, adapter, options.now);
             if (!adapter.verifyIntegrity()) {
@@ -317,11 +389,11 @@ export function openOperationalDatabase(paths, options = {}) {
         } catch {
             // ignore close failures during error unwind
         }
-        const hasDbFile = fs.existsSync(paths.dbPath);
+        const hasDbFile = fs.existsSync(activeDbPath);
         const canAttemptRestore = hasDbFile && String(error?.code || '').includes('SQLITE');
         if (canAttemptRestore) {
-            restoreFromSnapshot(paths);
-            const restored = createAdapter(paths.dbPath);
+            restoreFromSnapshot(paths, activeDbPath);
+            const restored = createAdapter(activeDbPath);
             try {
                 initializeDatabase(restored, options.now);
                 writeOperationalStateMarker(paths, restored, options.now);
