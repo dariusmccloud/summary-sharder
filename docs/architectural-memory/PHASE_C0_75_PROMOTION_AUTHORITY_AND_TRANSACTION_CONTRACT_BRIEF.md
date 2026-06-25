@@ -2,33 +2,33 @@
 
 ## Status
 
-STATUS: ACTIVE C0.75-1 IMPLEMENTATION CONTRACT
+STATUS: IMPLEMENTED AND VERIFIED
 
 `C0.5C` is complete.
 
 `C0.75-0` is closed as a documentation boundary.
 
-`C0.75-1` is the first implementation slice.
+`C0.75-1`, `C0.75-2`, and `C0.75-3` are complete at their approved boundaries.
 
-It is strictly read only.
+`C0.75` is closed.
 
-Its purpose is to determine whether one exact candidate is eligible to replace one exact live authority generation, and to bind the evidence required for later human authorization.
+This brief remains the governing record for the structural promotion contract that was implemented and verified.
 
-This phase does not authorize:
+The authoritative closeout records are:
 
-- authorization execution
-- candidate promotion
+- `docs/architectural-memory/evidence/C0_75_3_PROMOTION_AND_RECOVERY_HOST_PROOF.md`
+- `docs/architectural-memory/C0_75_COMPLETION_REPORT.md`
+
+The original `C0.75-1` read-only boundary described here was implemented first, then extended by the separately reviewed `C0.75-2` and `C0.75-3` slices without changing jurisdiction.
+
+At closeout, `C0.75` still does not authorize:
+
+- interpretive publication
 - automatic promotion
-- startup adoption from candidate state
+- startup candidate adoption
 - rebuild-route promotion
-- candidate mutation
-- live authority mutation
-- rollback execution
-- pointer movement
-- journal writes
-- cross-host promotion proof
-
-The next implementation slice after this document is expected to be `C0.75-2`.
+- candidate-to-live fallback reads
+- model-authorized promotion
 
 ## Interpretive Memory Exclusion
 
