@@ -1,29 +1,34 @@
-# Phase C0.75-0: Promotion Authority and Transaction Contract Brief
+# Phase C0.75-1: Candidate Qualification and Bound Promotion Evidence Brief
 
 ## Status
 
-STATUS: ACTIVE C0.75-0 IMPLEMENTATION CONTRACT
+STATUS: ACTIVE C0.75-1 IMPLEMENTATION CONTRACT
 
 `C0.5C` is complete.
 
-Promotion is the next legitimate phase boundary, but it is not yet an implementation slice.
+`C0.75-0` is closed as a documentation boundary.
 
-`C0.75-0` is documentation only.
+`C0.75-1` is the first implementation slice.
 
-Its purpose is to define the governing promotion contract before any live-authority write path exists.
+It is strictly read only.
+
+Its purpose is to determine whether one exact candidate is eligible to replace one exact live authority generation, and to bind the evidence required for later human authorization.
 
 This phase does not authorize:
 
-- candidate promotion implementation
+- authorization execution
+- candidate promotion
 - automatic promotion
 - startup adoption from candidate state
 - rebuild-route promotion
-- corpus mutation
+- candidate mutation
 - live authority mutation
 - rollback execution
+- pointer movement
+- journal writes
 - cross-host promotion proof
 
-The next implementation slice after this document is expected to be `C0.75-1`.
+The next implementation slice after this document is expected to be `C0.75-2`.
 
 ## Interpretive Memory Exclusion
 
@@ -52,9 +57,9 @@ Promotion is a separate authority transition with different failure modes:
 - startup ambiguity about which authority generation is live
 - accidental exposure of promotion through ordinary rebuild routes
 
-The next phase must therefore answer:
+`C0.75-1` must therefore answer:
 
-> How can a reviewed candidate become live authority only through an explicit, reversible, crash-safe, evidence-bound transaction?
+> Is this exact candidate eligible to replace this exact live generation, and what evidence would a human need before authorizing it?
 
 ## Governing Principles
 
@@ -90,9 +95,9 @@ qualify candidate
 -> release lock
 ```
 
-`C0.75-0` does not implement that chain.
+`C0.75-1` does not implement that chain.
 
-It defines the contract that later slices must follow.
+It only qualifies inputs and binds review evidence that later slices must honor exactly.
 
 ## Internal Phase Decomposition
 
@@ -104,7 +109,7 @@ Documentation only.
 
 ### `C0.75-1`
 
-Candidate qualification and live-versus-candidate diff.
+Candidate qualification and bound promotion evidence.
 
 Read only.
 
@@ -147,6 +152,39 @@ All reconstruction-era safety constraints remain in force unless explicitly supe
 18. Contradictory hashes, generations, or journal states fail closed.
 19. Promotion must remain manual for the MVP.
 20. Automatic startup promotion remains out of scope.
+
+## C0.75-1 Bounded Question
+
+`C0.75-1` exists to answer one machine-checkable question:
+
+```text
+candidate identity + candidate hash
+vs
+live identity + expected live generation + expected live hash
+```
+
+If the answer is "eligible", the phase must still stop before authorization or mutation.
+
+If the answer is "ineligible", the phase must explain every blocking reason explicitly.
+
+## C0.75-1 Read-Only Boundary
+
+`C0.75-1` must not create any capability that can change authority state.
+
+Specifically forbidden:
+
+- no authorization endpoint
+- no promote endpoint
+- no promote helper
+- no pointer movement
+- no live-state marker movement
+- no candidate-to-live fallback
+- no rollback artifact creation
+- no transaction-journal write
+- no startup adoption path
+- no hidden flag that converts qualification into promotion
+
+Capability reporting must continue to show promotion unavailable.
 
 ## Artifact Roles
 
@@ -214,7 +252,7 @@ Rules:
 4. Authorization must be invalidated by any candidate or live drift.
 5. Authorization must be revalidated immediately before transition.
 
-Immediately before transition, the system must prove:
+Immediately before transition, a later promotion slice must prove:
 
 ```text
 current candidate hash = authorized candidate hash
@@ -250,6 +288,72 @@ promotion capability explicitly enabled
 The contract must explicitly define whether any review-only noise classes remain non-blocking.
 
 Until that definition exists, uncertain review-only classes should be treated as blockers for implementation planning.
+
+`C0.75-1` may calculate eligibility.
+
+It must not consume eligibility as authority to mutate any artifact.
+
+## Qualification Evidence Contract
+
+`C0.75-1` must emit a bound evidence package for one exact candidate and one exact live generation.
+
+Minimum required outputs:
+
+- candidate identity
+- candidate canonical hash
+- candidate schema version
+- candidate validity status
+- live generation identity
+- expected live hash
+- candidate-versus-live structural diff
+- source coverage summary
+- exclusion summary
+- unresolved conflict summary
+- irrecoverable-gap disclosure
+- rollback-generation plan
+- promotion eligibility verdict
+- explicit ineligibility reasons
+- bound evidence digest
+
+The evidence package must be stable enough that later authorization can bind to it exactly rather than to a narrative summary.
+
+## Candidate-versus-Live Diff Contract
+
+The qualification slice must compare the candidate against the current live authority generation mechanically.
+
+At minimum, the diff must identify:
+
+- records added
+- records removed
+- records changed
+- lifecycle changes
+- provenance changes
+- unresolved blockers that would persist if promoted
+
+The diff must be exact for the governed structural authority surface.
+
+It must not depend on model interpretation.
+
+## Irrecoverable-Gap Disclosure
+
+Qualification must disclose whether any known source gaps, exclusions, malformed inputs, or unresolved structural blockers prevent the candidate from being treated as a complete replacement for the current live generation.
+
+This disclosure is part of promotion evidence.
+
+Absence of disclosure must not be interpreted as absence of risk.
+
+## Rollback-Generation Planning Contract
+
+`C0.75-1` may describe the rollback plan that a later slice must satisfy.
+
+It must not create rollback artifacts.
+
+At minimum, the plan must identify:
+
+- expected live generation to preserve
+- expected rollback generation source
+- rollback verification prerequisites
+- reasons the later promotion slice must refuse if rollback preparation cannot be completed exactly
 
 ## Live Authority Transition Model
 
@@ -374,9 +478,9 @@ Until a later slice explicitly implements promotion, the system must expose:
 
 Capability reporting must continue to show promotion unavailable.
 
-## `C0.75-1` Entry Contract
+## `C0.75-1` Implementation Contract
 
-The first implementation slice after this document must remain bounded to qualification and review evidence.
+This implementation slice is bounded to qualification and review evidence only.
 
 `C0.75-1` may implement:
 
@@ -385,37 +489,67 @@ The first implementation slice after this document must remain bounded to qualif
 - authorization payload preparation
 - machine-readable promotion blockers
 - review-ready evidence digests
+- promotion eligibility verdict calculation
+- irrecoverable-gap disclosure
+- rollback-generation planning evidence
 
 `C0.75-1` must not implement:
 
 - a promotion route
 - pointer transition
 - rollback execution
+- rollback artifact creation
 - startup recovery mutation
 - automatic authorization
 - live artifact mutation
+- candidate mutation
+- transaction-journal writes
+- live-read fallback to candidate state
+- promote capability exposure
 
-## Required Outputs of `C0.75-0`
+## Qualification Result Semantics
 
-This documentation boundary is complete only if it leaves behind:
+The qualification result must separate:
 
-1. a promotion authorization contract
-2. a transaction-state contract
-3. a machine-exact eligibility contract
-4. a startup recovery matrix
-5. a no-in-place-overwrite live-transition contract
-6. a no-promotion-surface rule for all ordinary rebuild paths
-7. a bounded decomposition for `C0.75-1`, `C0.75-2`, and `C0.75-3`
+- evidence collection success
+- eligibility result
+- mutation authorization
+
+For example, `C0.75-1` may complete successfully while still concluding:
+
+```text
+qualification completed
+candidate ineligible
+promotion unauthorized
+```
+
+Those states must not be collapsed into one generic success flag.
+
+## Required Outputs of `C0.75-1`
+
+This implementation boundary is complete only if it leaves behind:
+
+1. candidate identity plus final verified candidate hash
+2. live generation identity plus expected live hash
+3. candidate-versus-live structural diff
+4. source coverage and exclusion evidence
+5. validation, conflict, and irrecoverable-gap disclosure
+6. rollback-generation plan
+7. promotion eligibility verdict
+8. explicit ineligibility reasons when not eligible
+9. bound evidence digest for later manual authorization
+10. continued proof that promotion remains unavailable
 
 ## Stop-Before-Code Condition
 
-Do not begin promotion implementation until this contract is reviewed and accepted as the governing `C0.75-0` boundary.
+Do not begin `C0.75-2` or any mutation-capable promotion slice until this contract is reviewed and accepted as the governing `C0.75-1` boundary.
 
-The first coding slice must stop at:
+This coding slice must stop at:
 
 ```text
 candidate qualification
 -> live-versus-candidate evidence
 -> authorization payload preparation
+-> promotion eligibility decision
 -> stop before promotion
 ```
