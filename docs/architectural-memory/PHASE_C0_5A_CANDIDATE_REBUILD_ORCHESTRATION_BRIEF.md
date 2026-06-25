@@ -64,7 +64,7 @@ promotion unavailable
 
 ## Historical / Current Document Disposition
 
-- [PHASE_C0_C0_5_OPERATIONAL_DB_AND_REBUILD_BRIEF.md](C:\Users\chris\OneDrive\Documents\Personal\Projects\summary-sharder\docs\architectural-memory\PHASE_C0_C0_5_OPERATIONAL_DB_AND_REBUILD_BRIEF.md)
+- [PHASE_C0_5_OPERATIONAL_DB_AND_REBUILD_BRIEF.md](C:\Users\chris\OneDrive\Documents\Personal\Projects\summary-sharder\docs\architectural-memory\PHASE_C0_5_OPERATIONAL_DB_AND_REBUILD_BRIEF.md)
   - historical substrate and recovery rationale
   - completed `C0` evidence
   - governing negative findings from `1B0`

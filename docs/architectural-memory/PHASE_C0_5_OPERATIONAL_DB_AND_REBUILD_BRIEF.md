@@ -1482,7 +1482,7 @@ These checks belong immediately after `C0.5A` implementation.
 The bounded evidence commit should contain only:
 
 - `docs/architectural-memory/COMMIT_1B0_HOST_SUBSTRATE_FEASIBILITY_BRIEF.md`
-- `docs/architectural-memory/PHASE_C0_C0_5_OPERATIONAL_DB_AND_REBUILD_BRIEF.md`
+- `docs/architectural-memory/PHASE_C0_5_OPERATIONAL_DB_AND_REBUILD_BRIEF.md`
 - `tools/server-plugin/install-summary-sharder-memory.ps1`
 - `tools/server-plugin/summary-sharder-memory/index.js`
 - `tools/server-plugin/summary-sharder-memory/core.js`
