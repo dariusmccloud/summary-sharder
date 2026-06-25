@@ -2,7 +2,7 @@
 
 ## Status
 
-STATUS: ACTIVE C0.6-1 IMPLEMENTATION CONTRACT
+STATUS: IMPLEMENTED AND VERIFIED
 
 `C0.75` is complete and closed.
 
@@ -12,11 +12,24 @@ STATUS: ACTIVE C0.6-1 IMPLEMENTATION CONTRACT
 - `docs/architectural-memory/fixtures/C0_6_INTERPRETIVE_SOVEREIGNTY_GOLD_FIXTURE.md`
 - `docs/architectural-memory/evidence/C0_6_INTERPRETIVE_SHARD_INSERTION_REPORT.md`
 
-`C0.6-1` is the first implementation slice.
+`C0.6-1` is implemented and host-verified.
 
-It is schema and policy only.
+Its closeout record is preserved in:
 
-Stop before code that performs synthesis, approval UX, DNM publication, or continuity mutation until this brief is implemented and reviewed at its bounded contract.
+- `docs/architectural-memory/C0_6_1_COMPLETION_REPORT.md`
+
+It remained schema and policy only.
+
+Implemented and verified boundary:
+
+- durable interpretive candidate ledger and projection
+- deterministic risk classification
+- deterministic validation-policy routing
+- deterministic reviewer resolution with explicit blocked-state handling
+- no continuity publication
+- no structural-authority mutation
+
+This document remains the governing contract record for the implemented `C0.6-1` boundary.
 
 ## Governing Finding
 
