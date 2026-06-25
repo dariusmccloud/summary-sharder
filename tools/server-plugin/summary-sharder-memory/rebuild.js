@@ -25,6 +25,7 @@ import {
     buildDeterministicTableDump,
     compareCanonicalText,
     hashDeterministicTableDump,
+    normalizeCanonicalValue,
     sha256Text,
     stableStringify,
     summarizeCompactRebuildReport,
@@ -44,6 +45,8 @@ import {
 import {
     candidateAuditSchemaStatements,
     JOURNAL_MODE,
+    SCHEMA_VERSION,
+    SERVICE_VERSION,
 } from './schema.js';
 import {
     atomicWriteFile,
@@ -78,6 +81,16 @@ const REBUILD_TABLE_SPECS = Object.freeze([
     { name: 'reconstruction_supersession_components', ignoredColumns: ['reconstruction_run_id'] },
 ]);
 
+const AUTHORITY_SURFACE_TABLE_SPECS = Object.freeze([
+    { name: 'memory_scopes', ignoredColumns: ['created_at', 'updated_at'], keyColumns: ['memory_scope_id'], scopeColumn: 'memory_scope_id' },
+    { name: 'chat_bindings', ignoredColumns: ['bound_at', 'updated_at'], keyColumns: ['chat_instance_id'], scopeColumn: 'memory_scope_id' },
+    { name: 'decision_records', ignoredColumns: ['created_at', 'updated_at'], keyColumns: ['memory_scope_id', 'decision_id', 'record_version'], scopeColumn: 'memory_scope_id' },
+    { name: 'current_decisions', ignoredColumns: ['updated_at'], keyColumns: ['memory_scope_id', 'decision_id'], scopeColumn: 'memory_scope_id' },
+    { name: 'decision_stubs', ignoredColumns: ['updated_at'], keyColumns: ['memory_scope_id', 'decision_id'], scopeColumn: 'memory_scope_id' },
+    { name: 'movement_records', ignoredColumns: ['updated_at'], keyColumns: ['memory_scope_id', 'movement_id'], scopeColumn: 'memory_scope_id' },
+    { name: 'reference_index_snapshots', ignoredColumns: ['updated_at'], keyColumns: ['memory_scope_id'], scopeColumn: 'memory_scope_id' },
+]);
+
 const TERMINAL_REPORT_STATUS = new Set([
     'success',
     'failed',
@@ -87,6 +100,8 @@ const TERMINAL_REPORT_STATUS = new Set([
 
 export const CANONICAL_CANDIDATE_HASH_VERSION = 1;
 export const CANONICAL_CANDIDATE_HASH_BASIS = 'persisted_candidate_db';
+export const AUTHORITY_SURFACE_HASH_VERSION = 1;
+export const AUTHORITY_SURFACE_HASH_BASIS = 'scope_authority_surface';
 
 function isTerminalCandidateStatus(status) {
     const normalized = String(status || '').trim();
@@ -151,6 +166,514 @@ function getLiveAuthorityFingerprints(userRoot) {
 
 function equalFingerprints(left, right) {
     return stableStringify(left) === stableStringify(right);
+}
+
+function readScopeRegistry(adapter, memoryScopeId) {
+    return adapter.get('SELECT * FROM memory_scopes WHERE memory_scope_id = ?', [memoryScopeId]) || null;
+}
+
+function readScopeRows(adapter, spec, memoryScopeId) {
+    const parameters = spec.scopeColumn ? [memoryScopeId] : [];
+    const sql = spec.scopeColumn
+        ? `SELECT * FROM ${spec.name} WHERE ${spec.scopeColumn} = ?`
+        : `SELECT * FROM ${spec.name}`;
+    return adapter.all(sql, parameters);
+}
+
+function buildScopeAuthoritySurfaceState(adapter, memoryScopeId) {
+    const comparableDump = buildDeterministicTableDump(AUTHORITY_SURFACE_TABLE_SPECS, (tableName) => {
+        const spec = AUTHORITY_SURFACE_TABLE_SPECS.find((entry) => entry.name === tableName);
+        return readScopeRows(adapter, spec, memoryScopeId);
+    });
+    const canonicalBytes = stableStringify(comparableDump);
+    const tableRowCounts = Object.fromEntries(
+        AUTHORITY_SURFACE_TABLE_SPECS.map((spec) => [spec.name, Array.isArray(comparableDump[spec.name]) ? comparableDump[spec.name].length : 0]),
+    );
+    const tableHashes = Object.fromEntries(
+        AUTHORITY_SURFACE_TABLE_SPECS.map((spec) => [spec.name, sha256Text(stableStringify(comparableDump[spec.name] || []))]),
+    );
+    const scopeRow = readScopeRegistry(adapter, memoryScopeId);
+    return {
+        hashVersion: AUTHORITY_SURFACE_HASH_VERSION,
+        basis: AUTHORITY_SURFACE_HASH_BASIS,
+        comparableDump,
+        canonicalBytes,
+        canonicalByteLength: Buffer.byteLength(canonicalBytes, 'utf8'),
+        canonicalAuthorityHash: hashDeterministicTableDump(comparableDump),
+        tableRowCounts,
+        tableHashes,
+        scopePresent: Boolean(scopeRow),
+        scopeVersion: scopeRow ? Number(scopeRow.scope_version || 0) : 0,
+        currentScopeRun: scopeRow ? Number(scopeRow.current_scope_run || 0) : 0,
+    };
+}
+
+function buildEmptyScopeAuthoritySurfaceState() {
+    const comparableDump = Object.fromEntries(
+        AUTHORITY_SURFACE_TABLE_SPECS.map((spec) => [spec.name, []]),
+    );
+    const canonicalBytes = stableStringify(comparableDump);
+    const tableRowCounts = Object.fromEntries(
+        AUTHORITY_SURFACE_TABLE_SPECS.map((spec) => [spec.name, 0]),
+    );
+    const tableHashes = Object.fromEntries(
+        AUTHORITY_SURFACE_TABLE_SPECS.map((spec) => [spec.name, sha256Text('[]')]),
+    );
+    return {
+        hashVersion: AUTHORITY_SURFACE_HASH_VERSION,
+        basis: AUTHORITY_SURFACE_HASH_BASIS,
+        comparableDump,
+        canonicalBytes,
+        canonicalByteLength: Buffer.byteLength(canonicalBytes, 'utf8'),
+        canonicalAuthorityHash: hashDeterministicTableDump(comparableDump),
+        tableRowCounts,
+        tableHashes,
+        scopePresent: false,
+        scopeVersion: 0,
+        currentScopeRun: 0,
+    };
+}
+
+function buildRowKey(row, keyColumns) {
+    return stableStringify(Object.fromEntries(keyColumns.map((column) => [column, normalizeCanonicalValue(row?.[column])])));
+}
+
+function buildChangedFields(leftRow, rightRow) {
+    const keys = new Set([...Object.keys(leftRow || {}), ...Object.keys(rightRow || {})]);
+    return [...keys]
+        .filter((key) => stableStringify(leftRow?.[key]) !== stableStringify(rightRow?.[key]))
+        .sort(compareCanonicalText);
+}
+
+function summarizeAuthorityDiff(candidateState, liveState) {
+    const perTable = {};
+    let addedRecordCount = 0;
+    let removedRecordCount = 0;
+    let changedRecordCount = 0;
+    let lifecycleChangeCount = 0;
+    let provenanceChangeCount = 0;
+
+    for (const spec of AUTHORITY_SURFACE_TABLE_SPECS) {
+        const candidateRows = Array.isArray(candidateState?.comparableDump?.[spec.name]) ? candidateState.comparableDump[spec.name] : [];
+        const liveRows = Array.isArray(liveState?.comparableDump?.[spec.name]) ? liveState.comparableDump[spec.name] : [];
+        const candidateByKey = new Map(candidateRows.map((row) => [buildRowKey(row, spec.keyColumns), row]));
+        const liveByKey = new Map(liveRows.map((row) => [buildRowKey(row, spec.keyColumns), row]));
+        const allKeys = [...new Set([...candidateByKey.keys(), ...liveByKey.keys()])].sort(compareCanonicalText);
+        const added = [];
+        const removed = [];
+        const changed = [];
+
+        for (const key of allKeys) {
+            const candidateRow = candidateByKey.get(key);
+            const liveRow = liveByKey.get(key);
+            if (candidateRow && !liveRow) {
+                added.push({ key, row: candidateRow });
+                continue;
+            }
+            if (!candidateRow && liveRow) {
+                removed.push({ key, row: liveRow });
+                continue;
+            }
+            const changedFields = buildChangedFields(candidateRow, liveRow);
+            if (changedFields.length === 0) {
+                continue;
+            }
+            changed.push({
+                key,
+                changedFields,
+                candidateRow,
+                liveRow,
+            });
+            if (spec.name === 'decision_records' && changedFields.some((field) => ['status', 'prior_version'].includes(field))) {
+                lifecycleChangeCount += 1;
+            }
+            if (spec.name === 'current_decisions' && changedFields.includes('current_record_version')) {
+                lifecycleChangeCount += 1;
+            }
+            if (spec.name === 'decision_records' && changedFields.some((field) => ['provenance_json', 'source_chat_instance_id', 'last_updating_chat_instance_id'].includes(field))) {
+                provenanceChangeCount += 1;
+            }
+        }
+
+        addedRecordCount += added.length;
+        removedRecordCount += removed.length;
+        changedRecordCount += changed.length;
+        perTable[spec.name] = {
+            added,
+            removed,
+            changed,
+            unchangedCount: Math.max(candidateRows.length, liveRows.length) - added.length - removed.length - changed.length,
+        };
+    }
+
+    return {
+        equal: addedRecordCount === 0 && removedRecordCount === 0 && changedRecordCount === 0,
+        addedRecordCount,
+        removedRecordCount,
+        changedRecordCount,
+        lifecycleChangeCount,
+        provenanceChangeCount,
+        perTable,
+    };
+}
+
+function buildExclusionSummary(exclusions = []) {
+    const byReason = {};
+    for (const entry of exclusions) {
+        const reason = String(entry?.reason || 'unknown');
+        byReason[reason] = Number(byReason[reason] || 0) + 1;
+    }
+    return {
+        count: Array.isArray(exclusions) ? exclusions.length : 0,
+        byReason,
+    };
+}
+
+function classifyIrrecoverableGap(entry) {
+    const reason = String(entry?.reason || '').trim();
+    const irrecoverableReasons = new Set([
+        'artifact_message_missing_at_compile',
+        'decision_parse_invalid_at_compile',
+    ]);
+    return {
+        ...entry,
+        recoverability: irrecoverableReasons.has(reason) ? 'irrecoverable' : 'review_required',
+    };
+}
+
+function buildIrrecoverableGapDisclosure(report) {
+    const unresolved = Array.isArray(report?.unresolvedEvidence) ? report.unresolvedEvidence.map(classifyIrrecoverableGap) : [];
+    const irrecoverable = unresolved.filter((entry) => entry.recoverability === 'irrecoverable');
+    return {
+        hasAnyGap: unresolved.length > 0,
+        hasIrrecoverableGap: irrecoverable.length > 0,
+        totalGapCount: unresolved.length,
+        irrecoverableGapCount: irrecoverable.length,
+        entries: unresolved,
+    };
+}
+
+function buildRollbackGenerationPlan(liveState) {
+    const liveGeneration = Number(liveState?.currentScopeRun || 0);
+    return {
+        expectedLiveGeneration: liveGeneration,
+        expectedLiveGenerationIdentity: liveState?.generationIdentity || null,
+        expectedLiveHash: liveState?.canonicalAuthorityHash || null,
+        rollbackSource: liveState?.scopePresent ? 'preserve_current_live_generation' : 'no_live_generation_to_preserve',
+        verificationPrerequisites: [
+            'current live generation hash still matches expected live hash',
+            'current live generation identity still matches expected live generation',
+            'rollback artifact path is writable',
+            'rollback artifact verification succeeds before pointer transition',
+        ],
+        refusalReasonsIfUnavailable: [
+            'expected live generation drifted before promotion',
+            'expected live hash drifted before promotion',
+            'rollback artifact creation or verification failed',
+        ],
+    };
+}
+
+function buildPromotionQualificationDigest(payload) {
+    return sha256Text(stableStringify(payload));
+}
+
+function readLiveAuthorityStateReadOnly(userRoot, memoryScopeId) {
+    const paths = getStoragePaths(userRoot);
+    const stateMarkerPresent = fs.existsSync(paths.statePath);
+    const snapshotPresent = fs.existsSync(paths.snapshotPath);
+    if (!fs.existsSync(paths.dbPath)) {
+        const emptyState = buildEmptyScopeAuthoritySurfaceState();
+        return {
+            ok: true,
+            dbPresent: false,
+            stateMarkerPresent,
+            snapshotPresent,
+            schemaVersion: SCHEMA_VERSION,
+            serviceVersion: SERVICE_VERSION,
+            runtimeAdapter: null,
+            journalMode: null,
+            manifestMissing: true,
+            ...emptyState,
+            generationIdentity: `live:${memoryScopeId}:run:0`,
+            issues: [],
+        };
+    }
+
+    const adapter = createAdapter(paths.dbPath);
+    try {
+        const integrityOk = adapter.verifyIntegrity();
+        if (!integrityOk) {
+            return {
+                ok: false,
+                dbPresent: true,
+                stateMarkerPresent,
+                snapshotPresent,
+                issues: ['live_integrity_failed'],
+            };
+        }
+        const manifestRow = adapter.get('SELECT * FROM manifest WHERE id = 1');
+        if (!manifestRow) {
+            return {
+                ok: false,
+                dbPresent: true,
+                stateMarkerPresent,
+                snapshotPresent,
+                issues: ['live_manifest_missing'],
+            };
+        }
+        if (Number(manifestRow.schema_version) !== SCHEMA_VERSION) {
+            return {
+                ok: false,
+                dbPresent: true,
+                stateMarkerPresent,
+                snapshotPresent,
+                schemaVersion: Number(manifestRow.schema_version),
+                serviceVersion: String(manifestRow.service_version || ''),
+                runtimeAdapter: String(manifestRow.runtime_adapter || ''),
+                journalMode: String(manifestRow.journal_mode || ''),
+                issues: ['live_schema_version_unsupported'],
+            };
+        }
+        const state = buildScopeAuthoritySurfaceState(adapter, memoryScopeId);
+        return {
+            ok: true,
+            dbPresent: true,
+            stateMarkerPresent,
+            snapshotPresent,
+            schemaVersion: Number(manifestRow.schema_version),
+            serviceVersion: String(manifestRow.service_version || ''),
+            runtimeAdapter: String(manifestRow.runtime_adapter || ''),
+            journalMode: String(manifestRow.journal_mode || ''),
+            manifestMissing: false,
+            ...state,
+            generationIdentity: `live:${memoryScopeId}:run:${Number(state.currentScopeRun || 0)}`,
+            issues: [],
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+function buildCandidateAuthorityIdentity(candidatePaths, report) {
+    if (!fs.existsSync(candidatePaths.candidateDbPath)) {
+        return {
+            reconstructionRunId: report.reconstructionRunId,
+            candidateArtifactId: report.candidateArtifactId,
+            candidateRelativePath: report.candidateRelativePath,
+            schemaVersion: report.schemaVersion,
+            protocolVersion: report.protocolVersion,
+            canonicalCandidateHash: report?.determinism?.canonicalCandidateHash || null,
+            canonicalCandidateHashFinal: report?.determinism?.canonicalHashFinal === true,
+            authoritySurfaceHash: null,
+            authoritySurfaceHashFinal: false,
+            hashVersion: AUTHORITY_SURFACE_HASH_VERSION,
+            basis: AUTHORITY_SURFACE_HASH_BASIS,
+            canonicalByteLength: null,
+            tableRowCounts: {},
+            tableHashes: {},
+            scopePresent: false,
+            scopeVersion: null,
+            currentScopeRun: null,
+            generationIdentity: null,
+            comparableDump: null,
+        };
+    }
+    const state = computeScopedAuthorityState(candidatePaths.candidateDbPath, report.memoryScopeId);
+    return {
+        reconstructionRunId: report.reconstructionRunId,
+        candidateArtifactId: report.candidateArtifactId,
+        candidateRelativePath: report.candidateRelativePath,
+        schemaVersion: report.schemaVersion,
+        protocolVersion: report.protocolVersion,
+        canonicalCandidateHash: report?.determinism?.canonicalCandidateHash || null,
+        canonicalCandidateHashFinal: report?.determinism?.canonicalHashFinal === true,
+        authoritySurfaceHash: state.canonicalAuthorityHash,
+        authoritySurfaceHashFinal: true,
+        hashVersion: state.hashVersion,
+        basis: state.basis,
+        canonicalByteLength: state.canonicalByteLength,
+        tableRowCounts: state.tableRowCounts,
+        tableHashes: state.tableHashes,
+        scopePresent: state.scopePresent,
+        scopeVersion: state.scopeVersion,
+        currentScopeRun: state.currentScopeRun,
+        generationIdentity: `candidate:${report.memoryScopeId}:run:${Number(state.currentScopeRun || 0)}`,
+        comparableDump: state.comparableDump,
+    };
+}
+
+function computeScopedAuthorityState(candidateDbPath, memoryScopeId) {
+    const adapter = createAdapter(candidateDbPath);
+    try {
+        return buildScopeAuthoritySurfaceState(adapter, memoryScopeId);
+    } finally {
+        adapter.close();
+    }
+}
+
+function buildPromotionQualification(userRoot, candidatePaths, report) {
+    const candidate = buildCandidateAuthorityIdentity(candidatePaths, report);
+    const live = readLiveAuthorityStateReadOnly(userRoot, report.memoryScopeId);
+    const liveComparableState = live.ok
+        ? {
+            canonicalAuthorityHash: live.canonicalAuthorityHash,
+            hashVersion: live.hashVersion,
+            basis: live.basis,
+            canonicalByteLength: live.canonicalByteLength,
+            tableRowCounts: live.tableRowCounts,
+            tableHashes: live.tableHashes,
+            scopePresent: live.scopePresent,
+            scopeVersion: live.scopeVersion,
+            currentScopeRun: live.currentScopeRun,
+            generationIdentity: live.generationIdentity,
+            comparableDump: live.comparableDump,
+            dbPresent: live.dbPresent,
+            stateMarkerPresent: live.stateMarkerPresent,
+            snapshotPresent: live.snapshotPresent,
+            schemaVersion: live.schemaVersion,
+            serviceVersion: live.serviceVersion,
+            runtimeAdapter: live.runtimeAdapter,
+            journalMode: live.journalMode,
+            issues: live.issues,
+        }
+        : {
+            canonicalAuthorityHash: null,
+            hashVersion: AUTHORITY_SURFACE_HASH_VERSION,
+            basis: AUTHORITY_SURFACE_HASH_BASIS,
+            canonicalByteLength: null,
+            tableRowCounts: {},
+            tableHashes: {},
+            scopePresent: false,
+            scopeVersion: null,
+            currentScopeRun: null,
+            generationIdentity: null,
+            comparableDump: null,
+            dbPresent: live.dbPresent,
+            stateMarkerPresent: live.stateMarkerPresent,
+            snapshotPresent: live.snapshotPresent,
+            schemaVersion: live.schemaVersion ?? null,
+            serviceVersion: live.serviceVersion ?? null,
+            runtimeAdapter: live.runtimeAdapter ?? null,
+            journalMode: live.journalMode ?? null,
+            issues: live.issues,
+        };
+
+    const structuralDiff = live.ok
+        ? summarizeAuthorityDiff(candidate, live)
+        : {
+            equal: false,
+            addedRecordCount: 0,
+            removedRecordCount: 0,
+            changedRecordCount: 0,
+            lifecycleChangeCount: 0,
+            provenanceChangeCount: 0,
+            perTable: {},
+        };
+    const sourceCoverage = {
+        inputSummary: report.inputSummary || {},
+        coverage: report.coverage || {},
+        exclusionSummary: buildExclusionSummary(report.exclusions || []),
+        unresolvedEvidenceCount: Array.isArray(report.unresolvedEvidence) ? report.unresolvedEvidence.length : 0,
+    };
+    const irrecoverableGapDisclosure = buildIrrecoverableGapDisclosure(report);
+    const rollbackGenerationPlan = buildRollbackGenerationPlan(liveComparableState);
+    const ineligibilityReasons = [];
+    if (report?.determinism?.canonicalHashFinal !== true || !candidate.canonicalCandidateHash) {
+        ineligibilityReasons.push({
+            code: 'CANDIDATE_HASH_NOT_FINAL',
+            message: 'Candidate canonical hash is not final and verified.',
+        });
+    }
+    if (report?.status !== 'success') {
+        ineligibilityReasons.push({
+            code: 'CANDIDATE_RUN_NOT_SUCCESSFUL',
+            message: `Candidate run status ${String(report?.status || 'unknown')} is not promotable.`,
+        });
+    }
+    if (report?.candidateValidity?.valid !== true) {
+        ineligibilityReasons.push({
+            code: 'CANDIDATE_INVALID',
+            message: 'Candidate validity is not clean.',
+            structuralBlockers: report?.candidateValidity?.structuralBlockers || [],
+        });
+    }
+    if (report?.liveAuthorityChanged === true) {
+        ineligibilityReasons.push({
+            code: 'LIVE_AUTHORITY_CHANGED_DURING_RUN',
+            message: 'Live authority changed while candidate qualification was running.',
+        });
+    }
+    if (!live.ok) {
+        ineligibilityReasons.push({
+            code: 'LIVE_AUTHORITY_UNREADABLE',
+            message: 'Live authority state could not be read without mutation.',
+            issues: live.issues || [],
+        });
+    }
+    if (irrecoverableGapDisclosure.hasIrrecoverableGap) {
+        ineligibilityReasons.push({
+            code: 'IRRECOVERABLE_GAP_PRESENT',
+            message: 'Irrecoverable evidence gaps remain in the candidate source set.',
+            entries: irrecoverableGapDisclosure.entries.filter((entry) => entry.recoverability === 'irrecoverable'),
+        });
+    }
+
+    const eligibility = {
+        eligible: ineligibilityReasons.length === 0,
+        reasons: ineligibilityReasons,
+    };
+    const authorization = {
+        authorized: false,
+        promotionAvailable: false,
+        reasons: [
+            {
+                code: 'PROMOTION_PATH_UNAVAILABLE',
+                message: 'Promotion remains intentionally unavailable in C0.75-1.',
+            },
+        ],
+    };
+    const digestPayload = {
+        reconstructionRunId: report.reconstructionRunId,
+        memoryScopeId: report.memoryScopeId,
+        candidate: {
+            candidateArtifactId: candidate.candidateArtifactId,
+            canonicalCandidateHash: candidate.canonicalCandidateHash,
+            authoritySurfaceHash: candidate.authoritySurfaceHash,
+            generationIdentity: candidate.generationIdentity,
+        },
+        live: {
+            canonicalAuthorityHash: liveComparableState.canonicalAuthorityHash,
+            generationIdentity: liveComparableState.generationIdentity,
+            dbPresent: liveComparableState.dbPresent,
+        },
+        structuralDiff: {
+            equal: structuralDiff.equal,
+            addedRecordCount: structuralDiff.addedRecordCount,
+            removedRecordCount: structuralDiff.removedRecordCount,
+            changedRecordCount: structuralDiff.changedRecordCount,
+            lifecycleChangeCount: structuralDiff.lifecycleChangeCount,
+            provenanceChangeCount: structuralDiff.provenanceChangeCount,
+        },
+        candidateValidity: report.candidateValidity || {},
+        irrecoverableGapDisclosure,
+        eligibility,
+        rollbackGenerationPlan,
+    };
+
+    return {
+        attempted: true,
+        completed: true,
+        candidate,
+        live: liveComparableState,
+        structuralDiff,
+        sourceCoverage,
+        irrecoverableGapDisclosure,
+        rollbackGenerationPlan,
+        eligibility,
+        authorization,
+        boundEvidenceDigest: buildPromotionQualificationDigest(digestPayload),
+    };
 }
 
 function ensureCandidateDatabase(candidatePaths, reconstructionRunId, memoryScopeId, requestKey, timestamp) {
@@ -851,7 +1374,7 @@ function buildFailureReport(manifest, candidatePaths, finishedAt, failure, repor
         reviewItems: [],
         unresolvedEvidence: [],
         promotionBlockers: [
-            'promotion path intentionally unavailable in C0.5A',
+            'promotion path intentionally unavailable in C0.75-1',
             String(failure?.code || 'ARCH_REBUILD_FAILED'),
         ],
         determinism: {
@@ -3237,7 +3760,7 @@ export async function runCandidateRebuild(request, options = {}) {
                         reason: 'source_mutated_after_freeze',
                     })),
                     promotionBlockers: [
-                        'promotion path intentionally unavailable in C0.5A',
+                        'promotion path intentionally unavailable in C0.75-1',
                         'candidate invalidated by source mutation',
                     ],
                     determinism: {
@@ -3257,12 +3780,15 @@ export async function runCandidateRebuild(request, options = {}) {
                     createdAt: manifest.createdAt,
                     finishedAt,
                 };
-                writeReport(candidatePaths, report);
+                const finalizedReport = finalizeReport(userRoot, report);
+                finalizedReport.promotionQualification = buildPromotionQualification(userRoot, candidatePaths, finalizedReport);
+                writeReport(candidatePaths, finalizedReport);
                 applyCandidateRetention(userRoot, manifest.memoryScopeId);
+                const deliveredReport = finalizeReport(userRoot, finalizedReport);
                 return {
                     ok: false,
-                    report: finalizeReport(userRoot, report),
-                    summary: summarizeCompactRebuildReport(report),
+                    report: deliveredReport,
+                    summary: summarizeCompactRebuildReport(deliveredReport),
                 };
         }
 
@@ -3327,7 +3853,7 @@ export async function runCandidateRebuild(request, options = {}) {
                     reason: 'source_mutated_before_validation_finalize',
                 })),
                 promotionBlockers: [
-                    'promotion path intentionally unavailable in C0.5A',
+                    'promotion path intentionally unavailable in C0.75-1',
                     'candidate invalidated by source mutation',
                 ],
                 determinism: {
@@ -3347,12 +3873,15 @@ export async function runCandidateRebuild(request, options = {}) {
                 createdAt: manifest.createdAt,
                 finishedAt,
             };
-            writeReport(candidatePaths, report);
+            const finalizedReport = finalizeReport(userRoot, report);
+            finalizedReport.promotionQualification = buildPromotionQualification(userRoot, candidatePaths, finalizedReport);
+            writeReport(candidatePaths, finalizedReport);
             applyCandidateRetention(userRoot, manifest.memoryScopeId);
+            const deliveredReport = finalizeReport(userRoot, finalizedReport);
             return {
                 ok: false,
-                report: finalizeReport(userRoot, report),
-                summary: summarizeCompactRebuildReport(report),
+                report: deliveredReport,
+                summary: summarizeCompactRebuildReport(deliveredReport),
             };
         }
 
@@ -3466,7 +3995,7 @@ export async function runCandidateRebuild(request, options = {}) {
                 conflicts: buildCandidateConflictReportEntries(reportAdapter, manifest.reconstructionRunId),
                 unresolvedEvidence: compileResult.unresolvedEvidence,
                 promotionBlockers: [
-                    'promotion path intentionally unavailable in C0.5A',
+                    'promotion path intentionally unavailable in C0.75-1',
                     ...(validation.issues.length > 0 ? validation.issues : []),
                 ],
                 determinism: {
@@ -3490,12 +4019,15 @@ export async function runCandidateRebuild(request, options = {}) {
             reportAdapter.close();
         }
 
-        writeReport(candidatePaths, report);
+        const finalizedReport = finalizeReport(userRoot, report);
+        finalizedReport.promotionQualification = buildPromotionQualification(userRoot, candidatePaths, finalizedReport);
+        writeReport(candidatePaths, finalizedReport);
         applyCandidateRetention(userRoot, manifest.memoryScopeId);
+        const deliveredReport = finalizeReport(userRoot, finalizedReport);
         return {
             ok: succeeded,
-            report: finalizeReport(userRoot, report),
-            summary: summarizeCompactRebuildReport(report),
+            report: deliveredReport,
+            summary: summarizeCompactRebuildReport(deliveredReport),
         };
     } catch (error) {
         try {
@@ -3512,7 +4044,9 @@ export async function runCandidateRebuild(request, options = {}) {
             }
             const liveAuthorityChanged = !equalFingerprints(manifest.liveAuthorityFingerprints || {}, getLiveAuthorityFingerprints(userRoot));
             const failureReport = buildFailureReport(manifest, candidatePaths, finishedAt, error, { liveAuthorityChanged });
-            writeReport(candidatePaths, failureReport);
+            const finalizedFailureReport = finalizeReport(userRoot, failureReport);
+            finalizedFailureReport.promotionQualification = buildPromotionQualification(userRoot, candidatePaths, finalizedFailureReport);
+            writeReport(candidatePaths, finalizedFailureReport);
             applyCandidateRetention(userRoot, manifest.memoryScopeId);
         } catch {
             // ignore secondary failure

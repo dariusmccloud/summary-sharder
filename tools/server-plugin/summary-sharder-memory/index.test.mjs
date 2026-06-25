@@ -211,6 +211,8 @@ test('capabilities and candidate lifecycle routes report no promotion and suppor
     assert.equal(capabilities.payload.capabilities.c0_5a.promotionAvailable, false);
     assert.equal(capabilities.payload.capabilities.c0_5a.candidatePinning, true);
     assert.equal(capabilities.payload.capabilities.c0_5a.candidateCleanup, true);
+    assert.equal(capabilities.payload.capabilities.c0_75_1.candidateQualification, true);
+    assert.equal(capabilities.payload.capabilities.c0_75_1.promotionAvailable, false);
 
     const initResult = await invoke(
         router.routes.post.get('/rebuild/candidate/init'),

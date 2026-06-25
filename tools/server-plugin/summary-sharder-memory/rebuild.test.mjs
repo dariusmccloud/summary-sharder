@@ -306,6 +306,92 @@ function readScalar(dbPath, sql, params = []) {
     }
 }
 
+function seedLiveAuthorityFromCandidate(root, candidateDbPath, memoryScopeId) {
+    const candidateAdapter = createNodeSqliteAdapter(candidateDbPath);
+    const livePaths = getStoragePaths(root);
+    const liveAdapter = openOperationalDatabase(livePaths);
+    try {
+        liveAdapter.run('DELETE FROM current_decisions WHERE memory_scope_id = ?', [memoryScopeId]);
+        liveAdapter.run('DELETE FROM decision_records WHERE memory_scope_id = ?', [memoryScopeId]);
+        liveAdapter.run('DELETE FROM chat_bindings WHERE memory_scope_id = ?', [memoryScopeId]);
+        liveAdapter.run('DELETE FROM memory_scopes WHERE memory_scope_id = ?', [memoryScopeId]);
+
+        for (const row of candidateAdapter.all('SELECT * FROM memory_scopes WHERE memory_scope_id = ?', [memoryScopeId])) {
+            liveAdapter.run(
+                'INSERT INTO memory_scopes (memory_scope_id, scope_alias, scope_version, current_scope_run, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+                [row.memory_scope_id, row.scope_alias, row.scope_version, row.current_scope_run, row.created_at, row.updated_at],
+            );
+        }
+        for (const row of candidateAdapter.all('SELECT * FROM chat_bindings WHERE memory_scope_id = ?', [memoryScopeId])) {
+            liveAdapter.run(
+                `INSERT INTO chat_bindings (
+                    chat_instance_id, memory_scope_id, chat_locator, scope_alias,
+                    branched_from_chat_instance_id, imported_from_chat_instance_id, bound_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    row.chat_instance_id,
+                    row.memory_scope_id,
+                    row.chat_locator,
+                    row.scope_alias,
+                    row.branched_from_chat_instance_id,
+                    row.imported_from_chat_instance_id,
+                    row.bound_at,
+                    row.updated_at,
+                ],
+            );
+        }
+        for (const row of candidateAdapter.all('SELECT * FROM decision_records WHERE memory_scope_id = ?', [memoryScopeId])) {
+            liveAdapter.run(
+                `INSERT INTO decision_records (
+                    memory_scope_id, decision_id, record_version, canonical_hash, canonical_hash_version,
+                    hash_algorithm, semantic_payload, fields_json, status, prior_version,
+                    source_chat_instance_id, last_updating_chat_instance_id, provenance_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    row.memory_scope_id,
+                    row.decision_id,
+                    row.record_version,
+                    row.canonical_hash,
+                    row.canonical_hash_version,
+                    row.hash_algorithm,
+                    row.semantic_payload,
+                    row.fields_json,
+                    row.status,
+                    row.prior_version,
+                    row.source_chat_instance_id,
+                    row.last_updating_chat_instance_id,
+                    row.provenance_json,
+                    row.created_at,
+                    row.updated_at,
+                ],
+            );
+        }
+        for (const row of candidateAdapter.all('SELECT * FROM current_decisions WHERE memory_scope_id = ?', [memoryScopeId])) {
+            liveAdapter.run(
+                `INSERT INTO current_decisions (
+                    memory_scope_id, decision_id, current_record_version, canonical_hash, canonical_hash_version,
+                    hash_algorithm, authority_location, archive_pointer_json, stub_pointer_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    row.memory_scope_id,
+                    row.decision_id,
+                    row.current_record_version,
+                    row.canonical_hash,
+                    row.canonical_hash_version,
+                    row.hash_algorithm,
+                    row.authority_location,
+                    row.archive_pointer_json,
+                    row.stub_pointer_json,
+                    row.updated_at,
+                ],
+            );
+        }
+    } finally {
+        liveAdapter.close();
+        candidateAdapter.close();
+    }
+}
+
 test('candidate init freezes a manifest without creating live authority files', async () => {
     const root = makeTempRoot();
     const { memoryScopeId } = await writeArchitecturalChat(root);
@@ -368,6 +454,13 @@ test('candidate run compiles admitted artifacts into isolated candidate state an
     assert.equal(result.report.determinism.canonicalCandidateHash, persistedHash.canonicalCandidateHash);
     assert.equal(persistedHashSecondRead.canonicalCandidateHash, persistedHash.canonicalCandidateHash);
     assert.equal(result.report.determinism.canonicalByteLength, persistedHash.canonicalByteLength);
+    assert.equal(result.report.promotionQualification.completed, true);
+    assert.equal(result.report.promotionQualification.authorization.promotionAvailable, false);
+    assert.equal(result.report.promotionQualification.live.dbPresent, false);
+    assert.equal(result.report.promotionQualification.live.generationIdentity, `live:${memoryScopeId}:run:0`);
+    assert.equal(result.report.promotionQualification.structuralDiff.addedRecordCount > 0, true);
+    assert.equal(result.report.promotionQualification.eligibility.eligible, true);
+    assert.equal(typeof result.report.promotionQualification.boundEvidenceDigest, 'string');
     assert.equal(fs.existsSync(livePaths.dbPath), false);
     assert.equal(fs.existsSync(livePaths.snapshotPath), false);
     assert.equal(fs.existsSync(livePaths.statePath), false);
@@ -477,6 +570,52 @@ test('candidate build leaves live DB, snapshot, state marker, WAL, and SHM uncha
     assert.equal(result.ok, true);
     assert.deepEqual(after, before);
     assert.equal(result.report.liveAuthorityChanged, false);
+    assert.equal(result.report.promotionQualification.live.dbPresent, true);
+});
+
+test('candidate qualification compares against matching live authority without mutating it', async () => {
+    const root = makeTempRoot();
+    const { memoryScopeId } = await writeArchitecturalChat(root);
+    const request = buildRequest(root);
+
+    const first = await initCandidateRebuildRun(request, {
+        memoryScopeId,
+        requestKey: 'req-fq1',
+        now: Date.now(),
+    });
+    const firstResult = await runCandidateRebuild(request, {
+        reconstructionRunId: first.manifest.reconstructionRunId,
+        now: Date.now(),
+    });
+    const firstCandidateDbPath = path.join(root, firstResult.report.candidateRelativePath);
+    seedLiveAuthorityFromCandidate(root, firstCandidateDbPath, memoryScopeId);
+
+    const paths = getStoragePaths(root);
+    const before = fingerprintFiles(paths);
+
+    const second = await initCandidateRebuildRun(request, {
+        memoryScopeId,
+        requestKey: 'req-fq2',
+        now: Date.now(),
+    });
+    const secondResult = await runCandidateRebuild(request, {
+        reconstructionRunId: second.manifest.reconstructionRunId,
+        now: Date.now(),
+    });
+    const after = fingerprintFiles(paths);
+
+    assert.equal(secondResult.ok, true);
+    assert.equal(secondResult.report.promotionQualification.live.dbPresent, true);
+    assert.equal(secondResult.report.promotionQualification.structuralDiff.equal, true);
+    assert.equal(secondResult.report.promotionQualification.structuralDiff.addedRecordCount, 0);
+    assert.equal(secondResult.report.promotionQualification.structuralDiff.removedRecordCount, 0);
+    assert.equal(secondResult.report.promotionQualification.structuralDiff.changedRecordCount, 0);
+    assert.equal(secondResult.report.promotionQualification.eligibility.eligible, true);
+    assert.equal(
+        secondResult.report.promotionQualification.candidate.authoritySurfaceHash,
+        secondResult.report.promotionQualification.live.canonicalAuthorityHash,
+    );
+    assert.deepEqual(after, before);
 });
 
 test('invalid candidate build leaves live DB artifacts unchanged and rejects rerun', async () => {
@@ -510,6 +649,10 @@ test('invalid candidate build leaves live DB artifacts unchanged and rejects rer
     assert.equal(result.report.candidateValidity.valid, false);
     assert.equal(result.report.candidateValidity.structuralBlockers.some((entry) => entry.code === 'REBUILD_UNRESOLVED_SEMANTIC_CONFLICT'), true);
     assert.equal(result.report.occurrenceGroups.some((entry) => entry.occurrenceClassification === 'UNRESOLVED_SEMANTIC_CONFLICT'), true);
+    assert.equal(result.report.promotionQualification.completed, true);
+    assert.equal(result.report.promotionQualification.eligibility.eligible, false);
+    assert.equal(result.report.promotionQualification.eligibility.reasons.some((entry) => entry.code === 'CANDIDATE_RUN_NOT_SUCCESSFUL'), true);
+    assert.equal(result.report.promotionQualification.eligibility.reasons.some((entry) => entry.code === 'CANDIDATE_INVALID'), true);
     const candidateDbPath = path.join(root, result.report.candidateRelativePath);
     const persistedHash = computePersistedCanonicalCandidateState(candidateDbPath);
     assert.equal(result.report.determinism.canonicalHashFinal, true);

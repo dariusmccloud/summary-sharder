@@ -183,10 +183,14 @@ export function hashDeterministicTableDump(dump) {
 export function summarizeCompactRebuildReport(report) {
     const input = report?.inputSummary || {};
     const output = report?.outputSummary || {};
+    const eligibility = report?.promotionQualification?.eligibility;
+    const qualificationLine = eligibility
+        ? `Qualification: ${eligibility.eligible ? 'eligible' : 'ineligible'}; promotion remains unavailable in C0.75-1.`
+        : 'Promotion remains unavailable in C0.5.';
     return [
         `Run ${report?.reconstructionRunId || 'unknown'} for scope ${report?.memoryScopeId || 'unknown'} finished with status ${report?.status || 'unknown'}.`,
         `Inputs: ${Number(input.totalFiles || 0)} file(s), ${Number(input.totalArtifacts || 0)} artifact(s), ${Number(input.admittedArtifacts || 0)} admitted.`,
         `Outputs: ${Number(output.candidateAuthorityRecordCount || 0)} authority record(s), ${Number(output.candidateClaimCount || 0)} claim(s), ${Number(output.candidateIssueCount || 0)} issue(s).`,
-        'Promotion remains unavailable in C0.5.',
+        qualificationLine,
     ];
 }
