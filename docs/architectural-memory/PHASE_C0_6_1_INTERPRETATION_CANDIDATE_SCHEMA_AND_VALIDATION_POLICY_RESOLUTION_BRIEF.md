@@ -44,10 +44,12 @@ The immediate question is:
 
 `C0.6-1` must define and implement:
 
+- portable interpretive authority ledger contract
 - interpretation candidate record schema
 - grounding record schema
 - risk-classification schema
-- validation-policy schema
+- validation-policy definition and binding schemas
+- review-obligation schema
 - reviewer-resolution rules
 - pending subject-disposition schema
 - storage and lifecycle boundaries for interpretive candidates
@@ -161,6 +163,39 @@ All prior structural safety constraints remain in force:
 13. Pending, rejected, contested, and approved interpretations must remain distinguishable lifecycle states.
 14. No interpretation may enter continuity only because all required fields are present.
 
+## Portable Authority Source
+
+`C0.6-1` must not begin with an authority gap.
+
+If an interpretation proposal, grounding outcome, policy binding, or review disposition exists only in SQLite, then rebuilding the operational projection would lose the portable history of what was proposed and what was reviewed.
+
+Required correction:
+
+```text
+portable interpretive governance ledger
+-> authoritative candidate and review event history
+
+interpretive SQLite
+-> disposable operational projection
+```
+
+Minimum authoritative ledger events:
+
+- `INTERPRETATION_PROPOSED`
+- `GROUNDING_LINK_ATTACHED`
+- `GROUNDING_EVALUATED`
+- `RISK_CLASSIFIED`
+- `POLICY_RESOLVED`
+- `REVIEW_OBLIGATION_CREATED`
+- `REVIEW_REQUESTED`
+- `REVIEW_DISPOSITION_RECORDED`
+- `SUBJECT_DISPOSITION_RECORDED`
+- `REVISION_CREATED`
+
+Required rule:
+
+> `C0.6-1` must define the portable Interpretive Governance Ledger as the durable authority for pending interpretive candidate and review history. SQLite may project it, but must not become the only surviving copy.
+
 ## Internal Slice Boundary
 
 ### Included in `C0.6-1`
@@ -203,16 +238,39 @@ Minimum shape:
 {
   "interpretationId": "interp_...",
   "interpretationRevisionId": "interprev_...",
+  "parentRevisionId": null,
+  "createdFromDispositionId": null,
+  "revisionReason": "INITIAL_PROPOSAL | SUBJECT_EDIT | REVIEW_REQUESTED_REVISION",
   "memoryScopeId": "scope_...",
   "memorySubjectId": "speakerEntityId or subject identity",
   "type": "ROLE_EVOLUTION | PROJECT_TRANSFORMATION | RELATIONAL_PROGRESSION | THEMATIC_CONTINUITY | PHASE_MEANING",
   "statement": "Proposed interpretation",
-  "status": "PENDING_GROUNDING | PENDING_REVIEW | APPROVED | APPROVED_WITH_EDIT | REJECTED | CONTESTED | DEFERRED",
+  "assertionDomains": [
+    "ROLE",
+    "AUTHORITY",
+    "RELATIONSHIP"
+  ],
+  "sharedRelationshipAsserted": true,
+  "personalMeaningAsserted": true,
+  "materialParticipantEntityIds": [
+    "speaker_participant"
+  ],
+  "candidateState": "DRAFT | SEALED_FOR_GROUNDING | SEALED_FOR_REVIEW | CLOSED",
+  "groundingState": "PENDING | COMPLETE | FAILED",
+  "reviewState": "NOT_ROUTED | PENDING | COMPLETE | BLOCKED",
+  "subjectDispositionState": "PENDING | GRANTED | DENIED | REVISIT",
+  "publicationState": "NOT_PUBLISHED",
   "authorityEffect": "DESCRIPTIVE_ONLY",
+  "proposalContentHash": "sha256:...",
+  "reviewEnvelopeHash": null,
   "createdAt": 1782388800000,
   "updatedAt": 1782388800000
 }
 ```
+
+Required rule:
+
+> `APPROVE_WITH_EDIT` must never mutate the reviewed revision in place. It must preserve the disposition against the reviewed revision and create a new immutable interpretation revision with a new proposal hash and, when required, a new review-envelope hash.
 
 ### 2. Grounding record
 
@@ -229,15 +287,40 @@ Minimum shape:
   "interpretationRevisionId": "interprev_...",
   "basisType": "STRUCTURAL_RECORD | SOURCE_OCCURRENCE",
   "basisRecordId": "decision:... or development:...",
+  "basisRecordVersion": 3,
+  "basisRecordHash": "sha256:...",
   "chatInstanceId": "chat_...",
   "messageId": "msg_...",
+  "messageRevisionHash": "sha256:...",
   "speakerEntityId": "speaker_...",
   "groundingRole": "PRIMARY | SUPPORTING | COUNTEREVIDENCE",
-  "groundingStatus": "SUPPORTED | PARTIALLY_SUPPORTED | UNSUPPORTED"
+  "groundingAssessment": "SUPPORTS | PARTIALLY_SUPPORTS | CONTRADICTS | NEUTRAL | INVALID"
 }
 ```
 
-### 3. Risk classification
+Required rule:
+
+> `STRUCTURAL_RECORD` links require structural identity plus frozen structural revision identity, and must not include occurrence-only fields. `SOURCE_OCCURRENCE` links require occurrence identity plus frozen occurrence revision identity, and must not include structural-only fields.
+
+### 3. Grounding aggregate
+
+One frozen aggregate grounding outcome per interpretation revision.
+
+Required rule:
+
+> Individual evidence-link assessment and overall grounding outcome must remain separate. A single counterevidence link does not by itself define the aggregate result, and the aggregate result must be representable at the same vocabulary level required by the gold fixture.
+
+Minimum shape:
+
+```json
+{
+  "interpretationRevisionId": "interprev_...",
+  "groundingOutcome": "STRONGLY_SUPPORTED | SUPPORTED | PARTIALLY_SUPPORTED | CONTRARY_EVIDENCE_PRESENT | BASIS_INCOMPLETE | UNSUPPORTED | INVALIDATED_SOURCE_MUTATION",
+  "evaluatedAt": 1782388800000
+}
+```
+
+### 4. Risk classification
 
 One explicit routing/risk outcome per interpretation revision.
 
@@ -258,25 +341,31 @@ Minimum shape:
     "AUTHORITY",
     "PERSONAL_HISTORY",
     "SENSITIVE_MEANING"
-  ]
+  ],
+  "resolutionInputHash": "sha256:..."
 }
 ```
 
-### 4. Validation policy
+Required rule:
 
-The policy chosen for one interpretation revision.
+> Deterministic risk routing must operate on structured semantic inputs captured in the candidate envelope. It must not pretend to infer authority, identity, relationship, or personal-meaning assertions from arbitrary prose without an interpretation layer.
+
+### 5. Validation policy definition
+
+Immutable reusable policy definition.
 
 Required rule:
 
-> Policy resolution must be durable and replayable. A later reader must be able to see which policy governed the review path, not just the final dispositions.
+> Editing a reusable policy definition must not retroactively change the historical rules that governed an already-routed interpretation revision.
 
 Minimum shape:
 
 ```json
 {
-  "validationPolicyId": "shared-role-memory-v1",
-  "interpretationRevisionId": "interprev_...",
-  "requiredGrounding": "STRONGLY_SUPPORTED | SUPPORTED",
+  "validationPolicyId": "shared-role-memory",
+  "policyVersion": 1,
+  "policyHash": "sha256:...",
+  "requiredGroundingOutcome": "STRONGLY_SUPPORTED | SUPPORTED",
   "requiredReviewers": [
     "MEMORY_SUBJECT",
     "RELATIONAL_PARTICIPANT"
@@ -287,7 +376,53 @@ Minimum shape:
 }
 ```
 
-### 5. Review request
+### 6. Validation policy binding
+
+The policy chosen for one interpretation revision.
+
+Required rule:
+
+> Policy resolution must be durable and replayable. A later reader must be able to see which exact policy version governed the review path, which rule IDs matched, and which structured inputs produced that result.
+
+Minimum shape:
+
+```json
+{
+  "interpretationRevisionId": "interprev_...",
+  "validationPolicyId": "shared-role-memory",
+  "policyVersion": 1,
+  "policyHash": "sha256:...",
+  "matchedRuleIds": [
+    "risk-high-authority",
+    "shared-relationship"
+  ],
+  "resolutionInputHash": "sha256:..."
+}
+```
+
+### 7. Review obligation
+
+One required reviewer role before exact reviewer delivery is guaranteed.
+
+Required rule:
+
+> Required reviewer roles and exact review requests are not the same thing. If policy requires a reviewer role but the exact reviewer identity cannot be resolved, the system must create a blocked or pending review obligation rather than a malformed review request with an approximate or null reviewer.
+
+Minimum shape:
+
+```json
+{
+  "interpretationRevisionId": "interprev_...",
+  "reviewObligationId": "reviewobl_...",
+  "reviewerRole": "MEMORY_SUBJECT | RELATIONAL_PARTICIPANT | PROJECT_AUTHORITY | SYSTEM_GROUNDING",
+  "reviewerEntityId": "speakerEntityId or null",
+  "obligationState": "PENDING_RESOLUTION | READY_TO_REQUEST | BLOCKED | SATISFIED | CANCELLED",
+  "blockingReason": "REVIEWER_IDENTITY_UNRESOLVED | POLICY_BLOCKED | NONE",
+  "createdAt": 1782388800000
+}
+```
+
+### 8. Review request
 
 One request routed to one reviewer role or reviewer identity.
 
@@ -300,15 +435,17 @@ Minimum shape:
 ```json
 {
   "reviewRequestId": "reviewreq_...",
+  "reviewObligationId": "reviewobl_...",
   "interpretationRevisionId": "interprev_...",
   "reviewerRole": "MEMORY_SUBJECT | RELATIONAL_PARTICIPANT | PROJECT_AUTHORITY | SYSTEM_GROUNDING",
   "reviewerEntityId": "speakerEntityId or system reviewer id",
   "status": "PENDING | COMPLETED | EXPIRED | CANCELLED",
+  "reviewEnvelopeHash": "sha256:...",
   "createdAt": 1782388800000
 }
 ```
 
-### 6. Review disposition
+### 9. Review disposition
 
 One completed review response.
 
@@ -330,6 +467,7 @@ Minimum shape:
     "SCOPE_TOO_BROAD"
   ],
   "commentary": "Optional structured note",
+  "reviewEnvelopeHash": "sha256:...",
   "submittedAt": 1782388800000
 }
 ```
@@ -339,10 +477,15 @@ Minimum shape:
 `C0.6-1` must keep these dimensions distinct:
 
 - candidate existence
+- candidate revision lineage
 - grounding outcome
 - risk classification
+- policy definition
+- policy binding
+- reviewer obligation
 - review completion
 - final disposition authority
+- subject disposition
 - continuity publication effect
 
 Required rule:
@@ -374,6 +517,10 @@ Required rule:
 
 The implementation may reuse operational SQLite substrate patterns, but it must preserve clear table and lifecycle separation from structural authority tables.
 
+Required rule:
+
+> Interpretive SQLite is an operational projection. The portable Interpretive Governance Ledger remains the authoritative source for pending interpretive candidate and review history.
+
 ## Policy Resolution Rules
 
 `C0.6-1` must implement deterministic policy selection.
@@ -382,9 +529,11 @@ At minimum, policy resolution must consider:
 
 - interpretation type
 - memory subject
+- assertion domains
 - whether shared relationship framing is asserted
 - whether authority or identity is asserted
 - whether the interpretation concerns only project behavior or also personal meaning
+- material participant identities
 
 Required rule:
 
@@ -408,12 +557,8 @@ Required rule:
 
 If candidate hashing is used in this slice, it must cover:
 
-- interpretation statement
-- type
-- memory subject identity
-- grounding links
-- resolved policy
-- required reviewers
+- `proposalContentHash`
+- `reviewEnvelopeHash`
 
 It must not treat:
 
@@ -425,13 +570,14 @@ as canonical content.
 
 Required rule:
 
-> A later synthesis or review slice must be able to prove whether the interpretation under review is exactly the same candidate that was grounded and routed.
+> `proposalContentHash` must cover the proposed meaning before review routing, including statement, type, subject identity, scope identity, assertion domains, and material participants. `reviewEnvelopeHash` must bind the exact reviewed envelope by covering `proposalContentHash` plus frozen grounding set, grounding outcome, risk result, bound policy version/hash, and resolved reviewer obligations. Every review request and disposition must bind to `reviewEnvelopeHash`.
 
 ## Minimum Implementation Deliverables
 
 Code:
 
 - durable schema for the record families above
+- portable authority-ledger contract for those record families
 - policy resolution module
 - reviewer-resolution module
 - targeted route or storage helpers needed to create and inspect pending interpretation candidates
@@ -449,15 +595,18 @@ Evidence:
 `C0.6-1` must prove at least:
 
 1. interpretation candidate can be stored without implying continuity publication
-2. grounding links can target structural records and exact source occurrences
-3. policy resolution is deterministic for the same candidate input
-4. reviewer resolution reuses existing subject/participant identities
-5. missing reviewer identity blocks or defers routing
-6. subject-final disposition remains distinct from participant review
-7. approved review state does not become continuity automatically
-8. interpretive candidate tables remain separate from structural authority tables
-9. `C0.75` promotion routes cannot publish or adopt interpretive candidates
-10. the constitutional gold fixture can be represented exactly as pending governed records without publication
+2. portable interpretive authority is defined so pending candidate and review history is not SQLite-only
+3. grounding links can target structural records and exact source occurrences with frozen revision identity
+4. grounding aggregate vocabulary can represent `STRONGLY_SUPPORTED` exactly
+5. policy resolution is deterministic for the same candidate input
+6. reviewer resolution reuses existing subject/participant identities
+7. unresolved reviewer identity creates a blocked or pending obligation rather than an approximate request
+8. subject-final disposition remains distinct from participant review
+9. `APPROVE_WITH_EDIT` creates a new immutable interpretation revision rather than mutating the reviewed one
+10. approved review state does not become continuity automatically
+11. interpretive candidate tables remain separate from structural authority tables
+12. `C0.75` promotion routes cannot publish or adopt interpretive candidates
+13. the constitutional gold fixture can be represented exactly as pending governed records without publication
 
 ## Pass/Fail Boundary
 
@@ -466,7 +615,9 @@ Evidence:
 Proceed beyond `C0.6-1` only if:
 
 - pending interpretive candidates are durable and identity-backed
+- portable interpretive authority is defined explicitly
 - policy and reviewer routing are deterministic
+- lifecycle dimensions remain separated rather than collapsed into one status field
 - jurisdiction remains separate from structural authority
 - no continuity publication is possible yet
 - the gold fixture can be represented faithfully
@@ -476,6 +627,7 @@ Proceed beyond `C0.6-1` only if:
 Stop and revise if:
 
 - interpretive storage implies publication
+- interpretive proposal or review history survives only in SQLite
 - subject identity is approximated rather than resolved
 - reviewer routing depends on undocumented manual intuition
 - structural authority tables or promotion flows are reused in a way that blurs jurisdiction
