@@ -25,6 +25,18 @@ This phase does not authorize:
 
 The next implementation slice after this document is expected to be `C0.75-1`.
 
+## Interpretive Memory Exclusion
+
+`C0.75` governs structural promotion only: movement from candidate authority into live structural authority.
+
+`C0.75` CANNOT publish interpretive memory.
+
+Interpretive memory includes any synthesis, narrative summary, or developmental characterization concerning a memory subject's development, role, identity, relationships, or lived meaning.
+
+Interpretive memory is governed by `C0.6` (Interpretive Continuity and Memory Sovereignty).
+
+`C0.75` must explicitly exclude interpretive publication from its jurisdiction.
+
 ## Governing Finding
 
 `C0.5A` through `C0.5C` proved that candidate reconstruction can be deterministic, cross-runtime stable, provenance-preserving, and structurally auditable while remaining completely isolated from live authority.
