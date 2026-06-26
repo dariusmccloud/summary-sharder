@@ -29,7 +29,7 @@ Implemented sub-slice:
 
 Active next sub-slice:
 
-- `docs/architectural-memory/PHASE_C0_6_2_GOVERNED_REVIEW_REVISION_AND_SUBJECT_DISPOSITION_BRIEF.md`
+- `docs/architectural-memory/PHASE_C0_6_3_BOUNDED_SYNTHESIS_PROPOSAL_GENERATION_AND_GROUNDING_BRIEF.md`
 
 ## Governing Doctrine
 
@@ -372,8 +372,8 @@ STATUS: ACTIVE C0.6 GOVERNANCE CONTRACT (this document)
 Current slice status:
 
 - `C0.6.1` - implemented and verified
-- `C0.6.2` - active next implementation contract
-- `C0.6.3` - not started
+- `C0.6.2` - implemented and verified
+- `C0.6.3` - active next implementation contract
 - `C0.6.4` - not started
 
 ## Stop-Before-Code Condition

@@ -165,7 +165,7 @@ These tests covered:
 
 The authoritative host-proof record is:
 
-- [C0_6_2_GOVERNED_REVIEW_AND_SUBJECT_DISPOSITION_HOST_PROOF.md](/C:/Users/chris/OneDrive/Documents/Personal/Projects/summary-sharder/docs/architectural-memory/evidence/C0_6_2_GOVERNED_REVIEW_AND_SUBJECT_DISPOSITION_HOST_PROOF.md)
+- [C0_6_2_GOVERNED_REVIEW_AND_SUBJECT_DISPOSITION_HOST_PROOF.md](evidence/C0_6_2_GOVERNED_REVIEW_AND_SUBJECT_DISPOSITION_HOST_PROOF.md)
 
 The live proof verified on both safe clone hosts:
 
