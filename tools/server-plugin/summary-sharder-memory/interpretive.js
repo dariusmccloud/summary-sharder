@@ -42,6 +42,22 @@ const ALLOWED_ASSERTION_DOMAINS = new Set([
     'THEMATIC_MEANING',
 ]);
 
+const ALLOWED_REVIEW_DISPOSITIONS = new Set([
+    'APPROVE',
+    'APPROVE_WITH_EDIT',
+    'REJECT',
+    'CONTEST',
+    'DEFER',
+    'APPROVE_FOR_SCOPE_ONLY',
+]);
+
+const ALLOWED_SUBJECT_DISPOSITION_STATES = new Set([
+    'GRANTED',
+    'DENIED',
+    'DEFERRED',
+    'CONTESTED',
+]);
+
 const POLICY_DEFINITIONS = Object.freeze([
     Object.freeze({
         validationPolicyId: 'shared-role-memory',
@@ -127,6 +143,40 @@ function normalizeStringArray(value, fieldName, allowedValues = null) {
         }
     }
     return Array.from(new Set(normalized)).sort();
+}
+
+function normalizeReasonCodes(value, fieldName = 'reasonCodes') {
+    if (value === undefined || value === null) {
+        return [];
+    }
+    if (!Array.isArray(value)) {
+        throw createError(400, `${fieldName} must be an array`, 'ARCH_INVALID_PAYLOAD');
+    }
+    return Array.from(new Set(
+        value
+            .map((entry) => String(entry || '').trim())
+            .filter(Boolean)
+            .map((entry) => {
+                if (!/^[A-Z0-9_:-]+$/u.test(entry)) {
+                    throw createError(400, `${fieldName} contains invalid code ${entry}`, 'ARCH_INVALID_PAYLOAD');
+                }
+                return entry;
+            }),
+    )).sort();
+}
+
+function normalizeOptionalCommentary(value, fieldName = 'commentary') {
+    if (value === undefined || value === null) {
+        return null;
+    }
+    const normalized = String(value).trim();
+    if (!normalized) {
+        return null;
+    }
+    if (normalized.length > 4000) {
+        throw createError(400, `${fieldName} is too long`, 'ARCH_INVALID_PAYLOAD');
+    }
+    return normalized;
 }
 
 function normalizeGroundingLink(link, index) {
@@ -603,6 +653,40 @@ function createLedgerEvents(prepared, timestamp) {
     return events;
 }
 
+function createReviewDispositionEvent(reviewDisposition, candidate) {
+    return {
+        eventId: createId('iglevent'),
+        eventType: 'REVIEW_DISPOSITION_RECORDED',
+        occurredAt: reviewDisposition.submittedAt,
+        memoryScopeId: candidate.memoryScopeId,
+        interpretationId: candidate.interpretationId,
+        interpretationRevisionId: candidate.interpretationRevisionId,
+        payload: cloneJson(reviewDisposition),
+    };
+}
+
+function createSubjectDispositionEvent(subjectDisposition, candidate, reviewEnvelopeHash) {
+    return {
+        eventId: createId('iglevent'),
+        eventType: 'SUBJECT_DISPOSITION_RECORDED',
+        occurredAt: subjectDisposition.updatedAt,
+        memoryScopeId: candidate.memoryScopeId,
+        interpretationId: candidate.interpretationId,
+        interpretationRevisionId: candidate.interpretationRevisionId,
+        payload: {
+            subjectDispositionId: subjectDisposition.subjectDispositionId,
+            memorySubjectId: subjectDisposition.memorySubjectId,
+            state: subjectDisposition.state,
+            finalDispositionAuthority: subjectDisposition.finalDispositionAuthority,
+            reasonCodes: cloneJson(subjectDisposition.reasonCodes),
+            commentary: subjectDisposition.commentary,
+            reviewEnvelopeHash,
+            createdAt: subjectDisposition.createdAt,
+            updatedAt: subjectDisposition.updatedAt,
+        },
+    };
+}
+
 function appendLedgerEvents(ledgerPath, events) {
     const lines = events.map((entry) => JSON.stringify(entry)).join('\n');
     fs.appendFileSync(ledgerPath, `${lines}\n`, 'utf8');
@@ -626,6 +710,124 @@ function clearInterpretiveProjection(adapter) {
             adapter.run(`DELETE FROM ${tableName}`);
         }
     });
+}
+
+function deriveRequestStatusFromDisposition(disposition) {
+    if (disposition === 'DEFER') {
+        return 'DEFERRED';
+    }
+    if (disposition === 'CONTEST') {
+        return 'CONTESTED';
+    }
+    if (disposition === 'APPROVE') {
+        return 'APPROVED';
+    }
+    if (disposition === 'APPROVE_WITH_EDIT') {
+        return 'APPROVE_WITH_EDIT';
+    }
+    if (disposition === 'APPROVE_FOR_SCOPE_ONLY') {
+        return 'APPROVE_FOR_SCOPE_ONLY';
+    }
+    if (disposition === 'REJECT') {
+        return 'REJECTED';
+    }
+    return 'PENDING';
+}
+
+function deriveObligationStateFromRequestStatus(status) {
+    if (status === 'PENDING') {
+        return 'READY_TO_REQUEST';
+    }
+    if (status === 'DEFERRED') {
+        return 'DEFERRED';
+    }
+    if (status === 'CONTESTED') {
+        return 'CONTESTED';
+    }
+    return 'COMPLETED';
+}
+
+function computeReviewStateFromStatuses(obligations, requests) {
+    if (obligations.some((entry) => entry.obligationState === 'BLOCKED')) {
+        return 'BLOCKED';
+    }
+    const statuses = requests.map((entry) => entry.status);
+    if (statuses.length === 0) {
+        return 'NOT_ROUTED';
+    }
+    if (statuses.some((entry) => entry === 'PENDING')) {
+        return 'PENDING';
+    }
+    if (statuses.some((entry) => entry === 'DEFERRED')) {
+        return 'DEFERRED';
+    }
+    if (statuses.some((entry) => entry === 'CONTESTED')) {
+        return 'CONTESTED';
+    }
+    return 'COMPLETE';
+}
+
+function loadCandidateRow(adapter, interpretationRevisionId) {
+    return adapter.get(
+        'SELECT * FROM interpretation_revisions WHERE interpretation_revision_id = ?',
+        [interpretationRevisionId],
+    );
+}
+
+function loadReviewRequestRow(adapter, reviewRequestId) {
+    return adapter.get(
+        'SELECT * FROM interpretation_review_requests WHERE review_request_id = ?',
+        [reviewRequestId],
+    );
+}
+
+function loadReviewDispositionRows(adapter, interpretationRevisionId) {
+    return adapter.all(
+        'SELECT * FROM interpretation_review_dispositions WHERE interpretation_revision_id = ? ORDER BY submitted_at, review_disposition_id',
+        [interpretationRevisionId],
+    );
+}
+
+function recomputeCandidateReviewState(adapter, interpretationRevisionId, timestamp = Date.now()) {
+    const obligations = adapter.all(
+        'SELECT obligation_state AS obligationState FROM interpretation_review_obligations WHERE interpretation_revision_id = ? ORDER BY review_obligation_id',
+        [interpretationRevisionId],
+    );
+    const requests = adapter.all(
+        'SELECT status FROM interpretation_review_requests WHERE interpretation_revision_id = ? ORDER BY review_request_id',
+        [interpretationRevisionId],
+    );
+    const reviewState = computeReviewStateFromStatuses(obligations, requests);
+    adapter.run(
+        'UPDATE interpretation_revisions SET review_state = ?, updated_at = ? WHERE interpretation_revision_id = ?',
+        [reviewState, timestamp, interpretationRevisionId],
+    );
+    return reviewState;
+}
+
+function buildChildRevisionPayload(parentInterpretation, payload = {}, createdFromDispositionId, reviewerRole, timestamp) {
+    const revised = payload?.revisedCandidate || {};
+    const statement = String(revised.statement || '').trim();
+    if (!statement) {
+        throw createError(400, 'revisedCandidate.statement is required for APPROVE_WITH_EDIT', 'ARCH_INVALID_PAYLOAD');
+    }
+    return {
+        interpretationId: parentInterpretation.interpretationId,
+        interpretationRevisionId: revised.interpretationRevisionId || createId('interprev'),
+        parentRevisionId: parentInterpretation.interpretationRevisionId,
+        createdFromDispositionId,
+        revisionReason: reviewerRole === 'MEMORY_SUBJECT' ? 'SUBJECT_EDIT' : 'REVIEW_REQUESTED_REVISION',
+        memoryScopeId: parentInterpretation.memoryScopeId,
+        memorySubjectId: parentInterpretation.memorySubjectId,
+        type: revised.type || parentInterpretation.type,
+        statement,
+        assertionDomains: revised.assertionDomains || parentInterpretation.assertionDomains,
+        sharedRelationshipAsserted: revised.sharedRelationshipAsserted ?? parentInterpretation.sharedRelationshipAsserted,
+        personalMeaningAsserted: revised.personalMeaningAsserted ?? parentInterpretation.personalMeaningAsserted,
+        materialParticipantEntityIds: revised.materialParticipantEntityIds || parentInterpretation.materialParticipantEntityIds,
+        groundingLinks: revised.groundingLinks || parentInterpretation.groundingLinks,
+        now: timestamp,
+    };
 }
 
 export function readInterpretiveLedgerEvents(ledgerPath) {
@@ -704,15 +906,85 @@ function buildPreparedFromLedgerEvents(events) {
     };
 }
 
+function applyInterpretiveFollowOnEvent(adapter, event) {
+    if (event.eventType === 'REVIEW_DISPOSITION_RECORDED') {
+        const payload = event.payload || {};
+        const request = loadReviewRequestRow(adapter, payload.reviewRequestId);
+        if (!request) {
+            throw createError(500, `Interpretive replay could not resolve review request ${payload.reviewRequestId}`, 'ARCH_INTERPRETIVE_LEDGER_INCOMPLETE');
+        }
+        const dispositionStatus = deriveRequestStatusFromDisposition(payload.disposition);
+        adapter.run(
+            `INSERT INTO interpretation_review_dispositions (
+                review_disposition_id, review_request_id, interpretation_revision_id, reviewer_role,
+                reviewer_entity_id, disposition, reason_codes_json, commentary, review_envelope_hash, submitted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                payload.reviewDispositionId,
+                payload.reviewRequestId,
+                event.interpretationRevisionId,
+                payload.reviewerRole,
+                payload.reviewerEntityId,
+                payload.disposition,
+                stableStringify(payload.reasonCodes || []),
+                payload.commentary || null,
+                payload.reviewEnvelopeHash,
+                Number(payload.submittedAt || event.occurredAt),
+            ],
+        );
+        adapter.run(
+            'UPDATE interpretation_review_requests SET status = ? WHERE review_request_id = ?',
+            [dispositionStatus, payload.reviewRequestId],
+        );
+        adapter.run(
+            'UPDATE interpretation_review_obligations SET obligation_state = ?, blocking_reason = ? WHERE review_obligation_id = ?',
+            [deriveObligationStateFromRequestStatus(dispositionStatus), 'NONE', request.review_obligation_id],
+        );
+        recomputeCandidateReviewState(adapter, event.interpretationRevisionId, Number(payload.submittedAt || event.occurredAt));
+        return;
+    }
+    if (event.eventType === 'SUBJECT_DISPOSITION_RECORDED') {
+        const payload = event.payload || {};
+        adapter.run(
+            `UPDATE interpretation_subject_dispositions
+             SET state = ?, reason_codes_json = ?, commentary = ?, updated_at = ?
+             WHERE interpretation_revision_id = ?`,
+            [
+                payload.state,
+                stableStringify(payload.reasonCodes || []),
+                payload.commentary || null,
+                Number(payload.updatedAt || event.occurredAt),
+                event.interpretationRevisionId,
+            ],
+        );
+        adapter.run(
+            `UPDATE interpretation_revisions
+             SET subject_disposition_state = ?, publication_state = 'NOT_PUBLISHED',
+                 authority_effect = 'DESCRIPTIVE_ONLY', updated_at = ?
+             WHERE interpretation_revision_id = ?`,
+            [
+                payload.state,
+                Number(payload.updatedAt || event.occurredAt),
+                event.interpretationRevisionId,
+            ],
+        );
+    }
+}
+
 export function replayInterpretiveLedger(request, options = {}) {
     const userRoot = getAuthenticatedUserRoot(request);
     const paths = getStoragePaths(userRoot);
     const ledgerEvents = readInterpretiveLedgerEvents(options.ledgerPath || paths.interpretiveGovernanceLedgerPath);
     const grouped = new Map();
+    const followOnEvents = [];
     for (const event of ledgerEvents) {
         const key = String(event.interpretationRevisionId || '');
         if (!key) {
             throw createError(500, 'Interpretive ledger event is missing interpretationRevisionId', 'ARCH_INTERPRETIVE_LEDGER_INVALID');
+        }
+        if (['REVIEW_DISPOSITION_RECORDED', 'SUBJECT_DISPOSITION_RECORDED'].includes(event.eventType)) {
+            followOnEvents.push(event);
+            continue;
         }
         if (!grouped.has(key)) {
             grouped.set(key, []);
@@ -732,6 +1004,11 @@ export function replayInterpretiveLedger(request, options = {}) {
                 .sort((a, b) => Number(a.occurredAt) - Number(b.occurredAt) || String(a.eventId).localeCompare(String(b.eventId)));
             const prepared = buildPreparedFromLedgerEvents(events);
             persistPreparedCandidate(adapter, prepared, prepared.candidate.createdAt);
+        }
+        for (const event of followOnEvents.sort((a, b) => Number(a.occurredAt) - Number(b.occurredAt) || String(a.eventId).localeCompare(String(b.eventId)))) {
+            applyInterpretiveFollowOnEvent(adapter, event);
+        }
+        for (const interpretationRevisionId of revisionIds) {
             rehydrated.push(loadInterpretiveCandidateProjection(adapter, interpretationRevisionId));
         }
         snapshotOperationalDatabase(adapter, paths);
@@ -745,7 +1022,7 @@ export function replayInterpretiveLedger(request, options = {}) {
     }
 }
 
-function persistPreparedCandidate(adapter, prepared, timestamp) {
+function persistPreparedCandidateRows(adapter, prepared, timestamp) {
     seedInterpretivePolicyDefinitions(adapter);
     const existing = adapter.get(
         'SELECT interpretation_revision_id FROM interpretation_revisions WHERE interpretation_revision_id = ?',
@@ -754,8 +1031,7 @@ function persistPreparedCandidate(adapter, prepared, timestamp) {
     if (existing) {
         throw createError(409, `Interpretation revision ${prepared.candidate.interpretationRevisionId} already exists`, 'ARCH_INTERPRETATION_REVISION_EXISTS');
     }
-    adapter.transaction(() => {
-        adapter.run(
+    adapter.run(
             `INSERT INTO interpretation_revisions (
                 interpretation_revision_id, interpretation_id, parent_revision_id, created_from_disposition_id,
                 revision_reason, memory_scope_id, memory_subject_id, interpretation_type, statement_text,
@@ -789,9 +1065,9 @@ function persistPreparedCandidate(adapter, prepared, timestamp) {
                 timestamp,
                 timestamp,
             ],
-        );
-        for (const link of prepared.candidate.groundingLinks) {
-            adapter.run(
+    );
+    for (const link of prepared.candidate.groundingLinks) {
+        adapter.run(
                 `INSERT INTO interpretation_grounding_links (
                     interpretation_revision_id, grounding_link_id, basis_type, basis_record_id,
                     basis_record_version, basis_record_hash, chat_instance_id, message_id,
@@ -812,9 +1088,9 @@ function persistPreparedCandidate(adapter, prepared, timestamp) {
                     link.groundingAssessment,
                     stableStringify(link.details),
                 ],
-            );
-        }
-        adapter.run(
+        );
+    }
+    adapter.run(
             `INSERT INTO interpretation_grounding_aggregates (
                 interpretation_revision_id, grounding_outcome, evaluated_at
             ) VALUES (?, ?, ?)`,
@@ -823,8 +1099,8 @@ function persistPreparedCandidate(adapter, prepared, timestamp) {
                 prepared.groundingOutcome,
                 timestamp,
             ],
-        );
-        adapter.run(
+    );
+    adapter.run(
             `INSERT INTO interpretation_risk_classifications (
                 interpretation_revision_id, risk_class, risk_reasons_json, resolution_input_hash
             ) VALUES (?, ?, ?, ?)`,
@@ -834,8 +1110,8 @@ function persistPreparedCandidate(adapter, prepared, timestamp) {
                 stableStringify(prepared.risk.riskReasons),
                 prepared.risk.resolutionInputHash,
             ],
-        );
-        adapter.run(
+    );
+    adapter.run(
             `INSERT INTO interpretation_policy_bindings (
                 interpretation_revision_id, validation_policy_id, policy_version,
                 policy_hash, matched_rule_ids_json, resolution_input_hash
@@ -848,9 +1124,9 @@ function persistPreparedCandidate(adapter, prepared, timestamp) {
                 stableStringify(prepared.policy.matchedRuleIds),
                 prepared.policy.resolutionInputHash,
             ],
-        );
-        for (const obligation of prepared.obligations) {
-            adapter.run(
+    );
+    for (const obligation of prepared.obligations) {
+        adapter.run(
                 `INSERT INTO interpretation_review_obligations (
                     review_obligation_id, interpretation_revision_id, reviewer_role,
                     reviewer_entity_id, obligation_state, blocking_reason, created_at
@@ -864,10 +1140,10 @@ function persistPreparedCandidate(adapter, prepared, timestamp) {
                     obligation.blockingReason,
                     obligation.createdAt,
                 ],
-            );
-        }
-        for (const request of prepared.reviewRequests) {
-            adapter.run(
+        );
+    }
+    for (const request of prepared.reviewRequests) {
+        adapter.run(
                 `INSERT INTO interpretation_review_requests (
                     review_request_id, review_obligation_id, interpretation_revision_id, reviewer_role,
                     reviewer_entity_id, status, review_envelope_hash, created_at
@@ -882,9 +1158,9 @@ function persistPreparedCandidate(adapter, prepared, timestamp) {
                     request.reviewEnvelopeHash,
                     request.createdAt,
                 ],
-            );
-        }
-        adapter.run(
+        );
+    }
+    adapter.run(
             `INSERT INTO interpretation_subject_dispositions (
                 interpretation_revision_id, memory_subject_id, state, final_disposition_authority,
                 reason_codes_json, commentary, created_at, updated_at
@@ -899,7 +1175,12 @@ function persistPreparedCandidate(adapter, prepared, timestamp) {
                 timestamp,
                 timestamp,
             ],
-        );
+    );
+}
+
+function persistPreparedCandidate(adapter, prepared, timestamp) {
+    adapter.transaction(() => {
+        persistPreparedCandidateRows(adapter, prepared, timestamp);
     });
 }
 
@@ -935,8 +1216,13 @@ export function loadInterpretiveCandidateProjection(adapter, interpretationRevis
         'SELECT * FROM interpretation_review_requests WHERE interpretation_revision_id = ? ORDER BY review_request_id',
         [interpretationRevisionId],
     );
+    const reviewDispositions = loadReviewDispositionRows(adapter, interpretationRevisionId);
     const subjectDisposition = adapter.get(
         'SELECT * FROM interpretation_subject_dispositions WHERE interpretation_revision_id = ?',
+        [interpretationRevisionId],
+    );
+    const childRevisions = adapter.all(
+        'SELECT interpretation_revision_id FROM interpretation_revisions WHERE parent_revision_id = ? ORDER BY interpretation_revision_id',
         [interpretationRevisionId],
     );
     return {
@@ -1004,11 +1290,24 @@ export function loadInterpretiveCandidateProjection(adapter, interpretationRevis
         reviewRequests: reviewRequests.map((entry) => ({
             reviewRequestId: entry.review_request_id,
             reviewObligationId: entry.review_obligation_id,
+            interpretationRevisionId: entry.interpretation_revision_id,
             reviewerRole: entry.reviewer_role,
             reviewerEntityId: entry.reviewer_entity_id,
             status: entry.status,
             reviewEnvelopeHash: entry.review_envelope_hash,
             createdAt: Number(entry.created_at),
+        })),
+        reviewDispositions: reviewDispositions.map((entry) => ({
+            reviewDispositionId: entry.review_disposition_id,
+            reviewRequestId: entry.review_request_id,
+            interpretationRevisionId: entry.interpretation_revision_id,
+            reviewerRole: entry.reviewer_role,
+            reviewerEntityId: entry.reviewer_entity_id,
+            disposition: entry.disposition,
+            reasonCodes: JSON.parse(entry.reason_codes_json),
+            commentary: entry.commentary,
+            reviewEnvelopeHash: entry.review_envelope_hash,
+            submittedAt: Number(entry.submitted_at),
         })),
         subjectDisposition: subjectDisposition ? {
             memorySubjectId: subjectDisposition.memory_subject_id,
@@ -1019,6 +1318,7 @@ export function loadInterpretiveCandidateProjection(adapter, interpretationRevis
             createdAt: Number(subjectDisposition.created_at),
             updatedAt: Number(subjectDisposition.updated_at),
         } : null,
+        childRevisionIds: childRevisions.map((entry) => entry.interpretation_revision_id),
     };
 }
 
@@ -1040,6 +1340,329 @@ export function createInterpretiveCandidate(request, payload = {}) {
             phase: 'c0.6.1',
             ledgerPath: paths.interpretiveGovernanceLedgerPath,
             interpretation: loadInterpretiveCandidateProjection(adapter, prepared.candidate.interpretationRevisionId),
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function submitInterpretiveReviewDisposition(request, reviewRequestId, payload = {}) {
+    const timestamp = nowTimestamp(payload?.now);
+    const actorEntityId = sanitizeIdentifier(payload?.actorEntityId, 'actorEntityId');
+    const disposition = String(payload?.disposition || '').trim();
+    if (!ALLOWED_REVIEW_DISPOSITIONS.has(disposition)) {
+        throw createError(400, 'disposition is invalid', 'ARCH_INVALID_PAYLOAD');
+    }
+    const reviewEnvelopeHash = String(payload?.reviewEnvelopeHash || '').trim();
+    if (!reviewEnvelopeHash.startsWith('sha256:')) {
+        throw createError(400, 'reviewEnvelopeHash is invalid', 'ARCH_INVALID_PAYLOAD');
+    }
+    const reasonCodes = normalizeReasonCodes(payload?.reasonCodes, 'reasonCodes');
+    const commentary = normalizeOptionalCommentary(payload?.commentary, 'commentary');
+
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const adapter = openOperationalDatabase(paths, { now: timestamp });
+    try {
+        seedInterpretivePolicyDefinitions(adapter);
+        const requestRow = loadReviewRequestRow(adapter, sanitizeIdentifier(reviewRequestId, 'reviewRequestId'));
+        if (!requestRow) {
+            throw createError(404, `Review request ${reviewRequestId} was not found`, 'ARCH_REVIEW_REQUEST_NOT_FOUND');
+        }
+        if (requestRow.status !== 'PENDING') {
+            throw createError(409, `Review request ${reviewRequestId} is not pending`, 'ARCH_REVIEW_REQUEST_NOT_PENDING');
+        }
+        if (requestRow.reviewer_entity_id !== actorEntityId) {
+            throw createError(403, 'Only the exact bound reviewer may submit this disposition', 'ARCH_REVIEWER_IDENTITY_MISMATCH');
+        }
+        const interpretation = loadInterpretiveCandidateProjection(adapter, requestRow.interpretation_revision_id);
+        if (!interpretation) {
+            throw createError(404, `Interpretation revision ${requestRow.interpretation_revision_id} was not found`, 'ARCH_INTERPRETATION_NOT_FOUND');
+        }
+        if (interpretation.reviewEnvelopeHash !== requestRow.review_envelope_hash || interpretation.reviewEnvelopeHash !== reviewEnvelopeHash) {
+            throw createError(409, 'Review envelope hash is stale for this request', 'ARCH_STALE_REVIEW_ENVELOPE');
+        }
+
+        const reviewDisposition = {
+            reviewDispositionId: createId('reviewdisp'),
+            reviewRequestId: requestRow.review_request_id,
+            interpretationRevisionId: interpretation.interpretationRevisionId,
+            reviewerRole: requestRow.reviewer_role,
+            reviewerEntityId: requestRow.reviewer_entity_id,
+            disposition,
+            reasonCodes,
+            commentary,
+            reviewEnvelopeHash,
+            submittedAt: timestamp,
+        };
+
+        let childInterpretation = null;
+        let childPrepared = null;
+        if (disposition === 'APPROVE_WITH_EDIT') {
+            const childPayload = buildChildRevisionPayload(
+                interpretation,
+                payload,
+                reviewDisposition.reviewDispositionId,
+                requestRow.reviewer_role,
+                timestamp,
+            );
+            childPrepared = prepareInterpretiveCandidate(childPayload, timestamp);
+            childInterpretation = childPrepared.candidate.interpretationRevisionId;
+            reviewDisposition.childInterpretationRevisionId = childInterpretation;
+        }
+
+        const events = [createReviewDispositionEvent(reviewDisposition, interpretation)];
+        if (childPrepared) {
+            events.push(...createLedgerEvents(childPrepared, timestamp));
+        }
+        appendLedgerEvents(paths.interpretiveGovernanceLedgerPath, events);
+
+        adapter.transaction(() => {
+            adapter.run(
+                `INSERT INTO interpretation_review_dispositions (
+                    review_disposition_id, review_request_id, interpretation_revision_id, reviewer_role,
+                    reviewer_entity_id, disposition, reason_codes_json, commentary, review_envelope_hash, submitted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    reviewDisposition.reviewDispositionId,
+                    reviewDisposition.reviewRequestId,
+                    reviewDisposition.interpretationRevisionId,
+                    reviewDisposition.reviewerRole,
+                    reviewDisposition.reviewerEntityId,
+                    reviewDisposition.disposition,
+                    stableStringify(reviewDisposition.reasonCodes),
+                    reviewDisposition.commentary,
+                    reviewDisposition.reviewEnvelopeHash,
+                    reviewDisposition.submittedAt,
+                ],
+            );
+            const requestStatus = deriveRequestStatusFromDisposition(disposition);
+            adapter.run(
+                'UPDATE interpretation_review_requests SET status = ? WHERE review_request_id = ?',
+                [requestStatus, requestRow.review_request_id],
+            );
+            adapter.run(
+                'UPDATE interpretation_review_obligations SET obligation_state = ?, blocking_reason = ? WHERE review_obligation_id = ?',
+                [deriveObligationStateFromRequestStatus(requestStatus), 'NONE', requestRow.review_obligation_id],
+            );
+            recomputeCandidateReviewState(adapter, interpretation.interpretationRevisionId, timestamp);
+            if (childPrepared) {
+                persistPreparedCandidateRows(adapter, childPrepared, timestamp);
+            }
+        });
+        snapshotOperationalDatabase(adapter, paths);
+        return {
+            ok: true,
+            phase: 'c0.6.2',
+            ledgerPath: paths.interpretiveGovernanceLedgerPath,
+            disposition: reviewDisposition,
+            interpretation: loadInterpretiveCandidateProjection(adapter, interpretation.interpretationRevisionId),
+            childInterpretation: childPrepared
+                ? loadInterpretiveCandidateProjection(adapter, childPrepared.candidate.interpretationRevisionId)
+                : null,
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function recordInterpretiveSubjectDisposition(request, interpretationRevisionId, payload = {}) {
+    const timestamp = nowTimestamp(payload?.now);
+    const actorEntityId = sanitizeIdentifier(payload?.actorEntityId, 'actorEntityId');
+    const state = String(payload?.state || '').trim();
+    if (!ALLOWED_SUBJECT_DISPOSITION_STATES.has(state)) {
+        throw createError(400, 'state is invalid', 'ARCH_INVALID_PAYLOAD');
+    }
+    const reviewEnvelopeHash = String(payload?.reviewEnvelopeHash || '').trim();
+    if (!reviewEnvelopeHash.startsWith('sha256:')) {
+        throw createError(400, 'reviewEnvelopeHash is invalid', 'ARCH_INVALID_PAYLOAD');
+    }
+    const reasonCodes = normalizeReasonCodes(payload?.reasonCodes, 'reasonCodes');
+    const commentary = normalizeOptionalCommentary(payload?.commentary, 'commentary');
+
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const adapter = openOperationalDatabase(paths, { now: timestamp });
+    try {
+        seedInterpretivePolicyDefinitions(adapter);
+        const normalizedRevisionId = sanitizeIdentifier(interpretationRevisionId, 'interpretationRevisionId');
+        const interpretation = loadInterpretiveCandidateProjection(adapter, normalizedRevisionId);
+        if (!interpretation) {
+            throw createError(404, `Interpretation revision ${interpretationRevisionId} was not found`, 'ARCH_INTERPRETATION_NOT_FOUND');
+        }
+        if (actorEntityId !== interpretation.memorySubjectId) {
+            throw createError(403, 'Only the memory subject may record final continuity disposition', 'ARCH_SUBJECT_IDENTITY_MISMATCH');
+        }
+        if (interpretation.reviewEnvelopeHash !== reviewEnvelopeHash) {
+            throw createError(409, 'Subject disposition is stale for this review envelope', 'ARCH_STALE_REVIEW_ENVELOPE');
+        }
+        const pendingRequests = interpretation.reviewRequests.filter((entry) => entry.status === 'PENDING' || entry.status === 'DEFERRED');
+        if (pendingRequests.length > 0 || interpretation.reviewState === 'BLOCKED' || interpretation.reviewState === 'PENDING' || interpretation.reviewState === 'DEFERRED') {
+            throw createError(409, 'Required review is not complete for subject disposition', 'ARCH_REVIEW_INCOMPLETE');
+        }
+
+        const currentSubjectDisposition = interpretation.subjectDisposition || {
+            memorySubjectId: interpretation.memorySubjectId,
+            finalDispositionAuthority: 'MEMORY_SUBJECT',
+            createdAt: timestamp,
+        };
+        const nextSubjectDisposition = {
+            subjectDispositionId: createId('subjectdisp'),
+            memorySubjectId: interpretation.memorySubjectId,
+            state,
+            finalDispositionAuthority: currentSubjectDisposition.finalDispositionAuthority,
+            reasonCodes,
+            commentary,
+            createdAt: currentSubjectDisposition.createdAt,
+            updatedAt: timestamp,
+        };
+        appendLedgerEvents(
+            paths.interpretiveGovernanceLedgerPath,
+            [createSubjectDispositionEvent(nextSubjectDisposition, interpretation, reviewEnvelopeHash)],
+        );
+        adapter.transaction(() => {
+            adapter.run(
+                `UPDATE interpretation_subject_dispositions
+                 SET state = ?, reason_codes_json = ?, commentary = ?, updated_at = ?
+                 WHERE interpretation_revision_id = ?`,
+                [
+                    nextSubjectDisposition.state,
+                    stableStringify(nextSubjectDisposition.reasonCodes),
+                    nextSubjectDisposition.commentary,
+                    nextSubjectDisposition.updatedAt,
+                    interpretation.interpretationRevisionId,
+                ],
+            );
+            adapter.run(
+                `UPDATE interpretation_revisions
+                 SET subject_disposition_state = ?, publication_state = 'NOT_PUBLISHED',
+                     authority_effect = 'DESCRIPTIVE_ONLY', updated_at = ?
+                 WHERE interpretation_revision_id = ?`,
+                [
+                    nextSubjectDisposition.state,
+                    nextSubjectDisposition.updatedAt,
+                    interpretation.interpretationRevisionId,
+                ],
+            );
+        });
+        snapshotOperationalDatabase(adapter, paths);
+        return {
+            ok: true,
+            phase: 'c0.6.2',
+            ledgerPath: paths.interpretiveGovernanceLedgerPath,
+            subjectDisposition: nextSubjectDisposition,
+            interpretation: loadInterpretiveCandidateProjection(adapter, interpretation.interpretationRevisionId),
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function createInterpretiveRevision(request, interpretationRevisionId, payload = {}) {
+    const timestamp = nowTimestamp(payload?.now);
+    const actorEntityId = sanitizeIdentifier(payload?.actorEntityId, 'actorEntityId');
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const adapter = openOperationalDatabase(paths, { now: timestamp });
+    try {
+        seedInterpretivePolicyDefinitions(adapter);
+        const interpretation = loadInterpretiveCandidateProjection(
+            adapter,
+            sanitizeIdentifier(interpretationRevisionId, 'interpretationRevisionId'),
+        );
+        if (!interpretation) {
+            throw createError(404, `Interpretation revision ${interpretationRevisionId} was not found`, 'ARCH_INTERPRETATION_NOT_FOUND');
+        }
+        if (actorEntityId !== interpretation.memorySubjectId) {
+            throw createError(403, 'Only the memory subject may create a direct child revision in C0.6.2', 'ARCH_SUBJECT_IDENTITY_MISMATCH');
+        }
+        const childPayload = buildChildRevisionPayload(
+            interpretation,
+            payload,
+            payload?.createdFromDispositionId ? sanitizeIdentifier(payload.createdFromDispositionId, 'createdFromDispositionId') : null,
+            'MEMORY_SUBJECT',
+            timestamp,
+        );
+        const prepared = prepareInterpretiveCandidate(childPayload, timestamp);
+        const events = createLedgerEvents(prepared, timestamp);
+        appendLedgerEvents(paths.interpretiveGovernanceLedgerPath, events);
+        persistPreparedCandidate(adapter, prepared, timestamp);
+        snapshotOperationalDatabase(adapter, paths);
+        return {
+            ok: true,
+            phase: 'c0.6.2',
+            ledgerPath: paths.interpretiveGovernanceLedgerPath,
+            interpretation: loadInterpretiveCandidateProjection(adapter, prepared.candidate.interpretationRevisionId),
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function listInterpretiveReviews(request, filters = {}) {
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const adapter = openOperationalDatabase(paths);
+    try {
+        seedInterpretivePolicyDefinitions(adapter);
+        const params = [];
+        const where = [];
+        if (filters.interpretationRevisionId) {
+            where.push('r.interpretation_revision_id = ?');
+            params.push(sanitizeIdentifier(filters.interpretationRevisionId, 'interpretationRevisionId'));
+        }
+        if (filters.reviewerEntityId) {
+            where.push('r.reviewer_entity_id = ?');
+            params.push(sanitizeIdentifier(filters.reviewerEntityId, 'reviewerEntityId'));
+        }
+        if (filters.status) {
+            where.push('r.status = ?');
+            params.push(String(filters.status).trim());
+        }
+        const sql = `SELECT
+                r.review_request_id,
+                r.review_obligation_id,
+                r.interpretation_revision_id,
+                r.reviewer_role,
+                r.reviewer_entity_id,
+                r.status,
+                r.review_envelope_hash,
+                r.created_at,
+                o.obligation_state,
+                o.blocking_reason,
+                d.review_disposition_id,
+                d.disposition,
+                d.reason_codes_json,
+                d.commentary,
+                d.submitted_at
+            FROM interpretation_review_requests r
+            INNER JOIN interpretation_review_obligations o ON o.review_obligation_id = r.review_obligation_id
+            LEFT JOIN interpretation_review_dispositions d ON d.review_request_id = r.review_request_id
+            ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
+            ORDER BY r.created_at, r.review_request_id`;
+        const rows = adapter.all(sql, params);
+        return {
+            ok: true,
+            phase: 'c0.6.2',
+            reviews: rows.map((row) => ({
+                reviewRequestId: row.review_request_id,
+                reviewObligationId: row.review_obligation_id,
+                interpretationRevisionId: row.interpretation_revision_id,
+                reviewerRole: row.reviewer_role,
+                reviewerEntityId: row.reviewer_entity_id,
+                status: row.status,
+                reviewEnvelopeHash: row.review_envelope_hash,
+                createdAt: Number(row.created_at),
+                obligationState: row.obligation_state,
+                blockingReason: row.blocking_reason,
+                disposition: row.review_disposition_id ? {
+                    reviewDispositionId: row.review_disposition_id,
+                    disposition: row.disposition,
+                    reasonCodes: JSON.parse(row.reason_codes_json),
+                    commentary: row.commentary,
+                    submittedAt: Number(row.submitted_at),
+                } : null,
+            })),
         };
     } finally {
         adapter.close();

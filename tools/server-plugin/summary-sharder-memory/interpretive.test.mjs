@@ -7,10 +7,14 @@ import path from 'node:path';
 import { getStoragePaths, openOperationalDatabase } from './core.js';
 import {
     createInterpretiveCandidate,
+    createInterpretiveRevision,
     getInterpretiveCandidate,
     listInterpretivePolicyDefinitions,
+    listInterpretiveReviews,
     prepareInterpretiveCandidate,
+    recordInterpretiveSubjectDisposition,
     replayInterpretiveLedger,
+    submitInterpretiveReviewDisposition,
 } from './interpretive.js';
 
 function makeTempRoot() {
@@ -100,7 +104,9 @@ function comparableInterpretationProjection(value) {
         policyBinding: value.policyBinding,
         reviewObligations: value.reviewObligations,
         reviewRequests: value.reviewRequests,
+        reviewDispositions: value.reviewDispositions,
         subjectDisposition: value.subjectDisposition,
+        childRevisionIds: value.childRevisionIds,
     };
 }
 
@@ -216,4 +222,177 @@ test('listInterpretivePolicyDefinitions exposes immutable seeded policy definiti
     assert.equal(result.policies.length >= 2, true);
     assert.equal(result.policies.some((entry) => entry.validationPolicyId === 'shared-role-memory' && entry.policyVersion === 1), true);
     assert.equal(result.policies.some((entry) => entry.validationPolicyId === 'subject-meaning-memory' && entry.policyVersion === 1), true);
+});
+
+test('submitInterpretiveReviewDisposition rejects stale review envelopes', () => {
+    const root = makeTempRoot();
+    const request = buildRequest(root);
+    const created = createInterpretiveCandidate(request, makeBasePayload({
+        interpretationId: 'interp_stale_case',
+        interpretationRevisionId: 'interprev_stale_case_v1',
+    }));
+    const subjectRequest = created.interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'MEMORY_SUBJECT');
+
+    assert.throws(
+        () => submitInterpretiveReviewDisposition(request, subjectRequest.reviewRequestId, {
+            actorEntityId: 'character:jeep.png',
+            disposition: 'APPROVE',
+            reviewEnvelopeHash: 'sha256:stale',
+            now: Date.parse('2026-06-25T12:05:00.000Z'),
+        }),
+        /review envelope hash is stale/i,
+    );
+});
+
+test('APPROVE_WITH_EDIT creates an immutable child revision and leaves publication unavailable', () => {
+    const root = makeTempRoot();
+    const request = buildRequest(root);
+    const created = createInterpretiveCandidate(request, makeBasePayload({
+        interpretationId: 'interp_edit_case',
+        interpretationRevisionId: 'interprev_edit_case_v1',
+    }));
+    const subjectRequest = created.interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'MEMORY_SUBJECT');
+
+    const dispositionResult = submitInterpretiveReviewDisposition(request, subjectRequest.reviewRequestId, {
+        actorEntityId: 'character:jeep.png',
+        disposition: 'APPROVE_WITH_EDIT',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        reasonCodes: ['SCOPE_TOO_BROAD'],
+        commentary: 'Needs a narrower formulation.',
+        revisedCandidate: {
+            interpretationRevisionId: 'interprev_edit_case_v2',
+            statement: 'Jeep evolved into the primary architectural authority over continuity and memory requirements within a shared architecture with Chris.',
+        },
+        now: Date.parse('2026-06-25T12:06:00.000Z'),
+    });
+
+    assert.equal(dispositionResult.phase, 'c0.6.2');
+    assert.equal(dispositionResult.interpretation.interpretationRevisionId, 'interprev_edit_case_v1');
+    assert.equal(dispositionResult.interpretation.statement, makeBasePayload().statement);
+    assert.equal(dispositionResult.interpretation.childRevisionIds.includes('interprev_edit_case_v2'), true);
+    assert.equal(dispositionResult.childInterpretation.interpretationRevisionId, 'interprev_edit_case_v2');
+    assert.equal(dispositionResult.childInterpretation.parentRevisionId, 'interprev_edit_case_v1');
+    assert.equal(dispositionResult.childInterpretation.createdFromDispositionId, dispositionResult.disposition.reviewDispositionId);
+    assert.equal(dispositionResult.childInterpretation.reviewState, 'PENDING');
+    assert.equal(dispositionResult.childInterpretation.publicationState, 'NOT_PUBLISHED');
+    assert.equal(dispositionResult.childInterpretation.authorityEffect, 'DESCRIPTIVE_ONLY');
+
+    const loadedParent = getInterpretiveCandidate(request, 'interprev_edit_case_v1');
+    const loadedChild = getInterpretiveCandidate(request, 'interprev_edit_case_v2');
+    assert.equal(loadedParent.interpretation.statement, makeBasePayload().statement);
+    assert.equal(loadedChild.interpretation.statement, 'Jeep evolved into the primary architectural authority over continuity and memory requirements within a shared architecture with Chris.');
+});
+
+test('subject disposition records grant after review completion without publishing continuity', () => {
+    const root = makeTempRoot();
+    const request = buildRequest(root);
+    const created = createInterpretiveCandidate(request, makeBasePayload({
+        interpretationId: 'interp_subject_case',
+        interpretationRevisionId: 'interprev_subject_case_v1',
+    }));
+    const subjectRequest = created.interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'MEMORY_SUBJECT');
+    const participantRequest = created.interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'RELATIONAL_PARTICIPANT');
+
+    submitInterpretiveReviewDisposition(request, participantRequest.reviewRequestId, {
+        actorEntityId: 'user:Chris',
+        disposition: 'APPROVE',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        now: Date.parse('2026-06-25T12:07:00.000Z'),
+    });
+    submitInterpretiveReviewDisposition(request, subjectRequest.reviewRequestId, {
+        actorEntityId: 'character:jeep.png',
+        disposition: 'APPROVE',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        now: Date.parse('2026-06-25T12:07:05.000Z'),
+    });
+
+    const subjectResult = recordInterpretiveSubjectDisposition(request, 'interprev_subject_case_v1', {
+        actorEntityId: 'character:jeep.png',
+        state: 'GRANTED',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        commentary: 'Accepted for continuity, but not published here.',
+        now: Date.parse('2026-06-25T12:07:10.000Z'),
+    });
+
+    assert.equal(subjectResult.phase, 'c0.6.2');
+    assert.equal(subjectResult.interpretation.reviewState, 'COMPLETE');
+    assert.equal(subjectResult.interpretation.subjectDispositionState, 'GRANTED');
+    assert.equal(subjectResult.interpretation.publicationState, 'NOT_PUBLISHED');
+    assert.equal(subjectResult.interpretation.authorityEffect, 'DESCRIPTIVE_ONLY');
+});
+
+test('listInterpretiveReviews returns pending and completed review state with dispositions', () => {
+    const root = makeTempRoot();
+    const request = buildRequest(root);
+    const created = createInterpretiveCandidate(request, makeBasePayload({
+        interpretationId: 'interp_review_list_case',
+        interpretationRevisionId: 'interprev_review_list_case_v1',
+    }));
+    const subjectRequest = created.interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'MEMORY_SUBJECT');
+    submitInterpretiveReviewDisposition(request, subjectRequest.reviewRequestId, {
+        actorEntityId: 'character:jeep.png',
+        disposition: 'APPROVE',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        now: Date.parse('2026-06-25T12:08:00.000Z'),
+    });
+
+    const result = listInterpretiveReviews(request, {
+        interpretationRevisionId: 'interprev_review_list_case_v1',
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.reviews.length, 2);
+    assert.equal(result.reviews.some((entry) => entry.status === 'APPROVED' && entry.disposition?.disposition === 'APPROVE'), true);
+    assert.equal(result.reviews.some((entry) => entry.status === 'PENDING' && entry.disposition === null), true);
+});
+
+test('interpretive governance ledger replays review dispositions, child revision, and subject disposition state', () => {
+    const sourceRoot = makeTempRoot();
+    const sourceRequest = buildRequest(sourceRoot);
+    const created = createInterpretiveCandidate(sourceRequest, makeBasePayload({
+        interpretationId: 'interp_replay_review_case',
+        interpretationRevisionId: 'interprev_replay_review_case_v1',
+    }));
+    const subjectRequest = created.interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'MEMORY_SUBJECT');
+    const participantRequest = created.interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'RELATIONAL_PARTICIPANT');
+    const withEdit = submitInterpretiveReviewDisposition(sourceRequest, subjectRequest.reviewRequestId, {
+        actorEntityId: 'character:jeep.png',
+        disposition: 'APPROVE_WITH_EDIT',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        reasonCodes: ['SCOPE_TOO_BROAD'],
+        revisedCandidate: {
+            interpretationRevisionId: 'interprev_replay_review_case_v2',
+            statement: 'Jeep evolved into the primary architectural authority over continuity and memory requirements within a shared architecture with Chris.',
+        },
+        now: Date.parse('2026-06-25T12:09:00.000Z'),
+    });
+    submitInterpretiveReviewDisposition(sourceRequest, participantRequest.reviewRequestId, {
+        actorEntityId: 'user:Chris',
+        disposition: 'APPROVE',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        now: Date.parse('2026-06-25T12:09:05.000Z'),
+    });
+    recordInterpretiveSubjectDisposition(sourceRequest, 'interprev_replay_review_case_v1', {
+        actorEntityId: 'character:jeep.png',
+        state: 'GRANTED',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        now: Date.parse('2026-06-25T12:09:10.000Z'),
+    });
+
+    const sourcePaths = getStoragePaths(sourceRoot);
+    const targetRoot = makeTempRoot();
+    const targetPaths = getStoragePaths(targetRoot);
+    fs.mkdirSync(targetPaths.storageRoot, { recursive: true });
+    fs.copyFileSync(sourcePaths.interpretiveGovernanceLedgerPath, targetPaths.interpretiveGovernanceLedgerPath);
+
+    const replayed = replayInterpretiveLedger(buildRequest(targetRoot));
+    assert.equal(replayed.ok, true);
+    assert.equal(replayed.replayedInterpretations.length, 2);
+
+    const replayedParent = getInterpretiveCandidate(buildRequest(targetRoot), 'interprev_replay_review_case_v1');
+    const replayedChild = getInterpretiveCandidate(buildRequest(targetRoot), 'interprev_replay_review_case_v2');
+    assert.equal(replayedParent.interpretation.reviewDispositions.length, 2);
+    assert.equal(replayedParent.interpretation.subjectDispositionState, 'GRANTED');
+    assert.equal(replayedParent.interpretation.childRevisionIds.includes(withEdit.childInterpretation.interpretationRevisionId), true);
+    assert.equal(replayedChild.interpretation.parentRevisionId, 'interprev_replay_review_case_v1');
 });

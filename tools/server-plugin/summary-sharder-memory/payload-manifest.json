@@ -79,15 +79,15 @@
   "payloadFiles": [
     {
       "relativePath": "core.js",
-      "sha256": "72635e6941cf068ffae1a43cdb7b43c8858dcec45c9d3fdb50a5df7bec0b71d8"
+      "sha256": "adf007b96a51c89dd054f2a48382a930ed629a63bd8f60d5e161ba602cad5986"
     },
     {
       "relativePath": "index.js",
-      "sha256": "55869f0f2c71b03f0ca35be75c0b5f38f55de549754b14fdbe9a56d6be725350"
+      "sha256": "c3884b85b29cad163197f892009bfb21f4f0605771ba2cfb0cd6537c6033a0e8"
     },
     {
       "relativePath": "interpretive.js",
-      "sha256": "309202d3adb30d545e7554a3563c918319bd28b37728deba2a3cac1ef9d8767e"
+      "sha256": "72194127420ec475532d527601038c2d29b539614a1174bd6d8d8458af27d266"
     },
     {
       "relativePath": "lib/core/chat/archive-policy.js",

@@ -40,8 +40,12 @@ import {
 } from './promotion.js';
 import {
     createInterpretiveCandidate,
+    createInterpretiveRevision,
     getInterpretiveCandidate,
+    listInterpretiveReviews,
     listInterpretivePolicyDefinitions,
+    recordInterpretiveSubjectDisposition,
+    submitInterpretiveReviewDisposition,
 } from './interpretive.js';
 
 export const info = {
@@ -498,6 +502,42 @@ export async function init(router) {
     router.get('/interpretive/candidates/:interpretationRevisionId', async (request, response) => {
         try {
             const result = getInterpretiveCandidate(request, request.params.interpretationRevisionId);
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.get('/interpretive/reviews', async (request, response) => {
+        try {
+            const result = listInterpretiveReviews(request, request.query || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/interpretive/reviews/:reviewRequestId/dispositions', async (request, response) => {
+        try {
+            const result = submitInterpretiveReviewDisposition(request, request.params.reviewRequestId, request.body || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/interpretive/candidates/:interpretationRevisionId/subject-disposition', async (request, response) => {
+        try {
+            const result = recordInterpretiveSubjectDisposition(request, request.params.interpretationRevisionId, request.body || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/interpretive/candidates/:interpretationRevisionId/revisions', async (request, response) => {
+        try {
+            const result = createInterpretiveRevision(request, request.params.interpretationRevisionId, request.body || {});
             return response.send(result);
         } catch (error) {
             return handleError(response, error);

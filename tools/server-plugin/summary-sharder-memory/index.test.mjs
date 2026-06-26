@@ -228,7 +228,11 @@ test('route surface exposes candidate lifecycle routes and separate promotion ro
     assert.equal(router.routes.post.has('/rebuild/promotion/execute'), true);
     assert.equal(router.routes.get.has('/interpretive/policies'), true);
     assert.equal(router.routes.get.has('/interpretive/candidates/:interpretationRevisionId'), true);
+    assert.equal(router.routes.get.has('/interpretive/reviews'), true);
     assert.equal(router.routes.post.has('/interpretive/candidates'), true);
+    assert.equal(router.routes.post.has('/interpretive/reviews/:reviewRequestId/dispositions'), true);
+    assert.equal(router.routes.post.has('/interpretive/candidates/:interpretationRevisionId/subject-disposition'), true);
+    assert.equal(router.routes.post.has('/interpretive/candidates/:interpretationRevisionId/revisions'), true);
 });
 
 test('capabilities and candidate lifecycle routes report no promotion and support report, pin, and cleanup', async () => {
@@ -247,6 +251,8 @@ test('capabilities and candidate lifecycle routes report no promotion and suppor
     assert.equal(capabilities.payload.capabilities.c0_75_2.promotionAvailable, true);
     assert.equal(capabilities.payload.capabilities.c0_6_1.interpretiveLedgerAuthority, true);
     assert.equal(capabilities.payload.capabilities.c0_6_1.continuityPublicationAvailable, false);
+    assert.equal(capabilities.payload.capabilities.c0_6_2.reviewerDispositionSubmission, true);
+    assert.equal(capabilities.payload.capabilities.c0_6_2.continuityPublicationAvailable, false);
 
     const initResult = await invoke(
         router.routes.post.get('/rebuild/candidate/init'),
@@ -381,6 +387,105 @@ test('interpretive routes create pending governed candidates without publication
     assert.equal(policiesResult.statusCode, 200);
     assert.equal(Array.isArray(policiesResult.payload.policies), true);
     assert.equal(policiesResult.payload.policies.some((entry) => entry.validationPolicyId === 'shared-role-memory'), true);
+});
+
+test('interpretive routes support review disposition, immutable child revision, and subject disposition without publication', async () => {
+    const root = makeTempRoot();
+    const router = createMockRouter();
+    await init(router);
+
+    const createResult = await invoke(
+        router.routes.post.get('/interpretive/candidates'),
+        buildRequest(root, {
+            body: {
+                interpretationId: 'interp_route_review_case',
+                interpretationRevisionId: 'interprev_route_review_case_v1',
+                memoryScopeId: 'scope_alpha',
+                memorySubjectId: 'character:jeep.png',
+                type: 'ROLE_EVOLUTION',
+                statement: 'Jeep evolved into the primary continuity authority within a shared architecture.',
+                assertionDomains: ['ROLE', 'AUTHORITY', 'RELATIONSHIP'],
+                sharedRelationshipAsserted: true,
+                personalMeaningAsserted: true,
+                materialParticipantEntityIds: ['character:jeep.png', 'user:Chris'],
+                groundingLinks: [
+                    {
+                        basisType: 'STRUCTURAL_RECORD',
+                        basisRecordId: 'decision:promotion-jurisdiction',
+                        basisRecordVersion: 1,
+                        basisRecordHash: 'sha256:promotion-jurisdiction',
+                        speakerEntityId: 'character:jeep.png',
+                        groundingRole: 'PRIMARY',
+                        groundingAssessment: 'SUPPORTS',
+                    },
+                ],
+                now: Date.parse('2026-06-25T13:10:00.000Z'),
+            },
+        }),
+    );
+    const interpretation = createResult.payload.interpretation;
+    const subjectRequest = interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'MEMORY_SUBJECT');
+    const participantRequest = interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'RELATIONAL_PARTICIPANT');
+
+    const participantDisposition = await invoke(
+        router.routes.post.get('/interpretive/reviews/:reviewRequestId/dispositions'),
+        buildRequest(root, {
+            params: { reviewRequestId: participantRequest.reviewRequestId },
+            body: {
+                actorEntityId: 'user:Chris',
+                disposition: 'APPROVE',
+                reviewEnvelopeHash: interpretation.reviewEnvelopeHash,
+                now: Date.parse('2026-06-25T13:10:05.000Z'),
+            },
+        }),
+    );
+    assert.equal(participantDisposition.statusCode, 200);
+
+    const subjectDisposition = await invoke(
+        router.routes.post.get('/interpretive/reviews/:reviewRequestId/dispositions'),
+        buildRequest(root, {
+            params: { reviewRequestId: subjectRequest.reviewRequestId },
+            body: {
+                actorEntityId: 'character:jeep.png',
+                disposition: 'APPROVE_WITH_EDIT',
+                reviewEnvelopeHash: interpretation.reviewEnvelopeHash,
+                reasonCodes: ['SCOPE_TOO_BROAD'],
+                revisedCandidate: {
+                    interpretationRevisionId: 'interprev_route_review_case_v2',
+                    statement: 'Jeep evolved into the primary architectural authority over continuity and memory requirements within a shared architecture with Chris.',
+                },
+                now: Date.parse('2026-06-25T13:10:10.000Z'),
+            },
+        }),
+    );
+    assert.equal(subjectDisposition.statusCode, 200);
+    assert.equal(subjectDisposition.payload.childInterpretation.interpretationRevisionId, 'interprev_route_review_case_v2');
+
+    const reviews = await invoke(
+        router.routes.get.get('/interpretive/reviews'),
+        buildRequest(root, {
+            query: { interpretationRevisionId: 'interprev_route_review_case_v1' },
+        }),
+    );
+    assert.equal(reviews.statusCode, 200);
+    assert.equal(reviews.payload.reviews.length, 2);
+
+    const finalDisposition = await invoke(
+        router.routes.post.get('/interpretive/candidates/:interpretationRevisionId/subject-disposition'),
+        buildRequest(root, {
+            params: { interpretationRevisionId: 'interprev_route_review_case_v1' },
+            body: {
+                actorEntityId: 'character:jeep.png',
+                state: 'GRANTED',
+                reviewEnvelopeHash: interpretation.reviewEnvelopeHash,
+                now: Date.parse('2026-06-25T13:10:20.000Z'),
+            },
+        }),
+    );
+    assert.equal(finalDisposition.statusCode, 200);
+    assert.equal(finalDisposition.payload.interpretation.subjectDispositionState, 'GRANTED');
+    assert.equal(finalDisposition.payload.interpretation.publicationState, 'NOT_PUBLISHED');
+    assert.equal(finalDisposition.payload.interpretation.authorityEffect, 'DESCRIPTIVE_ONLY');
 });
 
 test('health route reconciles verifying promotion state before opening live authority', async () => {
