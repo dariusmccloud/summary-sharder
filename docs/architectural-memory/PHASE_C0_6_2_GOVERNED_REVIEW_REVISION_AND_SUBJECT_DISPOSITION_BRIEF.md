@@ -2,7 +2,7 @@
 
 ## Status
 
-STATUS: ACTIVE C0.6-2 IMPLEMENTATION CONTRACT
+STATUS: IMPLEMENTED AND VERIFIED
 
 `C0.6.1` is complete and closed.
 
@@ -11,11 +11,25 @@ Its implementation and host-proof record is preserved in:
 - `docs/architectural-memory/C0_6_1_COMPLETION_REPORT.md`
 - `docs/architectural-memory/PHASE_C0_6_1_INTERPRETATION_CANDIDATE_SCHEMA_AND_VALIDATION_POLICY_RESOLUTION_BRIEF.md`
 
-`C0.6.2` is the next implementation slice.
+`C0.6.2` is implemented and host-verified.
 
-It exists to let exact reviewers answer grounded interpretive proposals and let the memory subject record final continuity disposition, while still stopping before publication.
+Its closeout records are preserved in:
 
-Do not implement synthesis, DNM publication, continuity mutation, or structural-authority mutation in this slice.
+- `docs/architectural-memory/C0_6_2_COMPLETION_REPORT.md`
+- `docs/architectural-memory/evidence/C0_6_2_GOVERNED_REVIEW_AND_SUBJECT_DISPOSITION_HOST_PROOF.md`
+
+Implemented and verified boundary:
+
+- exact reviewer disposition submission
+- immutable child revision creation for `APPROVE_WITH_EDIT`
+- durable final subject disposition
+- replayable review and subject-disposition ledger actions
+- no continuity publication
+- no structural-authority mutation
+
+It let exact reviewers answer grounded interpretive proposals and let the memory subject record final continuity disposition, while still stopping before publication.
+
+This document remains the governing contract record for the implemented `C0.6.2` boundary.
 
 ## Governing Finding
 
@@ -38,7 +52,7 @@ Until that exists, additional synthesis would only create more pending candidate
 
 ## Governing Flow
 
-`C0.6.2` must implement this bounded lifecycle:
+The implemented and verified `C0.6.2` lifecycle is:
 
 ```text
 pending review request
@@ -66,7 +80,7 @@ Continuity publication must still remain unavailable.
 
 ## Included Scope
 
-`C0.6.2` must implement:
+`C0.6.2` implemented:
 
 - submission of reviewer dispositions
 - strict disposition binding to `reviewEnvelopeHash`
@@ -79,7 +93,7 @@ Continuity publication must still remain unavailable.
 - replay of review, revision, and subject-disposition actions into projection
 - read routes for pending, completed, blocked, deferred, and contested review state
 
-Expected route surface:
+Verified route surface:
 
 ```text
 POST /interpretive/reviews/:reviewRequestId/dispositions
@@ -92,7 +106,7 @@ Exact route naming may follow existing plugin conventions, but the capability bo
 
 ## Excluded Scope
 
-`C0.6.2` must not implement:
+`C0.6.2` did not implement:
 
 - model synthesis
 - interpretation-generation prompts
@@ -252,7 +266,7 @@ That proves:
 
 ## Suggested Data and Replay Expectations
 
-At minimum, `C0.6.2` must preserve and replay:
+At minimum, `C0.6.2` preserves and replays:
 
 - exact `reviewRequestId`
 - `reviewDispositionId`
@@ -268,7 +282,7 @@ At minimum, `C0.6.2` must preserve and replay:
 
 Replay must be able to reconstruct the same current review and subject-disposition state from ledger history alone.
 
-## Test Matrix
+## Verified Test Matrix
 
 Minimum required proof:
 
@@ -285,9 +299,9 @@ Minimum required proof:
 11. live ST host enforces CSRF and route behavior
 12. live SB host enforces CSRF and route behavior
 
-## Pass Condition
+## Verified Pass Condition
 
-`C0.6.2` is complete only if it proves:
+`C0.6.2` proved:
 
 - exact review dispositions are bound and replayable
 - immutable edit revisions are created instead of mutation
@@ -297,7 +311,7 @@ Minimum required proof:
 - structural authority remains untouched
 - Node and Bun hosts behave the same at the contract level
 
-## Fail Condition
+## Fail Condition Preserved
 
 Stop the slice if any implementation would:
 
@@ -335,6 +349,8 @@ The architecture must learn how to hear:
 
 before it generates more meanings to ask about.
 
-## Stop-Before-Code Condition
+## Boundary Preservation
 
-Do not begin implementation until this brief is reviewed and accepted as the governing `C0.6.2` contract.
+`C0.6.2` is closed.
+
+This brief remains the governing contract record for the bounded review, revision, and subject-disposition slice that was implemented and host-verified before continuity publication.
