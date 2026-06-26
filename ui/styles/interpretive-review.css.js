@@ -148,9 +148,60 @@ export const INTERPRETIVE_REVIEW_CSS = `
     margin-bottom: 4px;
 }
 
+.ss-interpretive-action-card {
+    display: grid;
+    gap: 10px;
+}
+
 .ss-interpretive-review-list {
     display: grid;
     gap: 8px;
+}
+
+.ss-interpretive-review-form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+}
+
+.ss-interpretive-review-field {
+    display: grid;
+    gap: 4px;
+}
+
+.ss-interpretive-review-field > span:first-child {
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.ss-interpretive-review-form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.ss-interpretive-action-status {
+    border: 1px solid var(--ss-border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+    line-height: 1.4;
+    background: color-mix(in srgb, var(--ss-bg-primary) 92%, white 8%);
+}
+
+.ss-interpretive-action-status.tone-info {
+    border-color: rgba(84, 162, 255, 0.45);
+    color: #9bc2ff;
+}
+
+.ss-interpretive-action-status.tone-success {
+    border-color: rgba(60, 190, 90, 0.55);
+    color: #7fe08a;
+}
+
+.ss-interpretive-action-status.tone-error {
+    border-color: rgba(230, 80, 80, 0.55);
+    color: #ff8b8b;
 }
 
 .ss-interpretive-review-pre {

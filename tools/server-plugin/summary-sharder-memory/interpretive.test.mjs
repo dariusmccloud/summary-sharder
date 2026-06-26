@@ -717,6 +717,10 @@ test('trusted delegate may record the memory subject review edit and final grant
     assert.equal(delegatedReview.childInterpretation.revisionCreationProvenance.dispositionOwnerId, 'character:jeep.png');
     assert.equal(delegatedReview.childInterpretation.revisionCreationProvenance.submittedByActorId, 'user:Chris');
     assert.equal(delegatedReview.childInterpretation.revisionCreationProvenance.delegationPolicyId, 'jeep-chris-continuity-delegation');
+    assert.equal(
+        delegatedReview.interpretation.reviewDispositions.find((entry) => entry.reviewDispositionId === delegatedReview.disposition.reviewDispositionId)?.provenance?.submittedByActorId,
+        'user:Chris',
+    );
 
     const finalSubject = recordInterpretiveSubjectDisposition(request, 'interprev_delegate_case_v1', {
         submittedByActorId: 'user:Chris',
@@ -736,6 +740,8 @@ test('trusted delegate may record the memory subject review edit and final grant
     assert.equal(finalSubject.interpretation.subjectDispositionState, 'GRANTED');
     assert.equal(finalSubject.interpretation.publicationState, 'NOT_PUBLISHED');
     assert.equal(finalSubject.interpretation.authorityEffect, 'DESCRIPTIVE_ONLY');
+    assert.equal(finalSubject.interpretation.subjectDisposition.provenance.submittedByActorId, 'user:Chris');
+    assert.equal(finalSubject.interpretation.subjectDisposition.provenance.delegationPolicyId, 'jeep-chris-continuity-delegation');
 });
 
 test('subject disposition records grant after review completion without publishing continuity', () => {

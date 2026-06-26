@@ -3465,6 +3465,7 @@ export function submitInterpretiveReviewDisposition(request, reviewRequestId, pa
                     reviewDisposition.submittedAt,
                 ],
             );
+            persistActionProvenanceRow(adapter, reviewDisposition.provenance);
             const requestStatus = deriveRequestStatusFromDisposition(disposition);
             adapter.run(
                 'UPDATE interpretation_review_requests SET status = ? WHERE review_request_id = ?',
@@ -3577,6 +3578,7 @@ export function recordInterpretiveSubjectDisposition(request, interpretationRevi
             [createSubjectDispositionEvent(nextSubjectDisposition, interpretation, reviewEnvelopeHash)],
         );
         adapter.transaction(() => {
+            persistActionProvenanceRow(adapter, nextSubjectDisposition.provenance);
             adapter.run(
                 `UPDATE interpretation_subject_dispositions
                  SET state = ?, reason_codes_json = ?, commentary = ?, updated_at = ?

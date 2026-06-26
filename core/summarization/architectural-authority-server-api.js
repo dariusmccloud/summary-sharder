@@ -171,6 +171,28 @@ export async function getInterpretiveCandidate(interpretationRevisionId) {
     return await fetchJson(`/interpretive/candidates/${encodeURIComponent(normalizedId)}`);
 }
 
+export async function submitInterpretiveReviewDisposition(reviewRequestId, payload) {
+    const normalizedId = String(reviewRequestId || '').trim();
+    if (!normalizedId) {
+        throw new Error('reviewRequestId is required');
+    }
+    return await fetchJson(`/interpretive/reviews/${encodeURIComponent(normalizedId)}/dispositions`, {
+        method: 'POST',
+        body: payload || {},
+    });
+}
+
+export async function recordInterpretiveSubjectDisposition(interpretationRevisionId, payload) {
+    const normalizedId = String(interpretationRevisionId || '').trim();
+    if (!normalizedId) {
+        throw new Error('interpretationRevisionId is required');
+    }
+    return await fetchJson(`/interpretive/candidates/${encodeURIComponent(normalizedId)}/subject-disposition`, {
+        method: 'POST',
+        body: payload || {},
+    });
+}
+
 export async function validateArchitecturalBrowserMigration(payload) {
     return await fetchJson('/validate-browser-migration', {
         method: 'POST',
