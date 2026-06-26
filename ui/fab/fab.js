@@ -601,6 +601,10 @@ async function handleAction(action, button) {
                 await closePanels();
                 await callbacksRef.onOpenChatManager?.();
                 break;
+            case 'open-interpretive-review':
+                await closePanels();
+                await callbacksRef.onOpenInterpretiveReview?.();
+                break;
             case 'open-visibility':
                 await closePanels();
                 await callbacksRef.onOpenVisibility?.();

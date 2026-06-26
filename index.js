@@ -833,6 +833,14 @@ jQuery(async () => {
                 toastr.error(`Could not open chat manager: ${error?.message || error}`);
             }
         },
+        onOpenInterpretiveReview: async () => {
+            try {
+                const { openInterpretiveReviewModal } = await import('./ui/modals/management/interpretive-review-modal.js');
+                await openInterpretiveReviewModal();
+            } catch (error) {
+                toastr.error(`Could not open interpretive review queue: ${error?.message || error}`);
+            }
+        },
         onOpenVisibility: async () => {
             try {
                 const { openVisibilityModal } = await import('./ui/modals/management/visibility-modal.js');

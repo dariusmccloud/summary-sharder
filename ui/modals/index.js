@@ -13,3 +13,4 @@ export { openVisibilityModal } from './management/visibility-modal.js';
 export { openLorebookOptionsModal } from './management/lorebook-modal.js';
 export { openChatManagerModal } from './management/chat-manager-modal.js';
 export { openRagDebugModal } from './management/rag-debug-modal.js';
+export { openInterpretiveReviewModal } from './management/interpretive-review-modal.js';

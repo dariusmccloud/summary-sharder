@@ -18,6 +18,7 @@ import { parseRanges } from '../core/processing/utils.js';
 import { LorebookDropdown } from './dropdowns/lorebook-dropdown.js';
 import { openLorebookOptionsModal } from './modals/management/lorebook-modal.js';
 import { openChatManagerModal } from './modals/management/chat-manager-modal.js';
+import { openInterpretiveReviewModal } from './modals/management/interpretive-review-modal.js';
 import { openBatchConfigModal } from './modals/summarization/batch-config-modal.js';
 import { showSsInput } from './common/modal-base.js';
 import { openApiConfigModal } from './modals/configuration/api-config-modal.js';
@@ -527,6 +528,7 @@ export function renderSettingsUI(settings, callbacks) {
                         <div class="ss-action-bar-secondary">
                             <input id="ss-visibility-button" class="menu_button" type="button" value="Manage Visibility" />
                             <input id="ss-manage-chats-btn" class="menu_button" type="button" value="Manage Chats" />
+                            <input id="ss-interpretive-reviews-btn" class="menu_button" type="button" value="Interpretive Reviews" />
                         </div>
                     </div>
                     </div>
@@ -942,6 +944,10 @@ export function renderSettingsUI(settings, callbacks) {
 
     document.getElementById('ss-manage-chats-btn')?.addEventListener('click', () => {
         openChatManagerModal(settings);
+    });
+
+    document.getElementById('ss-interpretive-reviews-btn')?.addEventListener('click', () => {
+        openInterpretiveReviewModal();
     });
 
     updateActivePromptDisplay(settings);

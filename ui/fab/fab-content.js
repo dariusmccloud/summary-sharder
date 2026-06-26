@@ -187,6 +187,7 @@ function buildAdvancedPanel(snapshot) {
         items: [
             actionBtn('open-visibility', 'fa-eye', 'Visibility'),
             actionBtn('open-chat-manager', 'fa-comments', 'Chat Mngr.'),
+            actionBtn('open-interpretive-review', 'fa-scale-balanced', 'Interp. Review'),
             actionBtn('open-rag-settings', 'fa-database', 'RAG Settings'),
             actionBtn('open-api-config', 'fa-plug', 'API Config'),
         ]

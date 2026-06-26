@@ -19,6 +19,7 @@ import { FAB_CSS } from './styles/fab.css.js';
 import { FAB_PANELS_CSS } from './styles/fab-panels.css.js';
 import { RAG_CSS } from './styles/rag.css.js';
 import { RAG_DEBUG_CSS } from './styles/rag-debug.css.js';
+import { INTERPRETIVE_REVIEW_CSS } from './styles/interpretive-review.css.js';
 import { TEXTAREA_RESIZE_CSS } from './styles/textarea-resize.css.js';
 
 /**
@@ -65,5 +66,6 @@ export const EXTENSION_STYLES = [
     FAB_PANELS_CSS,
     RAG_CSS,
     RAG_DEBUG_CSS,
+    INTERPRETIVE_REVIEW_CSS,
     TEXTAREA_RESIZE_CSS,
 ].join('\n\n');

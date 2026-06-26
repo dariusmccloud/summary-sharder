@@ -42,6 +42,18 @@ async function fetchJson(path, options = {}) {
     return data;
 }
 
+function buildQueryString(filters = {}) {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters || {})) {
+        if (value === null || value === undefined) continue;
+        const text = String(value).trim();
+        if (!text) continue;
+        params.set(key, text);
+    }
+    const query = params.toString();
+    return query ? `?${query}` : '';
+}
+
 export async function getCsrfToken() {
     if (!csrfTokenPromise) {
         csrfTokenPromise = fetch('/csrf-token', {
@@ -141,6 +153,22 @@ export async function commitArchitecturalAuthorityServerUpdate(memoryScopeId, pa
         method: 'POST',
         body: payload,
     });
+}
+
+export async function listInterpretiveDelegationPolicies(filters = {}) {
+    return await fetchJson(`/interpretive/delegation-policies${buildQueryString(filters)}`);
+}
+
+export async function listInterpretiveReviews(filters = {}) {
+    return await fetchJson(`/interpretive/reviews${buildQueryString(filters)}`);
+}
+
+export async function getInterpretiveCandidate(interpretationRevisionId) {
+    const normalizedId = String(interpretationRevisionId || '').trim();
+    if (!normalizedId) {
+        throw new Error('interpretationRevisionId is required');
+    }
+    return await fetchJson(`/interpretive/candidates/${encodeURIComponent(normalizedId)}`);
 }
 
 export async function validateArchitecturalBrowserMigration(payload) {
