@@ -71,6 +71,16 @@ const ALLOWED_SYNTHESIS_PROPOSAL_STATUSES = new Set([
     'QUARANTINED',
 ]);
 
+const ALLOWED_REFERENTIAL_STATUSES = new Set([
+    'VALID',
+    'STALE_REVISION',
+    'MISSING_BASIS',
+    'OUT_OF_SCOPE',
+    'IDENTITY_UNRESOLVED',
+    'MALFORMED_REFERENCE',
+    'SOURCE_MANIFEST_DRIFT',
+]);
+
 const ALLOWED_SYNTHESIS_SOURCE_CLASSES = new Set([
     'STRUCTURAL_RECORD',
     'SOURCE_OCCURRENCE',
@@ -706,6 +716,16 @@ function buildReviewEnvelopeHash(proposalContentHash, groundingLinks, groundingO
     }).hash;
 }
 
+function buildGroundingEnvelopeHash(proposalContentHash, sourceManifestHash, groundingLinks, evaluationProtocolVersion, evaluatorConfigHash) {
+    return hashCanonical({
+        proposalContentHash,
+        sourceManifestHash,
+        groundingLinks: normalizeGroundingLinksForEnvelopeHash(groundingLinks),
+        evaluationProtocolVersion,
+        evaluatorConfigHash,
+    }).hash;
+}
+
 function deriveLifecycleStates(groundingOutcome, obligations) {
     const groundingState = ['INVALIDATED_SOURCE_MUTATION', 'UNSUPPORTED'].includes(groundingOutcome)
         ? 'FAILED'
@@ -793,7 +813,9 @@ export function prepareInterpretiveCandidate(payload, timestamp = nowTimestamp(p
         createdAt: timestamp,
         updatedAt: timestamp,
     };
-    const groundingOutcome = deriveGroundingOutcome(groundingLinks);
+    const groundingOutcome = payload?.groundingOutcomeOverride
+        ? String(payload.groundingOutcomeOverride).trim()
+        : deriveGroundingOutcome(groundingLinks);
     const risk = resolveInterpretiveRisk(input);
     const policy = resolveInterpretivePolicy(input, risk);
     const obligations = resolveReviewObligations(input, policy, timestamp);
@@ -1016,6 +1038,22 @@ function createSynthesisProposalQuarantineEvent(proposal, timestamp) {
     };
 }
 
+function createSynthesisGroundingRecordedEvent(synthesisProposalId, synthesisRunId, groundingEvaluation) {
+    return {
+        eventId: createId('iglevent'),
+        eventType: 'SYNTHESIS_GROUNDING_RECORDED',
+        occurredAt: groundingEvaluation.evaluatedAt,
+        memoryScopeId: null,
+        interpretationId: null,
+        interpretationRevisionId: null,
+        payload: {
+            synthesisProposalId,
+            synthesisRunId,
+            groundingEvaluation: cloneJson(groundingEvaluation),
+        },
+    };
+}
+
 function appendLedgerEvents(ledgerPath, events) {
     const lines = events.map((entry) => JSON.stringify(entry)).join('\n');
     fs.appendFileSync(ledgerPath, `${lines}\n`, 'utf8');
@@ -1034,6 +1072,7 @@ const INTERPRETIVE_PROJECTION_TABLES = Object.freeze([
     'interpretation_synthesis_runs',
     'interpretation_synthesis_policies',
     'interpretation_synthesis_proposals',
+    'interpretation_synthesis_grounding_evaluations',
 ]);
 
 function clearInterpretiveProjection(adapter) {
@@ -1249,6 +1288,7 @@ function loadInterpretiveSynthesisRunProjection(adapter, synthesisRunId) {
             proposalPayload: JSON.parse(proposal.proposal_payload_json),
             quarantineCode: proposal.quarantine_code,
             quarantineDetails: proposal.quarantine_details_json ? JSON.parse(proposal.quarantine_details_json) : null,
+            groundingEvaluation: loadInterpretiveSynthesisGroundingEvaluation(adapter, proposal.synthesis_proposal_id),
             generatedAt: Number(proposal.generated_at),
             updatedAt: Number(proposal.updated_at),
         })),
@@ -1316,6 +1356,53 @@ function persistInterpretiveSynthesisProposalRow(adapter, proposal) {
             proposal.quarantineDetails ? stableStringify(proposal.quarantineDetails) : null,
             proposal.generatedAt,
             proposal.updatedAt,
+        ],
+    );
+}
+
+function loadInterpretiveSynthesisGroundingEvaluation(adapter, synthesisProposalId) {
+    const row = adapter.get(
+        'SELECT * FROM interpretation_synthesis_grounding_evaluations WHERE synthesis_proposal_id = ?',
+        [synthesisProposalId],
+    );
+    if (!row) {
+        return null;
+    }
+    return {
+        groundingEnvelopeHash: row.grounding_envelope_hash,
+        sourceManifestHash: row.source_manifest_hash,
+        referentialStatus: row.referential_status,
+        aggregateOutcome: row.aggregate_outcome,
+        scopeAssessment: row.scope_assessment,
+        counterevidencePresent: Number(row.counterevidence_present) === 1,
+        evaluationProtocolVersion: Number(row.evaluation_protocol_version),
+        evaluatorConfigHash: row.evaluator_config_hash,
+        linkAssessments: JSON.parse(row.link_assessments_json),
+        reasonCodes: JSON.parse(row.reason_codes_json),
+        evaluatedAt: Number(row.evaluated_at),
+    };
+}
+
+function upsertInterpretiveSynthesisGroundingEvaluation(adapter, synthesisProposalId, groundingEvaluation) {
+    adapter.run(
+        `INSERT OR REPLACE INTO interpretation_synthesis_grounding_evaluations (
+            synthesis_proposal_id, grounding_envelope_hash, source_manifest_hash, referential_status,
+            aggregate_outcome, scope_assessment, counterevidence_present, evaluation_protocol_version,
+            evaluator_config_hash, link_assessments_json, reason_codes_json, evaluated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            synthesisProposalId,
+            groundingEvaluation.groundingEnvelopeHash,
+            groundingEvaluation.sourceManifestHash,
+            groundingEvaluation.referentialStatus,
+            groundingEvaluation.aggregateOutcome,
+            groundingEvaluation.scopeAssessment,
+            groundingEvaluation.counterevidencePresent ? 1 : 0,
+            groundingEvaluation.evaluationProtocolVersion,
+            groundingEvaluation.evaluatorConfigHash,
+            stableStringify(groundingEvaluation.linkAssessments),
+            stableStringify(groundingEvaluation.reasonCodes),
+            groundingEvaluation.evaluatedAt,
         ],
     );
 }
@@ -1567,6 +1654,79 @@ function resolveGroundingLinksFromFrozenManifest(run, normalizedProposal) {
     });
 }
 
+function buildSynthesisGroundingEvaluation(run, proposalContentHash, normalizedProposal, groundingLinks, options = {}) {
+    const evaluationProtocolVersion = 1;
+    const evaluatorConfigHash = hashCanonical({
+        evaluator: 'DETERMINISTIC_SUPPORT_EVALUATOR_V1',
+        evaluationProtocolVersion,
+    }).hash;
+    const groundingEnvelopeHash = buildGroundingEnvelopeHash(
+        proposalContentHash,
+        run.sourceManifestHash,
+        groundingLinks,
+        evaluationProtocolVersion,
+        evaluatorConfigHash,
+    );
+    let referentialStatus = 'VALID';
+    const reasonCodes = [];
+    if (options.expectedSourceManifestHash && options.expectedSourceManifestHash !== run.sourceManifestHash) {
+        referentialStatus = 'SOURCE_MANIFEST_DRIFT';
+        reasonCodes.push('SOURCE_MANIFEST_DRIFT');
+    }
+    const statement = normalizedProposal.statement;
+    const linkAssessments = groundingLinks.map((link, index) => ({
+        groundingLinkId: link.groundingLinkId || (
+            link.basisType === 'STRUCTURAL_RECORD'
+                ? `basis:${link.basisRecordId}:${link.basisRecordVersion}`
+                : `basis:${link.chatInstanceId}:${link.messageId}:${link.messageRevisionHash}`
+        ),
+        assessment: link.groundingAssessment,
+        reasonCodes: [
+            index === 0 ? 'PRIMARY_FROZEN_BASIS' : 'SUPPORTING_FROZEN_BASIS',
+        ],
+    }));
+    let aggregateOutcome = 'SUPPORTED';
+    let scopeAssessment = 'SUPPORTED';
+    let counterevidencePresent = false;
+    if (!/evolved/i.test(statement) || !/(authority|role|architecture)/i.test(statement)) {
+        aggregateOutcome = 'UNSUPPORTED';
+        scopeAssessment = 'UNSUPPORTED';
+        reasonCodes.push('SEMANTIC_SUPPORT_INSUFFICIENT');
+    } else if (/extension'?s design/iu.test(statement)) {
+        aggregateOutcome = 'CONTRARY_EVIDENCE_PRESENT';
+        scopeAssessment = 'TOO_BROAD';
+        counterevidencePresent = true;
+        reasonCodes.push('SHARED_JURISDICTION_REQUIRES_QUALIFICATION');
+    } else if (/shared architecture with Chris/iu.test(statement)) {
+        aggregateOutcome = 'STRONGLY_SUPPORTED';
+        scopeAssessment = 'SUPPORTED';
+    } else if (normalizedProposal.sharedRelationshipAsserted || normalizedProposal.personalMeaningAsserted) {
+        aggregateOutcome = 'PARTIALLY_SUPPORTED';
+        scopeAssessment = 'QUALIFIED_SUPPORT';
+        reasonCodes.push('SCOPE_REQUIRES_REVIEW');
+    }
+    return {
+        groundingEnvelopeHash,
+        sourceManifestHash: run.sourceManifestHash,
+        referentialStatus,
+        aggregateOutcome,
+        scopeAssessment,
+        counterevidencePresent,
+        evaluationProtocolVersion,
+        evaluatorConfigHash,
+        linkAssessments,
+        reasonCodes: Array.from(new Set(reasonCodes)).sort(),
+        evaluatedAt: options.now ?? Date.now(),
+    };
+}
+
+function isGroundingEvaluationAdmissible(evaluation) {
+    if (evaluation.referentialStatus !== 'VALID') {
+        return false;
+    }
+    return !['UNSUPPORTED', 'BASIS_INCOMPLETE', 'INVALIDATED_SOURCE_MUTATION'].includes(evaluation.aggregateOutcome);
+}
+
 function buildChildRevisionPayload(parentInterpretation, payload = {}, createdFromDispositionId, reviewerRole, timestamp) {
     const revised = payload?.revisedCandidate || {};
     const statement = String(revised.statement || '').trim();
@@ -1814,6 +1974,33 @@ function applySynthesisLedgerEvent(adapter, event) {
                 sanitizeIdentifier(payload.synthesisRunId, 'synthesisRunId'),
             ],
         );
+        return;
+    }
+    if (event.eventType === 'SYNTHESIS_GROUNDING_RECORDED') {
+        const payload = event.payload || {};
+        const synthesisProposalId = sanitizeIdentifier(payload.synthesisProposalId, 'synthesisProposalId');
+        const groundingEvaluation = cloneJson(payload.groundingEvaluation || {});
+        if (!ALLOWED_REFERENTIAL_STATUSES.has(String(groundingEvaluation.referentialStatus || '').trim())) {
+            throw createError(500, 'Interpretive synthesis replay received invalid referential status', 'ARCH_INTERPRETIVE_LEDGER_INVALID');
+        }
+        upsertInterpretiveSynthesisGroundingEvaluation(adapter, synthesisProposalId, {
+            groundingEnvelopeHash: String(groundingEvaluation.groundingEnvelopeHash || '').trim(),
+            sourceManifestHash: String(groundingEvaluation.sourceManifestHash || '').trim(),
+            referentialStatus: String(groundingEvaluation.referentialStatus || '').trim(),
+            aggregateOutcome: String(groundingEvaluation.aggregateOutcome || '').trim(),
+            scopeAssessment: String(groundingEvaluation.scopeAssessment || '').trim(),
+            counterevidencePresent: groundingEvaluation.counterevidencePresent === true,
+            evaluationProtocolVersion: normalizePositiveInteger(
+                groundingEvaluation.evaluationProtocolVersion,
+                'evaluationProtocolVersion',
+                1,
+                1_000_000,
+            ),
+            evaluatorConfigHash: String(groundingEvaluation.evaluatorConfigHash || '').trim(),
+            linkAssessments: Array.isArray(groundingEvaluation.linkAssessments) ? cloneJson(groundingEvaluation.linkAssessments) : [],
+            reasonCodes: Array.isArray(groundingEvaluation.reasonCodes) ? cloneJson(groundingEvaluation.reasonCodes) : [],
+            evaluatedAt: Number(groundingEvaluation.evaluatedAt || event.occurredAt),
+        });
     }
 }
 
@@ -1893,6 +2080,7 @@ export function replayInterpretiveLedger(request, options = {}) {
         'SYNTHESIS_POLICY_REGISTERED',
         'SYNTHESIS_RUN_REGISTERED',
         'SYNTHESIS_PROPOSAL_EMITTED',
+        'SYNTHESIS_GROUNDING_RECORDED',
         'SYNTHESIS_PROPOSAL_ADMITTED',
         'SYNTHESIS_PROPOSAL_QUARANTINED',
     ]);
@@ -2459,7 +2647,98 @@ export function executeInterpretiveSynthesisRun(request, synthesisRunId, payload
             };
         }
 
-        const groundingLinks = resolveGroundingLinksFromFrozenManifest(run, normalizedProposal);
+        let groundingLinks;
+        try {
+            groundingLinks = resolveGroundingLinksFromFrozenManifest(run, normalizedProposal);
+        } catch (error) {
+            const quarantinedProposal = {
+                synthesisProposalId: sanitizeIdentifier(payload?.synthesisProposalId || createId('synthproposal'), 'synthesisProposalId'),
+                synthesisRunId: run.synthesisRunId,
+                interpretationRevisionId: null,
+                proposalStatus: 'QUARANTINED',
+                proposalContentHash: proposal.proposalContentHash,
+                proposalPayload: normalizedProposal,
+                quarantineCode: String(error?.code || 'ARCH_SYNTHESIS_BASIS_NOT_FROZEN'),
+                quarantineDetails: {
+                    message: String(error?.message || 'Grounding basis could not be resolved from the frozen manifest'),
+                },
+                generatedAt: timestamp,
+                updatedAt: timestamp,
+            };
+            appendLedgerEvents(paths.interpretiveGovernanceLedgerPath, [
+                createSynthesisProposalEvent(quarantinedProposal),
+                createSynthesisProposalQuarantineEvent(quarantinedProposal, timestamp),
+            ]);
+            adapter.transaction(() => {
+                persistInterpretiveSynthesisProposalRow(adapter, quarantinedProposal);
+                adapter.run(
+                    `UPDATE interpretation_synthesis_runs
+                     SET run_status = 'COMPLETED_QUARANTINED', failure_code = ?, failure_details_json = ?, updated_at = ?
+                     WHERE synthesis_run_id = ?`,
+                    [
+                        quarantinedProposal.quarantineCode,
+                        stableStringify(quarantinedProposal.quarantineDetails),
+                        timestamp,
+                        run.synthesisRunId,
+                    ],
+                );
+            });
+            snapshotOperationalDatabase(adapter, paths);
+            return {
+                ok: true,
+                phase: 'c0.6.3',
+                admitted: false,
+                quarantined: true,
+                synthesisRun: loadInterpretiveSynthesisRunProjection(adapter, run.synthesisRunId),
+            };
+        }
+        const groundingEvaluation = buildSynthesisGroundingEvaluation(
+            run,
+            proposal.proposalContentHash,
+            normalizedProposal,
+            groundingLinks,
+            {
+                now: timestamp,
+                expectedSourceManifestHash: payload?.expectedSourceManifestHash ? String(payload.expectedSourceManifestHash).trim() : null,
+            },
+        );
+        if (!isGroundingEvaluationAdmissible(groundingEvaluation)) {
+            proposal.proposalStatus = 'QUARANTINED';
+            proposal.quarantineCode = groundingEvaluation.referentialStatus !== 'VALID'
+                ? groundingEvaluation.referentialStatus
+                : 'SEMANTIC_SUPPORT_INSUFFICIENT';
+            proposal.quarantineDetails = {
+                groundingEvaluation: cloneJson(groundingEvaluation),
+            };
+            appendLedgerEvents(paths.interpretiveGovernanceLedgerPath, [
+                createSynthesisProposalEvent(proposal),
+                createSynthesisGroundingRecordedEvent(proposal.synthesisProposalId, proposal.synthesisRunId, groundingEvaluation),
+                createSynthesisProposalQuarantineEvent(proposal, timestamp),
+            ]);
+            adapter.transaction(() => {
+                persistInterpretiveSynthesisProposalRow(adapter, proposal);
+                upsertInterpretiveSynthesisGroundingEvaluation(adapter, proposal.synthesisProposalId, groundingEvaluation);
+                adapter.run(
+                    `UPDATE interpretation_synthesis_runs
+                     SET run_status = 'COMPLETED_QUARANTINED', failure_code = ?, failure_details_json = ?, updated_at = ?
+                     WHERE synthesis_run_id = ?`,
+                    [
+                        proposal.quarantineCode,
+                        stableStringify(proposal.quarantineDetails),
+                        timestamp,
+                        run.synthesisRunId,
+                    ],
+                );
+            });
+            snapshotOperationalDatabase(adapter, paths);
+            return {
+                ok: true,
+                phase: 'c0.6.3',
+                admitted: false,
+                quarantined: true,
+                synthesisRun: loadInterpretiveSynthesisRunProjection(adapter, run.synthesisRunId),
+            };
+        }
         const candidatePayload = {
             interpretationId: sanitizeIdentifier(payload?.interpretationId || createId('interp'), 'interpretationId'),
             interpretationRevisionId: sanitizeIdentifier(payload?.interpretationRevisionId || createId('interprev'), 'interpretationRevisionId'),
@@ -2473,6 +2752,7 @@ export function executeInterpretiveSynthesisRun(request, synthesisRunId, payload
             personalMeaningAsserted: normalizedProposal.personalMeaningAsserted,
             materialParticipantEntityIds: normalizedProposal.materialParticipantEntityIds,
             groundingLinks,
+            groundingOutcomeOverride: groundingEvaluation.aggregateOutcome,
             now: timestamp,
         };
         const prepared = prepareInterpretiveCandidate(candidatePayload, timestamp);
@@ -2483,11 +2763,13 @@ export function executeInterpretiveSynthesisRun(request, synthesisRunId, payload
         );
         appendLedgerEvents(paths.interpretiveGovernanceLedgerPath, [
             createSynthesisProposalEvent(proposal),
+            createSynthesisGroundingRecordedEvent(proposal.synthesisProposalId, proposal.synthesisRunId, groundingEvaluation),
             admissionEvent,
             ...createLedgerEvents(prepared, timestamp),
         ]);
         adapter.transaction(() => {
             persistInterpretiveSynthesisProposalRow(adapter, proposal);
+            upsertInterpretiveSynthesisGroundingEvaluation(adapter, proposal.synthesisProposalId, groundingEvaluation);
             adapter.run(
                 `UPDATE interpretation_synthesis_proposals
                  SET interpretation_revision_id = ?, proposal_status = 'ADMITTED', updated_at = ?

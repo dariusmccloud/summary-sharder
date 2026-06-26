@@ -166,6 +166,7 @@ function comparableSynthesisRunProjection(value) {
             proposalPayload: proposal.proposalPayload,
             quarantineCode: proposal.quarantineCode,
             quarantineDetails: proposal.quarantineDetails,
+            groundingEvaluation: proposal.groundingEvaluation,
         })),
     };
 }
@@ -431,6 +432,10 @@ test('deterministic stub synthesis admits a proposal into the existing interpret
     assert.deepEqual(executed.synthesisRun.generatedCandidateIds, ['interprev_synth_generated_v1']);
     assert.equal(executed.synthesisRun.proposals.length, 1);
     assert.equal(executed.synthesisRun.proposals[0].proposalStatus, 'ADMITTED');
+    assert.equal(executed.synthesisRun.proposals[0].groundingEvaluation.referentialStatus, 'VALID');
+    assert.equal(executed.synthesisRun.proposals[0].groundingEvaluation.aggregateOutcome, 'CONTRARY_EVIDENCE_PRESENT');
+    assert.equal(executed.synthesisRun.proposals[0].groundingEvaluation.scopeAssessment, 'TOO_BROAD');
+    assert.equal(executed.synthesisRun.proposals[0].groundingEvaluation.counterevidencePresent, true);
     assert.equal(executed.interpretation.reviewState, 'PENDING');
     assert.equal(executed.interpretation.publicationState, 'NOT_PUBLISHED');
     assert.equal(executed.interpretation.authorityEffect, 'DESCRIPTIVE_ONLY');
@@ -467,6 +472,52 @@ test('deterministic stub synthesis quarantines output that attempts to set autho
     assert.equal(executed.synthesisRun.proposals.length, 1);
     assert.equal(executed.synthesisRun.proposals[0].proposalStatus, 'QUARANTINED');
     assert.equal(executed.synthesisRun.proposals[0].quarantineCode, 'ARCH_SYNTHESIS_FORBIDDEN_OUTPUT_FIELD');
+});
+
+test('semantic support may fail even when referential grounding is valid', () => {
+    const root = makeTempRoot();
+    const request = buildRequest(root);
+    upsertInterpretiveSynthesisPolicy(request, makeSynthesisPolicyPayload());
+    createInterpretiveSynthesisRun(request, makeSynthesisRunPayload());
+
+    const executed = executeInterpretiveSynthesisRun(request, 'synthrun_scope_alpha_v1', {
+        adapterId: 'DETERMINISTIC_STUB_V1',
+        stubProposalOverride: {
+            type: 'ROLE_EVOLUTION',
+            statement: 'This sentence does not claim any supported evolution or authority outcome.',
+            assertionDomains: ['ROLE'],
+            sharedRelationshipAsserted: false,
+            personalMeaningAsserted: false,
+            materialParticipantEntityIds: ['character:jeep.png', 'user:Chris'],
+            proposedBasis: [{ basisType: 'SOURCE_OCCURRENCE', messageId: 'msg_alpha0000000000000000000000000' }],
+        },
+        now: Date.parse('2026-06-26T00:06:00.000Z'),
+    });
+
+    assert.equal(executed.admitted, false);
+    assert.equal(executed.quarantined, true);
+    assert.equal(executed.synthesisRun.proposals[0].groundingEvaluation.referentialStatus, 'VALID');
+    assert.equal(executed.synthesisRun.proposals[0].groundingEvaluation.aggregateOutcome, 'UNSUPPORTED');
+    assert.equal(executed.synthesisRun.proposals[0].quarantineCode, 'SEMANTIC_SUPPORT_INSUFFICIENT');
+});
+
+test('source manifest drift invalidates a synthesis proposal before review admission', () => {
+    const root = makeTempRoot();
+    const request = buildRequest(root);
+    upsertInterpretiveSynthesisPolicy(request, makeSynthesisPolicyPayload());
+    const created = createInterpretiveSynthesisRun(request, makeSynthesisRunPayload());
+
+    const executed = executeInterpretiveSynthesisRun(request, 'synthrun_scope_alpha_v1', {
+        adapterId: 'DETERMINISTIC_STUB_V1',
+        expectedSourceManifestHash: 'sha256:stale-manifest',
+        now: Date.parse('2026-06-26T00:06:00.000Z'),
+    });
+
+    assert.equal(created.synthesisRun.sourceManifestHash.startsWith('sha256:'), true);
+    assert.equal(executed.admitted, false);
+    assert.equal(executed.quarantined, true);
+    assert.equal(executed.synthesisRun.proposals[0].groundingEvaluation.referentialStatus, 'SOURCE_MANIFEST_DRIFT');
+    assert.equal(executed.synthesisRun.proposals[0].quarantineCode, 'SOURCE_MANIFEST_DRIFT');
 });
 
 test('replay preserves admitted deterministic synthesis proposal and does not regenerate it', () => {

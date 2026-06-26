@@ -260,6 +260,20 @@ export function schemaStatements() {
             generated_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         )`,
+        `CREATE TABLE IF NOT EXISTS interpretation_synthesis_grounding_evaluations (
+            synthesis_proposal_id TEXT PRIMARY KEY,
+            grounding_envelope_hash TEXT NOT NULL,
+            source_manifest_hash TEXT NOT NULL,
+            referential_status TEXT NOT NULL,
+            aggregate_outcome TEXT NOT NULL,
+            scope_assessment TEXT NOT NULL,
+            counterevidence_present INTEGER NOT NULL,
+            evaluation_protocol_version INTEGER NOT NULL,
+            evaluator_config_hash TEXT NOT NULL,
+            link_assessments_json TEXT NOT NULL,
+            reason_codes_json TEXT NOT NULL,
+            evaluated_at INTEGER NOT NULL
+        )`,
     ];
 }
 

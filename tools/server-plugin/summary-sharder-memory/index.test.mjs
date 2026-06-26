@@ -655,6 +655,9 @@ test('interpretive synthesis generate route admits deterministic stub output int
     assert.equal(generateResult.payload.interpretation.authorityEffect, 'DESCRIPTIVE_ONLY');
     assert.equal(generateResult.payload.synthesisRun.runStatus, 'COMPLETED_ADMITTED');
     assert.equal(generateResult.payload.synthesisRun.generatedCandidateIds[0], 'interprev_generated_route_case_v1');
+    assert.equal(generateResult.payload.synthesisRun.proposals[0].groundingEvaluation.referentialStatus, 'VALID');
+    assert.equal(generateResult.payload.synthesisRun.proposals[0].groundingEvaluation.scopeAssessment, 'TOO_BROAD');
+    assert.equal(generateResult.payload.synthesisRun.proposals[0].groundingEvaluation.counterevidencePresent, true);
 });
 
 test('health route reconciles verifying promotion state before opening live authority', async () => {
