@@ -248,6 +248,18 @@ export function schemaStatements() {
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         )`,
+        `CREATE TABLE IF NOT EXISTS interpretation_synthesis_proposals (
+            synthesis_proposal_id TEXT PRIMARY KEY,
+            synthesis_run_id TEXT NOT NULL,
+            interpretation_revision_id TEXT,
+            proposal_status TEXT NOT NULL,
+            proposal_content_hash TEXT NOT NULL,
+            proposal_payload_json TEXT NOT NULL,
+            quarantine_code TEXT,
+            quarantine_details_json TEXT,
+            generated_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )`,
     ];
 }
 

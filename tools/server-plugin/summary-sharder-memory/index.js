@@ -39,6 +39,7 @@ import {
     recoverPromotionState,
 } from './promotion.js';
 import {
+    executeInterpretiveSynthesisRun,
     createInterpretiveSynthesisRun,
     createInterpretiveCandidate,
     createInterpretiveRevision,
@@ -524,6 +525,15 @@ export async function init(router) {
     router.get('/interpretive/synthesis/runs/:synthesisRunId', async (request, response) => {
         try {
             const result = getInterpretiveSynthesisRun(request, request.params.synthesisRunId);
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/interpretive/synthesis/runs/:synthesisRunId/generate', async (request, response) => {
+        try {
+            const result = executeInterpretiveSynthesisRun(request, request.params.synthesisRunId, request.body || {});
             return response.send(result);
         } catch (error) {
             return handleError(response, error);

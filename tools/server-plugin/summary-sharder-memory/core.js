@@ -79,6 +79,7 @@ export const CAPABILITIES = Object.freeze({
         synthesisPolicyStorage: true,
         boundedSynthesisRunContract: true,
         frozenSourceManifest: true,
+        deterministicStubSynthesisAvailable: true,
         continuityPublicationAvailable: false,
         structuralAuthorityMutation: false,
         modelSynthesisAvailable: false,

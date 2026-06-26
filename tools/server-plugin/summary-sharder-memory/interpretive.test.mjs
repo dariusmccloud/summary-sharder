@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import { getStoragePaths, openOperationalDatabase } from './core.js';
 import {
+    executeInterpretiveSynthesisRun,
     createInterpretiveSynthesisRun,
     createInterpretiveCandidate,
     createInterpretiveRevision,
@@ -156,6 +157,16 @@ function comparableSynthesisRunProjection(value) {
         failureDetails: value.failureDetails,
         createdByEntityId: value.createdByEntityId,
         manualTriggerAcknowledged: value.manualTriggerAcknowledged,
+        proposals: value.proposals.map((proposal) => ({
+            synthesisProposalId: proposal.synthesisProposalId,
+            synthesisRunId: proposal.synthesisRunId,
+            interpretationRevisionId: proposal.interpretationRevisionId,
+            proposalStatus: proposal.proposalStatus,
+            proposalContentHash: proposal.proposalContentHash,
+            proposalPayload: proposal.proposalPayload,
+            quarantineCode: proposal.quarantineCode,
+            quarantineDetails: proposal.quarantineDetails,
+        })),
     };
 }
 
@@ -396,6 +407,101 @@ test('bounded synthesis runs freeze source manifests without generation and repl
         comparableSynthesisRunProjection(replayed.replayedSynthesisRuns[0]),
         comparableSynthesisRunProjection(created.synthesisRun),
     );
+});
+
+test('deterministic stub synthesis admits a proposal into the existing interpretive review workflow', () => {
+    const root = makeTempRoot();
+    const request = buildRequest(root);
+    upsertInterpretiveSynthesisPolicy(request, makeSynthesisPolicyPayload());
+    createInterpretiveSynthesisRun(request, makeSynthesisRunPayload({
+        requestedAssertionDomains: ['ROLE', 'AUTHORITY', 'RELATIONSHIP'],
+        sharedRelationshipRequested: true,
+        personalMeaningRequested: true,
+    }));
+
+    const executed = executeInterpretiveSynthesisRun(request, 'synthrun_scope_alpha_v1', {
+        adapterId: 'DETERMINISTIC_STUB_V1',
+        interpretationId: 'interp_synth_generated',
+        interpretationRevisionId: 'interprev_synth_generated_v1',
+        now: Date.parse('2026-06-26T00:06:00.000Z'),
+    });
+
+    assert.equal(executed.admitted, true);
+    assert.equal(executed.synthesisRun.runStatus, 'COMPLETED_ADMITTED');
+    assert.deepEqual(executed.synthesisRun.generatedCandidateIds, ['interprev_synth_generated_v1']);
+    assert.equal(executed.synthesisRun.proposals.length, 1);
+    assert.equal(executed.synthesisRun.proposals[0].proposalStatus, 'ADMITTED');
+    assert.equal(executed.interpretation.reviewState, 'PENDING');
+    assert.equal(executed.interpretation.publicationState, 'NOT_PUBLISHED');
+    assert.equal(executed.interpretation.authorityEffect, 'DESCRIPTIVE_ONLY');
+
+    const reopened = getInterpretiveCandidate(request, 'interprev_synth_generated_v1');
+    assert.equal(reopened.interpretation.policyBinding.validationPolicyId, 'shared-role-memory');
+    assert.equal(reopened.interpretation.reviewRequests.length, 2);
+});
+
+test('deterministic stub synthesis quarantines output that attempts to set authority-bearing fields', () => {
+    const root = makeTempRoot();
+    const request = buildRequest(root);
+    upsertInterpretiveSynthesisPolicy(request, makeSynthesisPolicyPayload());
+    createInterpretiveSynthesisRun(request, makeSynthesisRunPayload());
+
+    const executed = executeInterpretiveSynthesisRun(request, 'synthrun_scope_alpha_v1', {
+        adapterId: 'DETERMINISTIC_STUB_V1',
+        stubProposalOverride: {
+            type: 'ROLE_EVOLUTION',
+            statement: 'Invalid because it tries to set publication directly.',
+            assertionDomains: ['ROLE'],
+            sharedRelationshipAsserted: false,
+            personalMeaningAsserted: false,
+            materialParticipantEntityIds: ['character:jeep.png', 'user:Chris'],
+            proposedBasis: [{ basisType: 'SOURCE_OCCURRENCE', messageId: 'msg_alpha0000000000000000000000000' }],
+            publicationState: 'PUBLISHED',
+        },
+        now: Date.parse('2026-06-26T00:06:00.000Z'),
+    });
+
+    assert.equal(executed.admitted, false);
+    assert.equal(executed.quarantined, true);
+    assert.equal(executed.synthesisRun.runStatus, 'COMPLETED_QUARANTINED');
+    assert.equal(executed.synthesisRun.proposals.length, 1);
+    assert.equal(executed.synthesisRun.proposals[0].proposalStatus, 'QUARANTINED');
+    assert.equal(executed.synthesisRun.proposals[0].quarantineCode, 'ARCH_SYNTHESIS_FORBIDDEN_OUTPUT_FIELD');
+});
+
+test('replay preserves admitted deterministic synthesis proposal and does not regenerate it', () => {
+    const sourceRoot = makeTempRoot();
+    const sourceRequest = buildRequest(sourceRoot);
+    upsertInterpretiveSynthesisPolicy(sourceRequest, makeSynthesisPolicyPayload());
+    createInterpretiveSynthesisRun(sourceRequest, makeSynthesisRunPayload({
+        requestedAssertionDomains: ['ROLE', 'AUTHORITY', 'RELATIONSHIP'],
+        sharedRelationshipRequested: true,
+        personalMeaningRequested: true,
+    }));
+    const executed = executeInterpretiveSynthesisRun(sourceRequest, 'synthrun_scope_alpha_v1', {
+        adapterId: 'DETERMINISTIC_STUB_V1',
+        interpretationId: 'interp_synth_replay',
+        interpretationRevisionId: 'interprev_synth_replay_v1',
+        now: Date.parse('2026-06-26T00:06:00.000Z'),
+    });
+
+    const sourcePaths = getStoragePaths(sourceRoot);
+    const targetRoot = makeTempRoot();
+    const targetPaths = getStoragePaths(targetRoot);
+    fs.mkdirSync(targetPaths.storageRoot, { recursive: true });
+    fs.copyFileSync(sourcePaths.interpretiveGovernanceLedgerPath, targetPaths.interpretiveGovernanceLedgerPath);
+
+    const replayed = replayInterpretiveLedger(buildRequest(targetRoot));
+    assert.equal(replayed.phase, 'c0.6.3');
+    assert.equal(replayed.replayedSynthesisRuns.length, 1);
+    assert.equal(replayed.replayedSynthesisRuns[0].runStatus, 'COMPLETED_ADMITTED');
+    assert.deepEqual(
+        comparableSynthesisRunProjection(replayed.replayedSynthesisRuns[0]),
+        comparableSynthesisRunProjection(executed.synthesisRun),
+    );
+
+    const reopened = getInterpretiveCandidate(buildRequest(targetRoot), 'interprev_synth_replay_v1');
+    assert.equal(reopened.interpretation.statement, executed.interpretation.statement);
 });
 
 test('submitInterpretiveReviewDisposition rejects stale review envelopes', () => {

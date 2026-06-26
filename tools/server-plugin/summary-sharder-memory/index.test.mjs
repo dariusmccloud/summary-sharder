@@ -233,6 +233,7 @@ test('route surface exposes candidate lifecycle routes and separate promotion ro
     assert.equal(router.routes.get.has('/interpretive/reviews'), true);
     assert.equal(router.routes.post.has('/interpretive/synthesis/policies'), true);
     assert.equal(router.routes.post.has('/interpretive/synthesis/runs'), true);
+    assert.equal(router.routes.post.has('/interpretive/synthesis/runs/:synthesisRunId/generate'), true);
     assert.equal(router.routes.post.has('/interpretive/candidates'), true);
     assert.equal(router.routes.post.has('/interpretive/reviews/:reviewRequestId/dispositions'), true);
     assert.equal(router.routes.post.has('/interpretive/candidates/:interpretationRevisionId/subject-disposition'), true);
@@ -258,6 +259,7 @@ test('capabilities and candidate lifecycle routes report no promotion and suppor
     assert.equal(capabilities.payload.capabilities.c0_6_2.reviewerDispositionSubmission, true);
     assert.equal(capabilities.payload.capabilities.c0_6_2.continuityPublicationAvailable, false);
     assert.equal(capabilities.payload.capabilities.c0_6_3.boundedSynthesisRunContract, true);
+    assert.equal(capabilities.payload.capabilities.c0_6_3.deterministicStubSynthesisAvailable, true);
     assert.equal(capabilities.payload.capabilities.c0_6_3.modelSynthesisAvailable, false);
 
     const initResult = await invoke(
@@ -571,6 +573,88 @@ test('interpretive synthesis routes store subject-controlled policy and freeze b
     assert.equal(policiesResult.statusCode, 200);
     assert.equal(policiesResult.payload.policies.length, 1);
     assert.equal(policiesResult.payload.policies[0].synthesisPolicyId, 'jeep-developmental-synthesis-v1');
+});
+
+test('interpretive synthesis generate route admits deterministic stub output into governed review without publication', async () => {
+    const root = makeTempRoot();
+    const router = createMockRouter();
+    await init(router);
+
+    await invoke(
+        router.routes.post.get('/interpretive/synthesis/policies'),
+        buildRequest(root, {
+            body: {
+                synthesisPolicyId: 'jeep-developmental-synthesis-v1',
+                policyVersion: 1,
+                memorySubjectId: 'character:jeep.png',
+                enabled: true,
+                allowedTypes: ['ROLE_EVOLUTION', 'PROJECT_TRANSFORMATION', 'RELATIONAL_PROGRESSION'],
+                allowedAssertionDomains: ['ROLE', 'AUTHORITY', 'RELATIONSHIP'],
+                prohibitedDomains: [],
+                manualTriggerRequiredForHighRisk: true,
+                maxCandidatesPerRun: 3,
+                now: Date.parse('2026-06-26T02:00:00.000Z'),
+            },
+        }),
+    );
+    await invoke(
+        router.routes.post.get('/interpretive/synthesis/runs'),
+        buildRequest(root, {
+            body: {
+                synthesisRunId: 'synthrun_generate_route_case',
+                memoryScopeId: 'scope_alpha',
+                memorySubjectId: 'character:jeep.png',
+                synthesisPolicyId: 'jeep-developmental-synthesis-v1',
+                requestedInterpretationTypes: ['ROLE_EVOLUTION'],
+                requestedAssertionDomains: ['ROLE', 'AUTHORITY', 'RELATIONSHIP'],
+                sharedRelationshipRequested: true,
+                personalMeaningRequested: true,
+                maxCandidatesRequested: 1,
+                manualTriggerAcknowledged: true,
+                createdByEntityId: 'user:Chris',
+                sourceManifestEntries: [
+                    {
+                        sourceClass: 'STRUCTURAL_RECORD',
+                        memoryScopeId: 'scope_alpha',
+                        basisRecordId: 'decision:constitutional-sovereignty',
+                        basisRecordVersion: 1,
+                        basisRecordHash: 'sha256:constitutional-sovereignty',
+                        speakerEntityId: 'character:jeep.png',
+                    },
+                    {
+                        sourceClass: 'SOURCE_OCCURRENCE',
+                        memoryScopeId: 'scope_alpha',
+                        chatInstanceId: 'chat_alpha',
+                        messageId: 'msg_alpha0000000000000000000000000',
+                        messageRevisionHash: 'sha256:msg-alpha',
+                        speakerEntityId: 'user:Chris',
+                    },
+                ],
+                now: Date.parse('2026-06-26T02:05:00.000Z'),
+            },
+        }),
+    );
+
+    const generateResult = await invoke(
+        router.routes.post.get('/interpretive/synthesis/runs/:synthesisRunId/generate'),
+        buildRequest(root, {
+            params: { synthesisRunId: 'synthrun_generate_route_case' },
+            body: {
+                adapterId: 'DETERMINISTIC_STUB_V1',
+                interpretationId: 'interp_generated_route_case',
+                interpretationRevisionId: 'interprev_generated_route_case_v1',
+                now: Date.parse('2026-06-26T02:06:00.000Z'),
+            },
+        }),
+    );
+
+    assert.equal(generateResult.statusCode, 200);
+    assert.equal(generateResult.payload.admitted, true);
+    assert.equal(generateResult.payload.interpretation.reviewState, 'PENDING');
+    assert.equal(generateResult.payload.interpretation.publicationState, 'NOT_PUBLISHED');
+    assert.equal(generateResult.payload.interpretation.authorityEffect, 'DESCRIPTIVE_ONLY');
+    assert.equal(generateResult.payload.synthesisRun.runStatus, 'COMPLETED_ADMITTED');
+    assert.equal(generateResult.payload.synthesisRun.generatedCandidateIds[0], 'interprev_generated_route_case_v1');
 });
 
 test('health route reconciles verifying promotion state before opening live authority', async () => {
