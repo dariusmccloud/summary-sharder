@@ -227,6 +227,7 @@ test('route surface exposes candidate lifecycle routes and separate promotion ro
     assert.equal(router.routes.post.has('/rebuild/promotion/authorize'), true);
     assert.equal(router.routes.post.has('/rebuild/promotion/execute'), true);
     assert.equal(router.routes.get.has('/interpretive/policies'), true);
+    assert.equal(router.routes.get.has('/interpretive/delegation-policies'), true);
     assert.equal(router.routes.get.has('/interpretive/synthesis/policies'), true);
     assert.equal(router.routes.get.has('/interpretive/synthesis/runs/:synthesisRunId'), true);
     assert.equal(router.routes.get.has('/interpretive/candidates/:interpretationRevisionId'), true);
@@ -235,6 +236,8 @@ test('route surface exposes candidate lifecycle routes and separate promotion ro
     assert.equal(router.routes.post.has('/interpretive/synthesis/runs'), true);
     assert.equal(router.routes.post.has('/interpretive/synthesis/runs/:synthesisRunId/generate'), true);
     assert.equal(router.routes.post.has('/interpretive/candidates'), true);
+    assert.equal(router.routes.post.has('/interpretive/delegation-policies'), true);
+    assert.equal(router.routes.post.has('/interpretive/delegation-policies/:delegationPolicyId/revoke'), true);
     assert.equal(router.routes.post.has('/interpretive/reviews/:reviewRequestId/dispositions'), true);
     assert.equal(router.routes.post.has('/interpretive/candidates/:interpretationRevisionId/subject-disposition'), true);
     assert.equal(router.routes.post.has('/interpretive/candidates/:interpretationRevisionId/revisions'), true);
@@ -257,6 +260,8 @@ test('capabilities and candidate lifecycle routes report no promotion and suppor
     assert.equal(capabilities.payload.capabilities.c0_6_1.interpretiveLedgerAuthority, true);
     assert.equal(capabilities.payload.capabilities.c0_6_1.continuityPublicationAvailable, false);
     assert.equal(capabilities.payload.capabilities.c0_6_2.reviewerDispositionSubmission, true);
+    assert.equal(capabilities.payload.capabilities.c0_6_2.delegatedDispositionProvenance, true);
+    assert.equal(capabilities.payload.capabilities.c0_6_2.delegationPolicyStorage, true);
     assert.equal(capabilities.payload.capabilities.c0_6_2.continuityPublicationAvailable, false);
     assert.equal(capabilities.payload.capabilities.c0_6_3.boundedSynthesisRunContract, true);
     assert.equal(capabilities.payload.capabilities.c0_6_3.deterministicStubSynthesisAvailable, true);
@@ -402,6 +407,25 @@ test('interpretive routes support review disposition, immutable child revision, 
     const router = createMockRouter();
     await init(router);
 
+    const delegationPolicy = await invoke(
+        router.routes.post.get('/interpretive/delegation-policies'),
+        buildRequest(root, {
+            body: {
+                delegationPolicyId: 'jeep-chris-continuity-delegation',
+                policyVersion: 1,
+                principalEntityId: 'character:jeep.png',
+                delegateEntityId: 'user:Chris',
+                allowedActions: ['REVIEW_DISPOSITION', 'SUBJECT_REVISION', 'SUBJECT_DISPOSITION'],
+                memoryScopeId: 'scope_alpha',
+                continuityTargetId: 'character:jeep.png',
+                evidenceRequirement: 'OPTIONAL',
+                revocable: true,
+                now: Date.parse('2026-06-25T13:09:55.000Z'),
+            },
+        }),
+    );
+    assert.equal(delegationPolicy.statusCode, 200);
+
     const createResult = await invoke(
         router.routes.post.get('/interpretive/candidates'),
         buildRequest(root, {
@@ -454,7 +478,10 @@ test('interpretive routes support review disposition, immutable child revision, 
         buildRequest(root, {
             params: { reviewRequestId: subjectRequest.reviewRequestId },
             body: {
-                actorEntityId: 'character:jeep.png',
+                submittedByActorId: 'user:Chris',
+                dispositionOwnerId: 'character:jeep.png',
+                submissionMode: 'TRUSTED_DELEGATE',
+                delegationPolicyId: 'jeep-chris-continuity-delegation',
                 disposition: 'APPROVE_WITH_EDIT',
                 reviewEnvelopeHash: interpretation.reviewEnvelopeHash,
                 reasonCodes: ['SCOPE_TOO_BROAD'],
@@ -468,6 +495,8 @@ test('interpretive routes support review disposition, immutable child revision, 
     );
     assert.equal(subjectDisposition.statusCode, 200);
     assert.equal(subjectDisposition.payload.childInterpretation.interpretationRevisionId, 'interprev_route_review_case_v2');
+    assert.equal(subjectDisposition.payload.disposition.provenance.submittedByActorId, 'user:Chris');
+    assert.equal(subjectDisposition.payload.childInterpretation.revisionCreationProvenance.dispositionOwnerId, 'character:jeep.png');
 
     const reviews = await invoke(
         router.routes.get.get('/interpretive/reviews'),
@@ -483,7 +512,10 @@ test('interpretive routes support review disposition, immutable child revision, 
         buildRequest(root, {
             params: { interpretationRevisionId: 'interprev_route_review_case_v1' },
             body: {
-                actorEntityId: 'character:jeep.png',
+                submittedByActorId: 'user:Chris',
+                dispositionOwnerId: 'character:jeep.png',
+                submissionMode: 'TRUSTED_DELEGATE',
+                delegationPolicyId: 'jeep-chris-continuity-delegation',
                 state: 'GRANTED',
                 reviewEnvelopeHash: interpretation.reviewEnvelopeHash,
                 now: Date.parse('2026-06-25T13:10:20.000Z'),
@@ -492,6 +524,7 @@ test('interpretive routes support review disposition, immutable child revision, 
     );
     assert.equal(finalDisposition.statusCode, 200);
     assert.equal(finalDisposition.payload.interpretation.subjectDispositionState, 'GRANTED');
+    assert.equal(finalDisposition.payload.subjectDisposition.provenance.submittedByActorId, 'user:Chris');
     assert.equal(finalDisposition.payload.interpretation.publicationState, 'NOT_PUBLISHED');
     assert.equal(finalDisposition.payload.interpretation.authorityEffect, 'DESCRIPTIVE_ONLY');
 });

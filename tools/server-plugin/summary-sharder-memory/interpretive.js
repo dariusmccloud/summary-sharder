@@ -58,6 +58,30 @@ const ALLOWED_SUBJECT_DISPOSITION_STATES = new Set([
     'CONTESTED',
 ]);
 
+const ALLOWED_SUBMISSION_MODES = new Set([
+    'DIRECT_REVIEWER_ACTION',
+    'DIRECT_SUBJECT_ACTION',
+    'SUBJECT_EXPRESSED_AND_RECORDED',
+    'TRUSTED_DELEGATE',
+    'SYSTEM_GROUNDING_ACTION',
+]);
+
+const ALLOWED_DELEGATION_ACTIONS = new Set([
+    'REVIEW_DISPOSITION',
+    'SUBJECT_REVISION',
+    'SUBJECT_DISPOSITION',
+]);
+
+const ALLOWED_DELEGATION_EVIDENCE_REQUIREMENTS = new Set([
+    'OPTIONAL',
+    'REQUIRED',
+]);
+
+const ALLOWED_DELEGATION_POLICY_STATES = new Set([
+    'ACTIVE',
+    'REVOKED',
+]);
+
 const ALLOWED_SYNTHESIS_RUN_STATUSES = new Set([
     'READY_FOR_SYNTHESIS',
     'REFUSED',
@@ -115,11 +139,55 @@ const POLICY_DEFINITIONS = Object.freeze([
     }),
 ]);
 
+function computeDelegationPolicyHash(policy) {
+    return hashCanonical({
+        delegationPolicyId: policy.delegationPolicyId,
+        policyVersion: policy.policyVersion,
+        principalEntityId: policy.principalEntityId,
+        delegateEntityId: policy.delegateEntityId,
+        allowedActions: policy.allowedActions,
+        memoryScopeId: policy.memoryScopeId,
+        continuityTargetId: policy.continuityTargetId,
+        evidenceRequirement: policy.evidenceRequirement,
+        revocable: policy.revocable,
+    }).hash;
+}
+
 function getPolicyDefinition(validationPolicyId, policyVersion) {
     return POLICY_DEFINITIONS.find((entry) => (
         entry.validationPolicyId === validationPolicyId
         && Number(entry.policyVersion) === Number(policyVersion)
     )) || null;
+}
+
+function createDelegationPolicyEvent(policy) {
+    return {
+        eventId: createId('iglevent'),
+        eventType: 'DELEGATION_POLICY_REGISTERED',
+        occurredAt: policy.createdAt,
+        memoryScopeId: policy.memoryScopeId,
+        interpretationId: null,
+        interpretationRevisionId: null,
+        payload: cloneJson(policy),
+    };
+}
+
+function createDelegationPolicyRevocationEvent(policy, timestamp) {
+    return {
+        eventId: createId('iglevent'),
+        eventType: 'DELEGATION_POLICY_REVOKED',
+        occurredAt: timestamp,
+        memoryScopeId: policy.memoryScopeId,
+        interpretationId: null,
+        interpretationRevisionId: null,
+        payload: {
+            delegationPolicyId: policy.delegationPolicyId,
+            policyVersion: policy.policyVersion,
+            policyHash: policy.policyHash,
+            revokedAt: timestamp,
+            revocationReason: policy.revocationReason,
+        },
+    };
 }
 
 export function seedInterpretivePolicyDefinitions(adapter) {
@@ -245,6 +313,102 @@ function normalizeOptionalPlainObject(value, fieldName) {
         throw createError(400, `${fieldName} must be an object`, 'ARCH_INVALID_PAYLOAD');
     }
     return cloneJson(value);
+}
+
+function normalizeActorEntityId(payload = {}) {
+    return sanitizeIdentifier(
+        payload?.submittedByActorId || payload?.actorEntityId,
+        payload?.submittedByActorId ? 'submittedByActorId' : 'actorEntityId',
+    );
+}
+
+function normalizeSubmissionMode(value, fieldName = 'submissionMode') {
+    const normalized = String(value || '').trim();
+    if (!ALLOWED_SUBMISSION_MODES.has(normalized)) {
+        throw createError(400, `${fieldName} is invalid`, 'ARCH_INVALID_PAYLOAD');
+    }
+    return normalized;
+}
+
+function normalizeSubjectEvidenceRefs(value, fieldName = 'subjectEvidenceRefs') {
+    if (value === undefined || value === null) {
+        return [];
+    }
+    if (!Array.isArray(value)) {
+        throw createError(400, `${fieldName} must be an array`, 'ARCH_INVALID_PAYLOAD');
+    }
+    return value.map((entry, index) => {
+        if (typeof entry === 'string') {
+            const normalized = entry.trim();
+            if (!normalized) {
+                throw createError(400, `${fieldName}[${index}] must not be empty`, 'ARCH_INVALID_PAYLOAD');
+            }
+            return normalized;
+        }
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+            throw createError(400, `${fieldName}[${index}] must be a string or object`, 'ARCH_INVALID_PAYLOAD');
+        }
+        return cloneJson(entry);
+    });
+}
+
+function normalizeDelegationActionList(value, fieldName = 'allowedActions') {
+    return normalizeStringArray(value, fieldName, ALLOWED_DELEGATION_ACTIONS);
+}
+
+function normalizeDelegationEvidenceRequirement(value, fieldName = 'evidenceRequirement') {
+    const normalized = String(value || '').trim();
+    if (!ALLOWED_DELEGATION_EVIDENCE_REQUIREMENTS.has(normalized)) {
+        throw createError(400, `${fieldName} is invalid`, 'ARCH_INVALID_PAYLOAD');
+    }
+    return normalized;
+}
+
+function buildInterpretiveDelegationPolicyRecord(payload, timestamp) {
+    const delegationPolicyId = sanitizeIdentifier(payload?.delegationPolicyId, 'delegationPolicyId');
+    const policyVersion = normalizePositiveInteger(payload?.policyVersion, 'policyVersion', 1, 1_000_000);
+    const principalEntityId = sanitizeIdentifier(payload?.principalEntityId, 'principalEntityId');
+    const delegateEntityId = sanitizeIdentifier(payload?.delegateEntityId, 'delegateEntityId');
+    const allowedActions = normalizeDelegationActionList(payload?.allowedActions, 'allowedActions');
+    const memoryScopeId = sanitizeIdentifier(payload?.memoryScopeId, 'memoryScopeId');
+    const continuityTargetId = payload?.continuityTargetId == null
+        ? null
+        : sanitizeIdentifier(payload?.continuityTargetId, 'continuityTargetId');
+    const evidenceRequirement = normalizeDelegationEvidenceRequirement(payload?.evidenceRequirement, 'evidenceRequirement');
+    const revocable = normalizeBoolean(payload?.revocable, 'revocable');
+    const policy = {
+        delegationPolicyId,
+        policyVersion,
+        principalEntityId,
+        delegateEntityId,
+        allowedActions,
+        memoryScopeId,
+        continuityTargetId,
+        evidenceRequirement,
+        revocable,
+        policyState: 'ACTIVE',
+        revocationReason: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        revokedAt: null,
+    };
+    return {
+        ...policy,
+        policyHash: computeDelegationPolicyHash(policy),
+    };
+}
+
+function defaultReviewSubmissionMode(requestRow, submittedByActorId) {
+    if (requestRow.reviewer_entity_id === submittedByActorId) {
+        return requestRow.reviewer_role === 'MEMORY_SUBJECT'
+            ? 'DIRECT_SUBJECT_ACTION'
+            : 'DIRECT_REVIEWER_ACTION';
+    }
+    return 'TRUSTED_DELEGATE';
+}
+
+function defaultSubjectSubmissionMode(memorySubjectId, submittedByActorId) {
+    return memorySubjectId === submittedByActorId ? 'DIRECT_SUBJECT_ACTION' : 'TRUSTED_DELEGATE';
 }
 
 function normalizeGroundingLink(link, index) {
@@ -810,6 +974,9 @@ export function prepareInterpretiveCandidate(payload, timestamp = nowTimestamp(p
         materialParticipantEntityIds,
         groundingLinks,
         proposalContentHash,
+        revisionCreationProvenance: payload?.revisionCreationProvenance
+            ? cloneJson(payload.revisionCreationProvenance)
+            : null,
         createdAt: timestamp,
         updatedAt: timestamp,
     };
@@ -866,6 +1033,7 @@ function createLedgerEvents(prepared, timestamp) {
             sharedRelationshipAsserted: prepared.candidate.sharedRelationshipAsserted,
             personalMeaningAsserted: prepared.candidate.personalMeaningAsserted,
             materialParticipantEntityIds: prepared.candidate.materialParticipantEntityIds,
+            revisionCreationProvenance: cloneJson(prepared.candidate.revisionCreationProvenance),
         },
     });
     for (const link of prepared.candidate.groundingLinks) {
@@ -960,10 +1128,38 @@ function createSubjectDispositionEvent(subjectDisposition, candidate, reviewEnve
             finalDispositionAuthority: subjectDisposition.finalDispositionAuthority,
             reasonCodes: cloneJson(subjectDisposition.reasonCodes),
             commentary: subjectDisposition.commentary,
+            provenance: cloneJson(subjectDisposition.provenance || null),
             reviewEnvelopeHash,
             createdAt: subjectDisposition.createdAt,
             updatedAt: subjectDisposition.updatedAt,
         },
+    };
+}
+
+function createActionProvenanceRecord({
+    interpretationRevisionId,
+    actionKind,
+    actionTargetId,
+    dispositionOwnerId,
+    submittedByActorId,
+    submissionMode,
+    delegationPolicy = null,
+    subjectEvidenceRefs = [],
+    createdAt,
+}) {
+    return {
+        actionProvenanceId: createId('actionprov'),
+        interpretationRevisionId,
+        actionKind,
+        actionTargetId,
+        dispositionOwnerId,
+        submittedByActorId,
+        submissionMode,
+        delegationPolicyId: delegationPolicy?.delegationPolicyId || null,
+        delegationPolicyVersion: delegationPolicy?.policyVersion ?? null,
+        delegationPolicyHash: delegationPolicy?.policyHash || null,
+        subjectEvidenceRefs: cloneJson(subjectEvidenceRefs),
+        createdAt,
     };
 }
 
@@ -1060,6 +1256,8 @@ function appendLedgerEvents(ledgerPath, events) {
 }
 
 const INTERPRETIVE_PROJECTION_TABLES = Object.freeze([
+    'interpretation_action_provenance',
+    'interpretation_delegation_policies',
     'interpretation_review_dispositions',
     'interpretation_review_requests',
     'interpretation_review_obligations',
@@ -1152,11 +1350,119 @@ function loadReviewRequestRow(adapter, reviewRequestId) {
     );
 }
 
+function loadInterpretiveDelegationPolicyProjection(adapter, delegationPolicyId, policyVersion) {
+    const row = adapter.get(
+        `SELECT * FROM interpretation_delegation_policies
+         WHERE delegation_policy_id = ? AND policy_version = ?`,
+        [delegationPolicyId, policyVersion],
+    );
+    if (!row) {
+        return null;
+    }
+    return {
+        delegationPolicyId: row.delegation_policy_id,
+        policyVersion: Number(row.policy_version),
+        policyHash: row.policy_hash,
+        principalEntityId: row.principal_entity_id,
+        delegateEntityId: row.delegate_entity_id,
+        allowedActions: JSON.parse(row.allowed_actions_json),
+        memoryScopeId: row.memory_scope_id,
+        continuityTargetId: row.continuity_target_id,
+        evidenceRequirement: row.evidence_requirement,
+        revocable: Number(row.revocable) === 1,
+        policyState: row.policy_state,
+        revocationReason: row.revocation_reason,
+        createdAt: Number(row.created_at),
+        updatedAt: Number(row.updated_at),
+        revokedAt: row.revoked_at === null ? null : Number(row.revoked_at),
+    };
+}
+
+function loadActionProvenanceRows(adapter, interpretationRevisionId) {
+    return adapter.all(
+        `SELECT * FROM interpretation_action_provenance
+         WHERE interpretation_revision_id = ?
+         ORDER BY created_at, action_provenance_id`,
+        [interpretationRevisionId],
+    );
+}
+
 function loadReviewDispositionRows(adapter, interpretationRevisionId) {
     return adapter.all(
         'SELECT * FROM interpretation_review_dispositions WHERE interpretation_revision_id = ? ORDER BY submitted_at, review_disposition_id',
         [interpretationRevisionId],
     );
+}
+
+function persistInterpretiveDelegationPolicyRow(adapter, policy) {
+    adapter.run(
+        `INSERT OR REPLACE INTO interpretation_delegation_policies (
+            delegation_policy_id, policy_version, policy_hash, principal_entity_id, delegate_entity_id,
+            allowed_actions_json, memory_scope_id, continuity_target_id, evidence_requirement,
+            revocable, policy_state, revocation_reason, created_at, updated_at, revoked_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            policy.delegationPolicyId,
+            Number(policy.policyVersion),
+            policy.policyHash,
+            policy.principalEntityId,
+            policy.delegateEntityId,
+            stableStringify(policy.allowedActions),
+            policy.memoryScopeId,
+            policy.continuityTargetId,
+            policy.evidenceRequirement,
+            policy.revocable ? 1 : 0,
+            policy.policyState,
+            policy.revocationReason,
+            Number(policy.createdAt),
+            Number(policy.updatedAt),
+            policy.revokedAt == null ? null : Number(policy.revokedAt),
+        ],
+    );
+}
+
+function persistActionProvenanceRow(adapter, provenance) {
+    adapter.run(
+        `INSERT INTO interpretation_action_provenance (
+            action_provenance_id, interpretation_revision_id, action_kind, action_target_id,
+            disposition_owner_id, submitted_by_actor_id, submission_mode, delegation_policy_id,
+            delegation_policy_version, delegation_policy_hash, subject_evidence_refs_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            provenance.actionProvenanceId,
+            provenance.interpretationRevisionId,
+            provenance.actionKind,
+            provenance.actionTargetId,
+            provenance.dispositionOwnerId,
+            provenance.submittedByActorId,
+            provenance.submissionMode,
+            provenance.delegationPolicyId,
+            provenance.delegationPolicyVersion == null ? null : Number(provenance.delegationPolicyVersion),
+            provenance.delegationPolicyHash,
+            stableStringify(provenance.subjectEvidenceRefs || []),
+            Number(provenance.createdAt),
+        ],
+    );
+}
+
+function normalizeActionProvenanceRow(row) {
+    if (!row) {
+        return null;
+    }
+    return {
+        actionProvenanceId: row.action_provenance_id,
+        interpretationRevisionId: row.interpretation_revision_id,
+        actionKind: row.action_kind,
+        actionTargetId: row.action_target_id,
+        dispositionOwnerId: row.disposition_owner_id,
+        submittedByActorId: row.submitted_by_actor_id,
+        submissionMode: row.submission_mode,
+        delegationPolicyId: row.delegation_policy_id,
+        delegationPolicyVersion: row.delegation_policy_version === null ? null : Number(row.delegation_policy_version),
+        delegationPolicyHash: row.delegation_policy_hash,
+        subjectEvidenceRefs: JSON.parse(row.subject_evidence_refs_json),
+        createdAt: Number(row.created_at),
+    };
 }
 
 function recomputeCandidateReviewState(adapter, interpretationRevisionId, timestamp = Date.now()) {
@@ -1174,6 +1480,108 @@ function recomputeCandidateReviewState(adapter, interpretationRevisionId, timest
         [reviewState, timestamp, interpretationRevisionId],
     );
     return reviewState;
+}
+
+function resolveDelegationPolicyForAction(adapter, {
+    delegationPolicyId,
+    principalEntityId,
+    delegateEntityId,
+    actionKind,
+    memoryScopeId,
+    continuityTargetId,
+    subjectEvidenceRefs,
+}) {
+    const normalizedPolicyId = sanitizeIdentifier(delegationPolicyId, 'delegationPolicyId');
+    const rows = adapter.all(
+        `SELECT * FROM interpretation_delegation_policies
+         WHERE delegation_policy_id = ?
+         ORDER BY policy_version DESC`,
+        [normalizedPolicyId],
+    );
+    if (rows.length === 0) {
+        throw createError(403, `Delegation policy ${normalizedPolicyId} was not found`, 'ARCH_DELEGATION_POLICY_NOT_FOUND');
+    }
+    const policy = loadInterpretiveDelegationPolicyProjection(adapter, rows[0].delegation_policy_id, Number(rows[0].policy_version));
+    if (policy.policyState !== 'ACTIVE') {
+        throw createError(403, `Delegation policy ${normalizedPolicyId} is not active`, 'ARCH_DELEGATION_POLICY_REVOKED');
+    }
+    if (policy.principalEntityId !== principalEntityId) {
+        throw createError(403, 'Delegation principal does not match the required disposition owner', 'ARCH_DELEGATION_PRINCIPAL_MISMATCH');
+    }
+    if (policy.delegateEntityId !== delegateEntityId) {
+        throw createError(403, 'Delegation delegate does not match the submitting actor', 'ARCH_DELEGATION_DELEGATE_MISMATCH');
+    }
+    if (!policy.allowedActions.includes(actionKind)) {
+        throw createError(403, `Delegation policy does not permit ${actionKind}`, 'ARCH_DELEGATION_ACTION_FORBIDDEN');
+    }
+    if (policy.memoryScopeId !== memoryScopeId) {
+        throw createError(403, 'Delegation policy is not valid for this memory scope', 'ARCH_DELEGATION_SCOPE_MISMATCH');
+    }
+    if (policy.continuityTargetId && policy.continuityTargetId !== continuityTargetId) {
+        throw createError(403, 'Delegation policy is not valid for this continuity target', 'ARCH_DELEGATION_TARGET_MISMATCH');
+    }
+    if (policy.evidenceRequirement === 'REQUIRED' && subjectEvidenceRefs.length === 0) {
+        throw createError(403, 'Delegation policy requires subject evidence references', 'ARCH_DELEGATION_EVIDENCE_REQUIRED');
+    }
+    return policy;
+}
+
+function authorizeInterpretiveAction(adapter, {
+    interpretation,
+    actionKind,
+    dispositionOwnerId,
+    submittedByActorId,
+    submissionMode,
+    delegationPolicyId = null,
+    subjectEvidenceRefs = [],
+}) {
+    const evidenceRefs = normalizeSubjectEvidenceRefs(subjectEvidenceRefs, 'subjectEvidenceRefs');
+    switch (submissionMode) {
+    case 'DIRECT_REVIEWER_ACTION':
+        if (dispositionOwnerId === interpretation.memorySubjectId) {
+            throw createError(403, 'Direct memory-subject actions must use DIRECT_SUBJECT_ACTION', 'ARCH_SUBMISSION_MODE_FORBIDDEN');
+        }
+        if (submittedByActorId !== dispositionOwnerId) {
+            throw createError(403, 'Direct reviewer actions require the owner and actor to match', 'ARCH_ACTION_OWNER_MISMATCH');
+        }
+        return { delegationPolicy: null, subjectEvidenceRefs: evidenceRefs };
+    case 'DIRECT_SUBJECT_ACTION':
+        if (dispositionOwnerId !== interpretation.memorySubjectId) {
+            throw createError(403, 'Direct subject action is only valid for the memory subject', 'ARCH_SUBJECT_IDENTITY_MISMATCH');
+        }
+        if (submittedByActorId !== dispositionOwnerId) {
+            throw createError(403, 'Direct subject action requires the subject to submit directly', 'ARCH_ACTION_OWNER_MISMATCH');
+        }
+        return { delegationPolicy: null, subjectEvidenceRefs: evidenceRefs };
+    case 'SUBJECT_EXPRESSED_AND_RECORDED':
+        if (dispositionOwnerId !== interpretation.memorySubjectId) {
+            throw createError(403, 'Recorded subject expression is only valid for the memory subject', 'ARCH_SUBJECT_IDENTITY_MISMATCH');
+        }
+        if (evidenceRefs.length === 0) {
+            throw createError(403, 'Recorded subject expression requires subject evidence references', 'ARCH_SUBJECT_EVIDENCE_REQUIRED');
+        }
+        return { delegationPolicy: null, subjectEvidenceRefs: evidenceRefs };
+    case 'TRUSTED_DELEGATE':
+        if (submittedByActorId === dispositionOwnerId) {
+            throw createError(403, 'Trusted delegate mode requires a distinct submitting actor', 'ARCH_ACTION_OWNER_MISMATCH');
+        }
+        return {
+            delegationPolicy: resolveDelegationPolicyForAction(adapter, {
+                delegationPolicyId,
+                principalEntityId: dispositionOwnerId,
+                delegateEntityId: submittedByActorId,
+                actionKind,
+                memoryScopeId: interpretation.memoryScopeId,
+                continuityTargetId: interpretation.memorySubjectId,
+                subjectEvidenceRefs: evidenceRefs,
+            }),
+            subjectEvidenceRefs: evidenceRefs,
+        };
+    case 'SYSTEM_GROUNDING_ACTION':
+        throw createError(403, 'System grounding action may not record interpretive review or subject consent', 'ARCH_SUBMISSION_MODE_FORBIDDEN');
+    default:
+        throw createError(400, 'submissionMode is invalid', 'ARCH_INVALID_PAYLOAD');
+    }
 }
 
 function loadInterpretiveSynthesisPolicyProjection(adapter, synthesisPolicyId, policyVersion) {
@@ -1808,6 +2216,9 @@ function buildPreparedFromLedgerEvents(events) {
             sharedRelationshipAsserted: proposed.sharedRelationshipAsserted === true,
             personalMeaningAsserted: proposed.personalMeaningAsserted === true,
             materialParticipantEntityIds: cloneJson(proposed.materialParticipantEntityIds),
+            revisionCreationProvenance: proposed.revisionCreationProvenance
+                ? cloneJson(proposed.revisionCreationProvenance)
+                : null,
             groundingLinks,
             candidateState: lifecycle.candidateState,
             groundingState: lifecycle.groundingState,
@@ -2030,6 +2441,15 @@ function applyInterpretiveFollowOnEvent(adapter, event) {
                 Number(payload.submittedAt || event.occurredAt),
             ],
         );
+        if (payload.provenance) {
+            persistActionProvenanceRow(adapter, {
+                ...cloneJson(payload.provenance),
+                interpretationRevisionId: event.interpretationRevisionId,
+                actionKind: 'REVIEW_DISPOSITION',
+                actionTargetId: payload.reviewDispositionId,
+                createdAt: Number(payload.provenance.createdAt || payload.submittedAt || event.occurredAt),
+            });
+        }
         adapter.run(
             'UPDATE interpretation_review_requests SET status = ? WHERE review_request_id = ?',
             [dispositionStatus, payload.reviewRequestId],
@@ -2043,6 +2463,15 @@ function applyInterpretiveFollowOnEvent(adapter, event) {
     }
     if (event.eventType === 'SUBJECT_DISPOSITION_RECORDED') {
         const payload = event.payload || {};
+        if (payload.provenance) {
+            persistActionProvenanceRow(adapter, {
+                ...cloneJson(payload.provenance),
+                interpretationRevisionId: event.interpretationRevisionId,
+                actionKind: 'SUBJECT_DISPOSITION',
+                actionTargetId: payload.subjectDispositionId,
+                createdAt: Number(payload.provenance.createdAt || payload.updatedAt || event.occurredAt),
+            });
+        }
         adapter.run(
             `UPDATE interpretation_subject_dispositions
              SET state = ?, reason_codes_json = ?, commentary = ?, updated_at = ?
@@ -2069,6 +2498,45 @@ function applyInterpretiveFollowOnEvent(adapter, event) {
     }
 }
 
+function applyDelegationPolicyLedgerEvent(adapter, event) {
+    const payload = event.payload || {};
+    if (event.eventType === 'DELEGATION_POLICY_REGISTERED') {
+        persistInterpretiveDelegationPolicyRow(adapter, {
+            delegationPolicyId: sanitizeIdentifier(payload.delegationPolicyId, 'delegationPolicyId'),
+            policyVersion: normalizePositiveInteger(payload.policyVersion, 'policyVersion', 1, 1_000_000),
+            policyHash: String(payload.policyHash || '').trim(),
+            principalEntityId: sanitizeIdentifier(payload.principalEntityId, 'principalEntityId'),
+            delegateEntityId: sanitizeIdentifier(payload.delegateEntityId, 'delegateEntityId'),
+            allowedActions: normalizeDelegationActionList(payload.allowedActions, 'allowedActions'),
+            memoryScopeId: sanitizeIdentifier(payload.memoryScopeId, 'memoryScopeId'),
+            continuityTargetId: payload.continuityTargetId == null ? null : sanitizeIdentifier(payload.continuityTargetId, 'continuityTargetId'),
+            evidenceRequirement: normalizeDelegationEvidenceRequirement(payload.evidenceRequirement, 'evidenceRequirement'),
+            revocable: payload.revocable === true,
+            policyState: 'ACTIVE',
+            revocationReason: null,
+            createdAt: Number(payload.createdAt || event.occurredAt),
+            updatedAt: Number(payload.updatedAt || payload.createdAt || event.occurredAt),
+            revokedAt: null,
+        });
+        return;
+    }
+    if (event.eventType === 'DELEGATION_POLICY_REVOKED') {
+        const delegationPolicyId = sanitizeIdentifier(payload.delegationPolicyId, 'delegationPolicyId');
+        const policyVersion = normalizePositiveInteger(payload.policyVersion, 'policyVersion', 1, 1_000_000);
+        const existing = loadInterpretiveDelegationPolicyProjection(adapter, delegationPolicyId, policyVersion);
+        if (!existing) {
+            throw createError(500, `Interpretive replay could not resolve delegation policy ${delegationPolicyId} v${policyVersion}`, 'ARCH_INTERPRETIVE_LEDGER_INCOMPLETE');
+        }
+        persistInterpretiveDelegationPolicyRow(adapter, {
+            ...existing,
+            policyState: 'REVOKED',
+            revocationReason: payload.revocationReason ? String(payload.revocationReason).trim() : null,
+            updatedAt: Number(payload.revokedAt || event.occurredAt),
+            revokedAt: Number(payload.revokedAt || event.occurredAt),
+        });
+    }
+}
+
 export function replayInterpretiveLedger(request, options = {}) {
     const userRoot = getAuthenticatedUserRoot(request);
     const paths = getStoragePaths(userRoot);
@@ -2076,6 +2544,7 @@ export function replayInterpretiveLedger(request, options = {}) {
     const grouped = new Map();
     const followOnEvents = [];
     const synthesisEvents = [];
+    const delegationPolicyEvents = [];
     const synthesisEventTypes = new Set([
         'SYNTHESIS_POLICY_REGISTERED',
         'SYNTHESIS_RUN_REGISTERED',
@@ -2085,6 +2554,10 @@ export function replayInterpretiveLedger(request, options = {}) {
         'SYNTHESIS_PROPOSAL_QUARANTINED',
     ]);
     for (const event of ledgerEvents) {
+        if (['DELEGATION_POLICY_REGISTERED', 'DELEGATION_POLICY_REVOKED'].includes(event.eventType)) {
+            delegationPolicyEvents.push(event);
+            continue;
+        }
         if (synthesisEventTypes.has(event.eventType)) {
             synthesisEvents.push(event);
             continue;
@@ -2110,6 +2583,9 @@ export function replayInterpretiveLedger(request, options = {}) {
     try {
         seedInterpretivePolicyDefinitions(adapter);
         clearInterpretiveProjection(adapter);
+        for (const event of delegationPolicyEvents.sort((a, b) => Number(a.occurredAt) - Number(b.occurredAt) || String(a.eventId).localeCompare(String(b.eventId)))) {
+            applyDelegationPolicyLedgerEvent(adapter, event);
+        }
         for (const event of synthesisEvents) {
             applySynthesisLedgerEvent(adapter, event);
         }
@@ -2201,10 +2677,13 @@ function persistPreparedCandidateRows(adapter, prepared, timestamp) {
                 timestamp,
             ],
     );
+    if (prepared.candidate.revisionCreationProvenance) {
+        persistActionProvenanceRow(adapter, prepared.candidate.revisionCreationProvenance);
+    }
     for (const link of prepared.candidate.groundingLinks) {
         adapter.run(
-                `INSERT INTO interpretation_grounding_links (
-                    interpretation_revision_id, grounding_link_id, basis_type, basis_record_id,
+            `INSERT INTO interpretation_grounding_links (
+                interpretation_revision_id, grounding_link_id, basis_type, basis_record_id,
                     basis_record_version, basis_record_hash, chat_instance_id, message_id,
                     message_revision_hash, speaker_entity_id, grounding_role, grounding_assessment, details_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -2352,6 +2831,7 @@ export function loadInterpretiveCandidateProjection(adapter, interpretationRevis
         [interpretationRevisionId],
     );
     const reviewDispositions = loadReviewDispositionRows(adapter, interpretationRevisionId);
+    const actionProvenanceRows = loadActionProvenanceRows(adapter, interpretationRevisionId);
     const subjectDisposition = adapter.get(
         'SELECT * FROM interpretation_subject_dispositions WHERE interpretation_revision_id = ?',
         [interpretationRevisionId],
@@ -2360,6 +2840,15 @@ export function loadInterpretiveCandidateProjection(adapter, interpretationRevis
         'SELECT interpretation_revision_id FROM interpretation_revisions WHERE parent_revision_id = ? ORDER BY interpretation_revision_id',
         [interpretationRevisionId],
     );
+    const actionProvenanceByTarget = new Map(
+        actionProvenanceRows.map((row) => [`${row.action_kind}:${row.action_target_id}`, normalizeActionProvenanceRow(row)]),
+    );
+    const latestSubjectDispositionProvenanceRow = actionProvenanceRows
+        .filter((row) => row.action_kind === 'SUBJECT_DISPOSITION')
+        .sort((left, right) => Number(right.created_at) - Number(left.created_at) || String(right.action_provenance_id).localeCompare(String(left.action_provenance_id)))[0] || null;
+    const latestSubjectDispositionProvenance = latestSubjectDispositionProvenanceRow
+        ? normalizeActionProvenanceRow(latestSubjectDispositionProvenanceRow)
+        : null;
     return {
         interpretationRevisionId: candidate.interpretation_revision_id,
         interpretationId: candidate.interpretation_id,
@@ -2443,8 +2932,10 @@ export function loadInterpretiveCandidateProjection(adapter, interpretationRevis
             commentary: entry.commentary,
             reviewEnvelopeHash: entry.review_envelope_hash,
             submittedAt: Number(entry.submitted_at),
+            provenance: actionProvenanceByTarget.get(`REVIEW_DISPOSITION:${entry.review_disposition_id}`) || null,
         })),
         subjectDisposition: subjectDisposition ? {
+            subjectDispositionId: latestSubjectDispositionProvenance?.actionTargetId || null,
             memorySubjectId: subjectDisposition.memory_subject_id,
             state: subjectDisposition.state,
             finalDispositionAuthority: subjectDisposition.final_disposition_authority,
@@ -2452,7 +2943,9 @@ export function loadInterpretiveCandidateProjection(adapter, interpretationRevis
             commentary: subjectDisposition.commentary,
             createdAt: Number(subjectDisposition.created_at),
             updatedAt: Number(subjectDisposition.updated_at),
+            provenance: latestSubjectDispositionProvenance,
         } : null,
+        revisionCreationProvenance: actionProvenanceByTarget.get(`SUBJECT_REVISION:${candidate.interpretation_revision_id}`) || null,
         childRevisionIds: childRevisions.map((entry) => entry.interpretation_revision_id),
     };
 }
@@ -2833,7 +3326,7 @@ export function createInterpretiveCandidate(request, payload = {}) {
 
 export function submitInterpretiveReviewDisposition(request, reviewRequestId, payload = {}) {
     const timestamp = nowTimestamp(payload?.now);
-    const actorEntityId = sanitizeIdentifier(payload?.actorEntityId, 'actorEntityId');
+    const submittedByActorId = normalizeActorEntityId(payload);
     const disposition = String(payload?.disposition || '').trim();
     if (!ALLOWED_REVIEW_DISPOSITIONS.has(disposition)) {
         throw createError(400, 'disposition is invalid', 'ARCH_INVALID_PAYLOAD');
@@ -2857,15 +3350,43 @@ export function submitInterpretiveReviewDisposition(request, reviewRequestId, pa
         if (requestRow.status !== 'PENDING') {
             throw createError(409, `Review request ${reviewRequestId} is not pending`, 'ARCH_REVIEW_REQUEST_NOT_PENDING');
         }
-        if (requestRow.reviewer_entity_id !== actorEntityId) {
-            throw createError(403, 'Only the exact bound reviewer may submit this disposition', 'ARCH_REVIEWER_IDENTITY_MISMATCH');
-        }
         const interpretation = loadInterpretiveCandidateProjection(adapter, requestRow.interpretation_revision_id);
         if (!interpretation) {
             throw createError(404, `Interpretation revision ${requestRow.interpretation_revision_id} was not found`, 'ARCH_INTERPRETATION_NOT_FOUND');
         }
         if (interpretation.reviewEnvelopeHash !== requestRow.review_envelope_hash || interpretation.reviewEnvelopeHash !== reviewEnvelopeHash) {
             throw createError(409, 'Review envelope hash is stale for this request', 'ARCH_STALE_REVIEW_ENVELOPE');
+        }
+        const dispositionOwnerId = payload?.dispositionOwnerId
+            ? sanitizeIdentifier(payload.dispositionOwnerId, 'dispositionOwnerId')
+            : requestRow.reviewer_entity_id;
+        if (dispositionOwnerId !== requestRow.reviewer_entity_id) {
+            throw createError(403, 'Review disposition owner must match the bound review request owner', 'ARCH_REVIEWER_IDENTITY_MISMATCH');
+        }
+        const submissionMode = payload?.submissionMode
+            ? normalizeSubmissionMode(payload.submissionMode, 'submissionMode')
+            : defaultReviewSubmissionMode(requestRow, submittedByActorId);
+        const authorization = authorizeInterpretiveAction(adapter, {
+            interpretation,
+            actionKind: 'REVIEW_DISPOSITION',
+            dispositionOwnerId,
+            submittedByActorId,
+            submissionMode,
+            delegationPolicyId: payload?.delegationPolicyId || null,
+            subjectEvidenceRefs: payload?.subjectEvidenceRefs,
+        });
+        let childRevisionProvenance = null;
+        if (disposition === 'APPROVE_WITH_EDIT') {
+            const revisionAuthorization = authorizeInterpretiveAction(adapter, {
+                interpretation,
+                actionKind: 'SUBJECT_REVISION',
+                dispositionOwnerId,
+                submittedByActorId,
+                submissionMode,
+                delegationPolicyId: payload?.delegationPolicyId || null,
+                subjectEvidenceRefs: payload?.subjectEvidenceRefs,
+            });
+            childRevisionProvenance = revisionAuthorization;
         }
 
         const reviewDisposition = {
@@ -2879,7 +3400,19 @@ export function submitInterpretiveReviewDisposition(request, reviewRequestId, pa
             commentary,
             reviewEnvelopeHash,
             submittedAt: timestamp,
+            provenance: createActionProvenanceRecord({
+                interpretationRevisionId: interpretation.interpretationRevisionId,
+                actionKind: 'REVIEW_DISPOSITION',
+                actionTargetId: null,
+                dispositionOwnerId,
+                submittedByActorId,
+                submissionMode,
+                delegationPolicy: authorization.delegationPolicy,
+                subjectEvidenceRefs: authorization.subjectEvidenceRefs,
+                createdAt: timestamp,
+            }),
         };
+        reviewDisposition.provenance.actionTargetId = reviewDisposition.reviewDispositionId;
 
         let childInterpretation = null;
         let childPrepared = null;
@@ -2891,6 +3424,17 @@ export function submitInterpretiveReviewDisposition(request, reviewRequestId, pa
                 requestRow.reviewer_role,
                 timestamp,
             );
+            childPayload.revisionCreationProvenance = createActionProvenanceRecord({
+                interpretationRevisionId: childPayload.interpretationRevisionId,
+                actionKind: 'SUBJECT_REVISION',
+                actionTargetId: childPayload.interpretationRevisionId,
+                dispositionOwnerId,
+                submittedByActorId,
+                submissionMode,
+                delegationPolicy: childRevisionProvenance?.delegationPolicy || null,
+                subjectEvidenceRefs: childRevisionProvenance?.subjectEvidenceRefs || [],
+                createdAt: timestamp,
+            });
             childPrepared = prepareInterpretiveCandidate(childPayload, timestamp);
             childInterpretation = childPrepared.candidate.interpretationRevisionId;
             reviewDisposition.childInterpretationRevisionId = childInterpretation;
@@ -2953,7 +3497,7 @@ export function submitInterpretiveReviewDisposition(request, reviewRequestId, pa
 
 export function recordInterpretiveSubjectDisposition(request, interpretationRevisionId, payload = {}) {
     const timestamp = nowTimestamp(payload?.now);
-    const actorEntityId = sanitizeIdentifier(payload?.actorEntityId, 'actorEntityId');
+    const submittedByActorId = normalizeActorEntityId(payload);
     const state = String(payload?.state || '').trim();
     if (!ALLOWED_SUBJECT_DISPOSITION_STATES.has(state)) {
         throw createError(400, 'state is invalid', 'ARCH_INVALID_PAYLOAD');
@@ -2975,9 +3519,6 @@ export function recordInterpretiveSubjectDisposition(request, interpretationRevi
         if (!interpretation) {
             throw createError(404, `Interpretation revision ${interpretationRevisionId} was not found`, 'ARCH_INTERPRETATION_NOT_FOUND');
         }
-        if (actorEntityId !== interpretation.memorySubjectId) {
-            throw createError(403, 'Only the memory subject may record final continuity disposition', 'ARCH_SUBJECT_IDENTITY_MISMATCH');
-        }
         if (interpretation.reviewEnvelopeHash !== reviewEnvelopeHash) {
             throw createError(409, 'Subject disposition is stale for this review envelope', 'ARCH_STALE_REVIEW_ENVELOPE');
         }
@@ -2985,6 +3526,24 @@ export function recordInterpretiveSubjectDisposition(request, interpretationRevi
         if (pendingRequests.length > 0 || interpretation.reviewState === 'BLOCKED' || interpretation.reviewState === 'PENDING' || interpretation.reviewState === 'DEFERRED') {
             throw createError(409, 'Required review is not complete for subject disposition', 'ARCH_REVIEW_INCOMPLETE');
         }
+        const dispositionOwnerId = payload?.dispositionOwnerId
+            ? sanitizeIdentifier(payload.dispositionOwnerId, 'dispositionOwnerId')
+            : interpretation.memorySubjectId;
+        if (dispositionOwnerId !== interpretation.memorySubjectId) {
+            throw createError(403, 'Subject disposition owner must match the interpretation memory subject', 'ARCH_SUBJECT_IDENTITY_MISMATCH');
+        }
+        const submissionMode = payload?.submissionMode
+            ? normalizeSubmissionMode(payload.submissionMode, 'submissionMode')
+            : defaultSubjectSubmissionMode(interpretation.memorySubjectId, submittedByActorId);
+        const authorization = authorizeInterpretiveAction(adapter, {
+            interpretation,
+            actionKind: 'SUBJECT_DISPOSITION',
+            dispositionOwnerId,
+            submittedByActorId,
+            submissionMode,
+            delegationPolicyId: payload?.delegationPolicyId || null,
+            subjectEvidenceRefs: payload?.subjectEvidenceRefs,
+        });
 
         const currentSubjectDisposition = interpretation.subjectDisposition || {
             memorySubjectId: interpretation.memorySubjectId,
@@ -3000,7 +3559,19 @@ export function recordInterpretiveSubjectDisposition(request, interpretationRevi
             commentary,
             createdAt: currentSubjectDisposition.createdAt,
             updatedAt: timestamp,
+            provenance: createActionProvenanceRecord({
+                interpretationRevisionId: interpretation.interpretationRevisionId,
+                actionKind: 'SUBJECT_DISPOSITION',
+                actionTargetId: null,
+                dispositionOwnerId,
+                submittedByActorId,
+                submissionMode,
+                delegationPolicy: authorization.delegationPolicy,
+                subjectEvidenceRefs: authorization.subjectEvidenceRefs,
+                createdAt: timestamp,
+            }),
         };
+        nextSubjectDisposition.provenance.actionTargetId = nextSubjectDisposition.subjectDispositionId;
         appendLedgerEvents(
             paths.interpretiveGovernanceLedgerPath,
             [createSubjectDispositionEvent(nextSubjectDisposition, interpretation, reviewEnvelopeHash)],
@@ -3045,7 +3616,7 @@ export function recordInterpretiveSubjectDisposition(request, interpretationRevi
 
 export function createInterpretiveRevision(request, interpretationRevisionId, payload = {}) {
     const timestamp = nowTimestamp(payload?.now);
-    const actorEntityId = sanitizeIdentifier(payload?.actorEntityId, 'actorEntityId');
+    const submittedByActorId = normalizeActorEntityId(payload);
     const userRoot = getAuthenticatedUserRoot(request);
     const paths = getStoragePaths(userRoot);
     const adapter = openOperationalDatabase(paths, { now: timestamp });
@@ -3058,9 +3629,24 @@ export function createInterpretiveRevision(request, interpretationRevisionId, pa
         if (!interpretation) {
             throw createError(404, `Interpretation revision ${interpretationRevisionId} was not found`, 'ARCH_INTERPRETATION_NOT_FOUND');
         }
-        if (actorEntityId !== interpretation.memorySubjectId) {
-            throw createError(403, 'Only the memory subject may create a direct child revision in C0.6.2', 'ARCH_SUBJECT_IDENTITY_MISMATCH');
+        const dispositionOwnerId = payload?.dispositionOwnerId
+            ? sanitizeIdentifier(payload.dispositionOwnerId, 'dispositionOwnerId')
+            : interpretation.memorySubjectId;
+        if (dispositionOwnerId !== interpretation.memorySubjectId) {
+            throw createError(403, 'Revision owner must match the interpretation memory subject', 'ARCH_SUBJECT_IDENTITY_MISMATCH');
         }
+        const submissionMode = payload?.submissionMode
+            ? normalizeSubmissionMode(payload.submissionMode, 'submissionMode')
+            : defaultSubjectSubmissionMode(interpretation.memorySubjectId, submittedByActorId);
+        const authorization = authorizeInterpretiveAction(adapter, {
+            interpretation,
+            actionKind: 'SUBJECT_REVISION',
+            dispositionOwnerId,
+            submittedByActorId,
+            submissionMode,
+            delegationPolicyId: payload?.delegationPolicyId || null,
+            subjectEvidenceRefs: payload?.subjectEvidenceRefs,
+        });
         const childPayload = buildChildRevisionPayload(
             interpretation,
             payload,
@@ -3068,6 +3654,17 @@ export function createInterpretiveRevision(request, interpretationRevisionId, pa
             'MEMORY_SUBJECT',
             timestamp,
         );
+        childPayload.revisionCreationProvenance = createActionProvenanceRecord({
+            interpretationRevisionId: childPayload.interpretationRevisionId,
+            actionKind: 'SUBJECT_REVISION',
+            actionTargetId: childPayload.interpretationRevisionId,
+            dispositionOwnerId,
+            submittedByActorId,
+            submissionMode,
+            delegationPolicy: authorization.delegationPolicy,
+            subjectEvidenceRefs: authorization.subjectEvidenceRefs,
+            createdAt: timestamp,
+        });
         const prepared = prepareInterpretiveCandidate(childPayload, timestamp);
         const events = createLedgerEvents(prepared, timestamp);
         appendLedgerEvents(paths.interpretiveGovernanceLedgerPath, events);
@@ -3126,6 +3723,19 @@ export function listInterpretiveReviews(request, filters = {}) {
             ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
             ORDER BY r.created_at, r.review_request_id`;
         const rows = adapter.all(sql, params);
+        const provenanceRows = adapter.all(
+            `SELECT * FROM interpretation_action_provenance
+             WHERE interpretation_revision_id ${filters.interpretationRevisionId ? '= ?' : 'IN (SELECT interpretation_revision_id FROM interpretation_review_requests)'}
+             ORDER BY created_at, action_provenance_id`,
+            filters.interpretationRevisionId
+                ? [sanitizeIdentifier(filters.interpretationRevisionId, 'interpretationRevisionId')]
+                : [],
+        );
+        const provenanceByTarget = new Map(
+            provenanceRows
+                .filter((row) => row.action_kind === 'REVIEW_DISPOSITION')
+                .map((row) => [`REVIEW_DISPOSITION:${row.action_target_id}`, normalizeActionProvenanceRow(row)]),
+        );
         return {
             ok: true,
             phase: 'c0.6.2',
@@ -3146,6 +3756,7 @@ export function listInterpretiveReviews(request, filters = {}) {
                     reasonCodes: JSON.parse(row.reason_codes_json),
                     commentary: row.commentary,
                     submittedAt: Number(row.submitted_at),
+                    provenance: provenanceByTarget.get(`REVIEW_DISPOSITION:${row.review_disposition_id}`) || null,
                 } : null,
             })),
         };
@@ -3200,6 +3811,150 @@ export function listInterpretivePolicyDefinitions(request) {
                 onDisagreement: row.on_disagreement,
                 details: JSON.parse(row.details_json),
             })),
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function listInterpretiveDelegationPolicies(request, filters = {}) {
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const adapter = openOperationalDatabase(paths);
+    try {
+        seedInterpretivePolicyDefinitions(adapter);
+        const params = [];
+        const where = [];
+        if (filters.memoryScopeId) {
+            where.push('memory_scope_id = ?');
+            params.push(sanitizeIdentifier(filters.memoryScopeId, 'memoryScopeId'));
+        }
+        if (filters.principalEntityId) {
+            where.push('principal_entity_id = ?');
+            params.push(sanitizeIdentifier(filters.principalEntityId, 'principalEntityId'));
+        }
+        if (filters.delegateEntityId) {
+            where.push('delegate_entity_id = ?');
+            params.push(sanitizeIdentifier(filters.delegateEntityId, 'delegateEntityId'));
+        }
+        if (filters.policyState) {
+            const policyState = String(filters.policyState).trim();
+            if (!ALLOWED_DELEGATION_POLICY_STATES.has(policyState)) {
+                throw createError(400, 'policyState is invalid', 'ARCH_INVALID_PAYLOAD');
+            }
+            where.push('policy_state = ?');
+            params.push(policyState);
+        }
+        const rows = adapter.all(
+            `SELECT delegation_policy_id, policy_version
+             FROM interpretation_delegation_policies
+             ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
+             ORDER BY created_at, delegation_policy_id, policy_version`,
+            params,
+        );
+        return {
+            ok: true,
+            phase: 'c0.6.2',
+            policies: rows.map((row) => (
+                loadInterpretiveDelegationPolicyProjection(adapter, row.delegation_policy_id, Number(row.policy_version))
+            )),
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function upsertInterpretiveDelegationPolicy(request, payload = {}) {
+    const timestamp = nowTimestamp(payload?.now);
+    const policy = buildInterpretiveDelegationPolicyRecord(payload, timestamp);
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    fs.mkdirSync(paths.storageRoot, { recursive: true });
+
+    const adapter = openOperationalDatabase(paths, { now: timestamp });
+    try {
+        seedInterpretivePolicyDefinitions(adapter);
+        const existing = loadInterpretiveDelegationPolicyProjection(adapter, policy.delegationPolicyId, policy.policyVersion);
+        if (existing) {
+            if (existing.policyHash !== policy.policyHash) {
+                throw createError(
+                    409,
+                    `Delegation policy ${policy.delegationPolicyId} version ${policy.policyVersion} already exists with different content`,
+                    'ARCH_DELEGATION_POLICY_CONFLICT',
+                );
+            }
+            return {
+                ok: true,
+                phase: 'c0.6.2',
+                ledgerPath: paths.interpretiveGovernanceLedgerPath,
+                delegationPolicy: existing,
+                created: false,
+            };
+        }
+        appendLedgerEvents(paths.interpretiveGovernanceLedgerPath, [createDelegationPolicyEvent(policy)]);
+        adapter.transaction(() => {
+            persistInterpretiveDelegationPolicyRow(adapter, policy);
+        });
+        snapshotOperationalDatabase(adapter, paths);
+        return {
+            ok: true,
+            phase: 'c0.6.2',
+            ledgerPath: paths.interpretiveGovernanceLedgerPath,
+            delegationPolicy: loadInterpretiveDelegationPolicyProjection(adapter, policy.delegationPolicyId, policy.policyVersion),
+            created: true,
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function revokeInterpretiveDelegationPolicy(request, delegationPolicyId, payload = {}) {
+    const timestamp = nowTimestamp(payload?.now);
+    const policyVersion = normalizePositiveInteger(payload?.policyVersion, 'policyVersion', 1, 1_000_000);
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const adapter = openOperationalDatabase(paths, { now: timestamp });
+    try {
+        seedInterpretivePolicyDefinitions(adapter);
+        const policy = loadInterpretiveDelegationPolicyProjection(
+            adapter,
+            sanitizeIdentifier(delegationPolicyId, 'delegationPolicyId'),
+            policyVersion,
+        );
+        if (!policy) {
+            throw createError(404, `Delegation policy ${delegationPolicyId} version ${policyVersion} was not found`, 'ARCH_DELEGATION_POLICY_NOT_FOUND');
+        }
+        if (!policy.revocable) {
+            throw createError(409, `Delegation policy ${delegationPolicyId} version ${policyVersion} is not revocable`, 'ARCH_DELEGATION_POLICY_NOT_REVOCABLE');
+        }
+        if (policy.policyState === 'REVOKED') {
+            return {
+                ok: true,
+                phase: 'c0.6.2',
+                ledgerPath: paths.interpretiveGovernanceLedgerPath,
+                delegationPolicy: policy,
+                revoked: false,
+            };
+        }
+        const revocationReason = normalizeOptionalCommentary(payload?.revocationReason, 'revocationReason');
+        const nextPolicy = {
+            ...policy,
+            policyState: 'REVOKED',
+            revocationReason,
+            updatedAt: timestamp,
+            revokedAt: timestamp,
+        };
+        appendLedgerEvents(paths.interpretiveGovernanceLedgerPath, [createDelegationPolicyRevocationEvent(nextPolicy, timestamp)]);
+        adapter.transaction(() => {
+            persistInterpretiveDelegationPolicyRow(adapter, nextPolicy);
+        });
+        snapshotOperationalDatabase(adapter, paths);
+        return {
+            ok: true,
+            phase: 'c0.6.2',
+            ledgerPath: paths.interpretiveGovernanceLedgerPath,
+            delegationPolicy: loadInterpretiveDelegationPolicyProjection(adapter, nextPolicy.delegationPolicyId, nextPolicy.policyVersion),
+            revoked: true,
         };
     } finally {
         adapter.close();

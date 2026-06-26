@@ -71,6 +71,8 @@ export const CAPABILITIES = Object.freeze({
         reviewerDispositionSubmission: true,
         immutableEditRevision: true,
         subjectDispositionRecording: true,
+        delegatedDispositionProvenance: true,
+        delegationPolicyStorage: true,
         continuityPublicationAvailable: false,
         structuralAuthorityMutation: false,
         modelInterpretationAvailable: false,

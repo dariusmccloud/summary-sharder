@@ -45,11 +45,14 @@ import {
     createInterpretiveRevision,
     getInterpretiveSynthesisRun,
     getInterpretiveCandidate,
+    listInterpretiveDelegationPolicies,
     listInterpretiveReviews,
     listInterpretivePolicyDefinitions,
     listInterpretiveSynthesisPolicies,
     recordInterpretiveSubjectDisposition,
+    revokeInterpretiveDelegationPolicy,
     submitInterpretiveReviewDisposition,
+    upsertInterpretiveDelegationPolicy,
     upsertInterpretiveSynthesisPolicy,
 } from './interpretive.js';
 
@@ -489,6 +492,33 @@ export async function init(router) {
     router.get('/interpretive/policies', async (request, response) => {
         try {
             const result = listInterpretivePolicyDefinitions(request);
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.get('/interpretive/delegation-policies', async (request, response) => {
+        try {
+            const result = listInterpretiveDelegationPolicies(request, request.query || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/interpretive/delegation-policies', async (request, response) => {
+        try {
+            const result = upsertInterpretiveDelegationPolicy(request, request.body || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/interpretive/delegation-policies/:delegationPolicyId/revoke', async (request, response) => {
+        try {
+            const result = revokeInterpretiveDelegationPolicy(request, request.params.delegationPolicyId, request.body || {});
             return response.send(result);
         } catch (error) {
             return handleError(response, error);

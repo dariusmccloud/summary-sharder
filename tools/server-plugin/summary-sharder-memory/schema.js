@@ -164,6 +164,24 @@ export function schemaStatements() {
             matched_rule_ids_json TEXT NOT NULL,
             resolution_input_hash TEXT NOT NULL
         )`,
+        `CREATE TABLE IF NOT EXISTS interpretation_delegation_policies (
+            delegation_policy_id TEXT NOT NULL,
+            policy_version INTEGER NOT NULL,
+            policy_hash TEXT NOT NULL,
+            principal_entity_id TEXT NOT NULL,
+            delegate_entity_id TEXT NOT NULL,
+            allowed_actions_json TEXT NOT NULL,
+            memory_scope_id TEXT NOT NULL,
+            continuity_target_id TEXT,
+            evidence_requirement TEXT NOT NULL,
+            revocable INTEGER NOT NULL,
+            policy_state TEXT NOT NULL,
+            revocation_reason TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            revoked_at INTEGER,
+            PRIMARY KEY (delegation_policy_id, policy_version)
+        )`,
         `CREATE TABLE IF NOT EXISTS interpretation_review_obligations (
             review_obligation_id TEXT PRIMARY KEY,
             interpretation_revision_id TEXT NOT NULL,
@@ -204,6 +222,21 @@ export function schemaStatements() {
             commentary TEXT,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
+        )`,
+        `CREATE TABLE IF NOT EXISTS interpretation_action_provenance (
+            action_provenance_id TEXT PRIMARY KEY,
+            interpretation_revision_id TEXT NOT NULL,
+            action_kind TEXT NOT NULL,
+            action_target_id TEXT NOT NULL,
+            disposition_owner_id TEXT NOT NULL,
+            submitted_by_actor_id TEXT NOT NULL,
+            submission_mode TEXT NOT NULL,
+            delegation_policy_id TEXT,
+            delegation_policy_version INTEGER,
+            delegation_policy_hash TEXT,
+            subject_evidence_refs_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            UNIQUE (action_kind, action_target_id)
         )`,
         `CREATE TABLE IF NOT EXISTS interpretation_synthesis_policies (
             synthesis_policy_id TEXT NOT NULL,

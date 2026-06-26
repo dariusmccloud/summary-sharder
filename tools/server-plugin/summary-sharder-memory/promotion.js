@@ -42,6 +42,7 @@ const KNOWN_NON_PROMOTABLE_TABLES = new Set([
     'interpretation_risk_classifications',
     'interpretation_policy_definitions',
     'interpretation_policy_bindings',
+    'interpretation_delegation_policies',
     'interpretation_review_obligations',
     'interpretation_review_requests',
     'interpretation_review_dispositions',
