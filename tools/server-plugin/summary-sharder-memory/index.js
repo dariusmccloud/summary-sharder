@@ -39,13 +39,17 @@ import {
     recoverPromotionState,
 } from './promotion.js';
 import {
+    createInterpretiveSynthesisRun,
     createInterpretiveCandidate,
     createInterpretiveRevision,
+    getInterpretiveSynthesisRun,
     getInterpretiveCandidate,
     listInterpretiveReviews,
     listInterpretivePolicyDefinitions,
+    listInterpretiveSynthesisPolicies,
     recordInterpretiveSubjectDisposition,
     submitInterpretiveReviewDisposition,
+    upsertInterpretiveSynthesisPolicy,
 } from './interpretive.js';
 
 export const info = {
@@ -484,6 +488,42 @@ export async function init(router) {
     router.get('/interpretive/policies', async (request, response) => {
         try {
             const result = listInterpretivePolicyDefinitions(request);
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.get('/interpretive/synthesis/policies', async (request, response) => {
+        try {
+            const result = listInterpretiveSynthesisPolicies(request, request.query || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/interpretive/synthesis/policies', async (request, response) => {
+        try {
+            const result = upsertInterpretiveSynthesisPolicy(request, request.body || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/interpretive/synthesis/runs', async (request, response) => {
+        try {
+            const result = createInterpretiveSynthesisRun(request, request.body || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.get('/interpretive/synthesis/runs/:synthesisRunId', async (request, response) => {
+        try {
+            const result = getInterpretiveSynthesisRun(request, request.params.synthesisRunId);
             return response.send(result);
         } catch (error) {
             return handleError(response, error);

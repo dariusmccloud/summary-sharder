@@ -6,15 +6,19 @@ import path from 'node:path';
 
 import { getStoragePaths, openOperationalDatabase } from './core.js';
 import {
+    createInterpretiveSynthesisRun,
     createInterpretiveCandidate,
     createInterpretiveRevision,
     getInterpretiveCandidate,
+    getInterpretiveSynthesisRun,
     listInterpretivePolicyDefinitions,
+    listInterpretiveSynthesisPolicies,
     listInterpretiveReviews,
     prepareInterpretiveCandidate,
     recordInterpretiveSubjectDisposition,
     replayInterpretiveLedger,
     submitInterpretiveReviewDisposition,
+    upsertInterpretiveSynthesisPolicy,
 } from './interpretive.js';
 
 function makeTempRoot() {
@@ -107,6 +111,103 @@ function comparableInterpretationProjection(value) {
         reviewDispositions: value.reviewDispositions,
         subjectDisposition: value.subjectDisposition,
         childRevisionIds: value.childRevisionIds,
+    };
+}
+
+function comparableSynthesisPolicyProjection(value) {
+    return {
+        synthesisPolicyId: value.synthesisPolicyId,
+        policyVersion: value.policyVersion,
+        memorySubjectId: value.memorySubjectId,
+        enabled: value.enabled,
+        allowedTypes: value.allowedTypes,
+        allowedAssertionDomains: value.allowedAssertionDomains,
+        prohibitedDomains: value.prohibitedDomains,
+        manualTriggerRequiredForHighRisk: value.manualTriggerRequiredForHighRisk,
+        maxCandidatesPerRun: value.maxCandidatesPerRun,
+        policyHash: value.policyHash,
+        details: value.details,
+    };
+}
+
+function comparableSynthesisRunProjection(value) {
+    return {
+        synthesisRunId: value.synthesisRunId,
+        memoryScopeId: value.memoryScopeId,
+        memorySubjectId: value.memorySubjectId,
+        synthesisPolicyId: value.synthesisPolicyId,
+        policyVersion: value.policyVersion,
+        policyHash: value.policyHash,
+        sourceManifestId: value.sourceManifestId,
+        sourceManifestHash: value.sourceManifestHash,
+        sourceManifest: value.sourceManifest,
+        modelProviderId: value.modelProviderId,
+        promptVersion: value.promptVersion,
+        promptHash: value.promptHash,
+        generationConfigHash: value.generationConfigHash,
+        requestedInterpretationTypes: value.requestedInterpretationTypes,
+        requestedAssertionDomains: value.requestedAssertionDomains,
+        sharedRelationshipRequested: value.sharedRelationshipRequested,
+        personalMeaningRequested: value.personalMeaningRequested,
+        maxCandidatesRequested: value.maxCandidatesRequested,
+        generatedCandidateIds: value.generatedCandidateIds,
+        runStatus: value.runStatus,
+        failureCode: value.failureCode,
+        failureDetails: value.failureDetails,
+        createdByEntityId: value.createdByEntityId,
+        manualTriggerAcknowledged: value.manualTriggerAcknowledged,
+    };
+}
+
+function makeSynthesisPolicyPayload(overrides = {}) {
+    return {
+        synthesisPolicyId: 'jeep-developmental-synthesis-v1',
+        policyVersion: 1,
+        memorySubjectId: 'character:jeep.png',
+        enabled: true,
+        allowedTypes: ['ROLE_EVOLUTION', 'PROJECT_TRANSFORMATION', 'RELATIONAL_PROGRESSION'],
+        allowedAssertionDomains: ['ROLE', 'AUTHORITY', 'RELATIONSHIP'],
+        prohibitedDomains: [],
+        manualTriggerRequiredForHighRisk: true,
+        maxCandidatesPerRun: 3,
+        now: Date.parse('2026-06-26T00:00:00.000Z'),
+        ...overrides,
+    };
+}
+
+function makeSynthesisRunPayload(overrides = {}) {
+    return {
+        synthesisRunId: 'synthrun_scope_alpha_v1',
+        memoryScopeId: 'scope_alpha',
+        memorySubjectId: 'character:jeep.png',
+        synthesisPolicyId: 'jeep-developmental-synthesis-v1',
+        requestedInterpretationTypes: ['ROLE_EVOLUTION'],
+        requestedAssertionDomains: ['ROLE', 'AUTHORITY'],
+        sharedRelationshipRequested: false,
+        personalMeaningRequested: false,
+        maxCandidatesRequested: 2,
+        manualTriggerAcknowledged: true,
+        createdByEntityId: 'user:Chris',
+        sourceManifestEntries: [
+            {
+                sourceClass: 'STRUCTURAL_RECORD',
+                memoryScopeId: 'scope_alpha',
+                basisRecordId: 'decision:constitutional-sovereignty',
+                basisRecordVersion: 1,
+                basisRecordHash: 'sha256:constitutional-sovereignty',
+                speakerEntityId: 'character:jeep.png',
+            },
+            {
+                sourceClass: 'SOURCE_OCCURRENCE',
+                memoryScopeId: 'scope_alpha',
+                chatInstanceId: 'chat_alpha',
+                messageId: 'msg_alpha0000000000000000000000000',
+                messageRevisionHash: 'sha256:msg-alpha',
+                speakerEntityId: 'user:Chris',
+            },
+        ],
+        now: Date.parse('2026-06-26T00:05:00.000Z'),
+        ...overrides,
     };
 }
 
@@ -222,6 +323,79 @@ test('listInterpretivePolicyDefinitions exposes immutable seeded policy definiti
     assert.equal(result.policies.length >= 2, true);
     assert.equal(result.policies.some((entry) => entry.validationPolicyId === 'shared-role-memory' && entry.policyVersion === 1), true);
     assert.equal(result.policies.some((entry) => entry.validationPolicyId === 'subject-meaning-memory' && entry.policyVersion === 1), true);
+});
+
+test('subject-controlled synthesis policy is durable and replayable', () => {
+    const sourceRoot = makeTempRoot();
+    const sourceRequest = buildRequest(sourceRoot);
+    const policyResult = upsertInterpretiveSynthesisPolicy(sourceRequest, makeSynthesisPolicyPayload());
+    assert.equal(policyResult.phase, 'c0.6.3');
+    assert.equal(policyResult.created, true);
+
+    const listed = listInterpretiveSynthesisPolicies(sourceRequest, { memorySubjectId: 'character:jeep.png' });
+    assert.equal(listed.policies.length, 1);
+
+    const sourcePaths = getStoragePaths(sourceRoot);
+    const targetRoot = makeTempRoot();
+    const targetPaths = getStoragePaths(targetRoot);
+    fs.mkdirSync(targetPaths.storageRoot, { recursive: true });
+    fs.copyFileSync(sourcePaths.interpretiveGovernanceLedgerPath, targetPaths.interpretiveGovernanceLedgerPath);
+
+    const replayed = replayInterpretiveLedger(buildRequest(targetRoot));
+    assert.equal(replayed.phase, 'c0.6.3');
+    assert.equal(replayed.replayedSynthesisPolicies.length, 1);
+    assert.deepEqual(
+        comparableSynthesisPolicyProjection(replayed.replayedSynthesisPolicies[0]),
+        comparableSynthesisPolicyProjection(policyResult.synthesisPolicy),
+    );
+});
+
+test('bounded synthesis runs refuse prohibited high-risk requests and preserve the refusal audit', () => {
+    const root = makeTempRoot();
+    const request = buildRequest(root);
+    upsertInterpretiveSynthesisPolicy(request, makeSynthesisPolicyPayload({
+        prohibitedDomains: ['AUTHORITY'],
+    }));
+
+    const result = createInterpretiveSynthesisRun(request, makeSynthesisRunPayload({
+        synthesisRunId: 'synthrun_refused_case',
+    }));
+    assert.equal(result.phase, 'c0.6.3');
+    assert.equal(result.admitted, false);
+    assert.equal(result.synthesisRun.runStatus, 'REFUSED');
+    assert.equal(result.synthesisRun.failureCode, 'SYNTHESIS_PROHIBITED_DOMAIN');
+    assert.deepEqual(result.synthesisRun.failureDetails, {
+        prohibitedDomains: ['AUTHORITY'],
+    });
+
+    const reopened = getInterpretiveSynthesisRun(request, 'synthrun_refused_case');
+    assert.equal(reopened.synthesisRun.runStatus, 'REFUSED');
+    assert.equal(reopened.synthesisRun.failureCode, 'SYNTHESIS_PROHIBITED_DOMAIN');
+});
+
+test('bounded synthesis runs freeze source manifests without generation and replay identically', () => {
+    const sourceRoot = makeTempRoot();
+    const sourceRequest = buildRequest(sourceRoot);
+    upsertInterpretiveSynthesisPolicy(sourceRequest, makeSynthesisPolicyPayload());
+    const created = createInterpretiveSynthesisRun(sourceRequest, makeSynthesisRunPayload());
+
+    assert.equal(created.admitted, true);
+    assert.equal(created.synthesisRun.runStatus, 'READY_FOR_SYNTHESIS');
+    assert.equal(created.synthesisRun.generatedCandidateIds.length, 0);
+    assert.equal(created.synthesisRun.sourceManifestHash.startsWith('sha256:'), true);
+
+    const sourcePaths = getStoragePaths(sourceRoot);
+    const targetRoot = makeTempRoot();
+    const targetPaths = getStoragePaths(targetRoot);
+    fs.mkdirSync(targetPaths.storageRoot, { recursive: true });
+    fs.copyFileSync(sourcePaths.interpretiveGovernanceLedgerPath, targetPaths.interpretiveGovernanceLedgerPath);
+
+    const replayed = replayInterpretiveLedger(buildRequest(targetRoot));
+    assert.equal(replayed.replayedSynthesisRuns.length, 1);
+    assert.deepEqual(
+        comparableSynthesisRunProjection(replayed.replayedSynthesisRuns[0]),
+        comparableSynthesisRunProjection(created.synthesisRun),
+    );
 });
 
 test('submitInterpretiveReviewDisposition rejects stale review envelopes', () => {

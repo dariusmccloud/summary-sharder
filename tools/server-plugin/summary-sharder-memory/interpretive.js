@@ -58,6 +58,16 @@ const ALLOWED_SUBJECT_DISPOSITION_STATES = new Set([
     'CONTESTED',
 ]);
 
+const ALLOWED_SYNTHESIS_RUN_STATUSES = new Set([
+    'READY_FOR_SYNTHESIS',
+    'REFUSED',
+]);
+
+const ALLOWED_SYNTHESIS_SOURCE_CLASSES = new Set([
+    'STRUCTURAL_RECORD',
+    'SOURCE_OCCURRENCE',
+]);
+
 const POLICY_DEFINITIONS = Object.freeze([
     Object.freeze({
         validationPolicyId: 'shared-role-memory',
@@ -145,6 +155,21 @@ function normalizeStringArray(value, fieldName, allowedValues = null) {
     return Array.from(new Set(normalized)).sort();
 }
 
+function normalizeStringArrayAllowEmpty(value, fieldName, allowedValues = null) {
+    if (!Array.isArray(value)) {
+        throw createError(400, `${fieldName} must be an array`, 'ARCH_INVALID_PAYLOAD');
+    }
+    const normalized = value.map((entry) => String(entry || '').trim()).filter(Boolean);
+    if (allowedValues) {
+        for (const entry of normalized) {
+            if (!allowedValues.has(entry)) {
+                throw createError(400, `${fieldName} contains unsupported value ${entry}`, 'ARCH_INVALID_PAYLOAD');
+            }
+        }
+    }
+    return Array.from(new Set(normalized)).sort();
+}
+
 function normalizeReasonCodes(value, fieldName = 'reasonCodes') {
     if (value === undefined || value === null) {
         return [];
@@ -177,6 +202,31 @@ function normalizeOptionalCommentary(value, fieldName = 'commentary') {
         throw createError(400, `${fieldName} is too long`, 'ARCH_INVALID_PAYLOAD');
     }
     return normalized;
+}
+
+function normalizeBoolean(value, fieldName) {
+    if (typeof value !== 'boolean') {
+        throw createError(400, `${fieldName} must be a boolean`, 'ARCH_INVALID_PAYLOAD');
+    }
+    return value;
+}
+
+function normalizePositiveInteger(value, fieldName, minimum = 1, maximum = 1000) {
+    const normalized = Number(value);
+    if (!Number.isInteger(normalized) || normalized < minimum || normalized > maximum) {
+        throw createError(400, `${fieldName} is invalid`, 'ARCH_INVALID_PAYLOAD');
+    }
+    return normalized;
+}
+
+function normalizeOptionalPlainObject(value, fieldName) {
+    if (value === undefined || value === null) {
+        return {};
+    }
+    if (Array.isArray(value) || typeof value !== 'object') {
+        throw createError(400, `${fieldName} must be an object`, 'ARCH_INVALID_PAYLOAD');
+    }
+    return cloneJson(value);
 }
 
 function normalizeGroundingLink(link, index) {
@@ -270,6 +320,206 @@ function deriveGroundingOutcome(groundingLinks) {
         return 'SUPPORTED';
     }
     return 'UNSUPPORTED';
+}
+
+function normalizeSynthesisSourceEntry(entry, index, memoryScopeId) {
+    const sourceClass = String(entry?.sourceClass || '').trim();
+    if (!ALLOWED_SYNTHESIS_SOURCE_CLASSES.has(sourceClass)) {
+        throw createError(400, `sourceManifestEntries[${index}].sourceClass is invalid`, 'ARCH_INVALID_PAYLOAD');
+    }
+    const entryMemoryScopeId = sanitizeIdentifier(
+        entry?.memoryScopeId || memoryScopeId,
+        `sourceManifestEntries[${index}].memoryScopeId`,
+    );
+    if (entryMemoryScopeId !== memoryScopeId) {
+        throw createError(400, `sourceManifestEntries[${index}] escaped the requested memory scope`, 'ARCH_INVALID_PAYLOAD');
+    }
+    const speakerEntityId = sanitizeIdentifier(
+        entry?.speakerEntityId || 'system:unknown',
+        `sourceManifestEntries[${index}].speakerEntityId`,
+    );
+    if (sourceClass === 'STRUCTURAL_RECORD') {
+        const basisRecordId = sanitizeIdentifier(entry?.basisRecordId, `sourceManifestEntries[${index}].basisRecordId`);
+        const basisRecordVersion = normalizePositiveInteger(
+            entry?.basisRecordVersion,
+            `sourceManifestEntries[${index}].basisRecordVersion`,
+            1,
+            1_000_000,
+        );
+        const basisRecordHash = String(entry?.basisRecordHash || '').trim();
+        if (!basisRecordHash.startsWith('sha256:')) {
+            throw createError(400, `sourceManifestEntries[${index}].basisRecordHash is invalid`, 'ARCH_INVALID_PAYLOAD');
+        }
+        return {
+            sourceClass,
+            memoryScopeId: entryMemoryScopeId,
+            speakerEntityId,
+            basisRecordId,
+            basisRecordVersion,
+            basisRecordHash,
+            chatInstanceId: null,
+            messageId: null,
+            messageRevisionHash: null,
+        };
+    }
+    const chatInstanceId = sanitizeIdentifier(entry?.chatInstanceId, `sourceManifestEntries[${index}].chatInstanceId`);
+    const messageId = sanitizeIdentifier(entry?.messageId, `sourceManifestEntries[${index}].messageId`);
+    const messageRevisionHash = String(entry?.messageRevisionHash || '').trim();
+    if (!messageRevisionHash.startsWith('sha256:')) {
+        throw createError(400, `sourceManifestEntries[${index}].messageRevisionHash is invalid`, 'ARCH_INVALID_PAYLOAD');
+    }
+    return {
+        sourceClass,
+        memoryScopeId: entryMemoryScopeId,
+        speakerEntityId,
+        basisRecordId: null,
+        basisRecordVersion: null,
+        basisRecordHash: null,
+        chatInstanceId,
+        messageId,
+        messageRevisionHash,
+    };
+}
+
+function buildSynthesisPolicyRecord(payload, timestamp) {
+    const synthesisPolicyId = sanitizeIdentifier(
+        payload?.synthesisPolicyId || createId('synthpolicy'),
+        'synthesisPolicyId',
+    );
+    const policyVersion = normalizePositiveInteger(payload?.policyVersion, 'policyVersion', 1, 1_000_000);
+    const memorySubjectId = sanitizeIdentifier(payload?.memorySubjectId, 'memorySubjectId');
+    const enabled = normalizeBoolean(payload?.enabled, 'enabled');
+    const allowedTypes = normalizeStringArray(payload?.allowedTypes, 'allowedTypes', ALLOWED_INTERPRETATION_TYPES);
+    const allowedAssertionDomains = normalizeStringArray(
+        payload?.allowedAssertionDomains,
+        'allowedAssertionDomains',
+        ALLOWED_ASSERTION_DOMAINS,
+    );
+    const prohibitedDomains = payload?.prohibitedDomains === undefined
+        ? []
+        : normalizeStringArrayAllowEmpty(payload?.prohibitedDomains, 'prohibitedDomains', ALLOWED_ASSERTION_DOMAINS);
+    const manualTriggerRequiredForHighRisk = normalizeBoolean(
+        payload?.manualTriggerRequiredForHighRisk,
+        'manualTriggerRequiredForHighRisk',
+    );
+    const maxCandidatesPerRun = normalizePositiveInteger(payload?.maxCandidatesPerRun, 'maxCandidatesPerRun', 1, 100);
+    const details = normalizeOptionalPlainObject(payload?.details, 'details');
+    const policyHash = hashCanonical({
+        synthesisPolicyId,
+        policyVersion,
+        memorySubjectId,
+        enabled,
+        allowedTypes,
+        allowedAssertionDomains,
+        prohibitedDomains,
+        manualTriggerRequiredForHighRisk,
+        maxCandidatesPerRun,
+        details,
+    }).hash;
+    return {
+        synthesisPolicyId,
+        policyVersion,
+        memorySubjectId,
+        enabled,
+        allowedTypes,
+        allowedAssertionDomains,
+        prohibitedDomains,
+        manualTriggerRequiredForHighRisk,
+        maxCandidatesPerRun,
+        policyHash,
+        details,
+        createdAt: timestamp,
+    };
+}
+
+function deriveSynthesisRisk(requestedAssertionDomains, sharedRelationshipRequested, personalMeaningRequested) {
+    const reasons = new Set();
+    for (const domain of requestedAssertionDomains) {
+        if (['ROLE', 'AUTHORITY', 'RELATIONSHIP', 'IDENTITY', 'PERSONAL_HISTORY', 'SENSITIVE_MEANING'].includes(domain)) {
+            reasons.add(domain);
+        }
+    }
+    if (sharedRelationshipRequested) {
+        reasons.add('RELATIONSHIP');
+    }
+    if (personalMeaningRequested) {
+        reasons.add('SENSITIVE_MEANING');
+    }
+    const riskReasons = Array.from(reasons).sort();
+    return {
+        highRisk: riskReasons.length > 0 || sharedRelationshipRequested || personalMeaningRequested,
+        riskReasons,
+    };
+}
+
+function buildFrozenSynthesisManifest(payload, timestamp) {
+    const memoryScopeId = sanitizeIdentifier(payload?.memoryScopeId, 'memoryScopeId');
+    const memorySubjectId = sanitizeIdentifier(payload?.memorySubjectId, 'memorySubjectId');
+    const createdByEntityId = sanitizeIdentifier(payload?.createdByEntityId, 'createdByEntityId');
+    const synthesisPolicyId = sanitizeIdentifier(payload?.synthesisPolicyId, 'synthesisPolicyId');
+    const policyVersion = payload?.policyVersion === undefined || payload?.policyVersion === null
+        ? null
+        : normalizePositiveInteger(payload?.policyVersion, 'policyVersion', 1, 1_000_000);
+    const requestedInterpretationTypes = normalizeStringArray(
+        payload?.requestedInterpretationTypes,
+        'requestedInterpretationTypes',
+        ALLOWED_INTERPRETATION_TYPES,
+    );
+    const requestedAssertionDomains = normalizeStringArray(
+        payload?.requestedAssertionDomains,
+        'requestedAssertionDomains',
+        ALLOWED_ASSERTION_DOMAINS,
+    );
+    const sharedRelationshipRequested = payload?.sharedRelationshipRequested === true;
+    const personalMeaningRequested = payload?.personalMeaningRequested === true;
+    const manualTriggerAcknowledged = payload?.manualTriggerAcknowledged === true;
+    const maxCandidatesRequested = normalizePositiveInteger(
+        payload?.maxCandidatesRequested,
+        'maxCandidatesRequested',
+        1,
+        100,
+    );
+    if (!Array.isArray(payload?.sourceManifestEntries) || payload.sourceManifestEntries.length === 0) {
+        throw createError(400, 'sourceManifestEntries must not be empty', 'ARCH_INVALID_PAYLOAD');
+    }
+    const sourceManifestEntries = payload.sourceManifestEntries
+        .map((entry, index) => normalizeSynthesisSourceEntry(entry, index, memoryScopeId))
+        .sort((left, right) => stableStringify(left).localeCompare(stableStringify(right)));
+    const manifestCanonical = {
+        memoryScopeId,
+        memorySubjectId,
+        requestedInterpretationTypes,
+        requestedAssertionDomains,
+        sharedRelationshipRequested,
+        personalMeaningRequested,
+        sourceManifestEntries,
+    };
+    const sourceManifestId = sanitizeIdentifier(payload?.sourceManifestId || createId('synthmanifest'), 'sourceManifestId');
+    const sourceManifestHash = hashCanonical(manifestCanonical).hash;
+    return {
+        synthesisRunId: sanitizeIdentifier(payload?.synthesisRunId || createId('synthrun'), 'synthesisRunId'),
+        memoryScopeId,
+        memorySubjectId,
+        synthesisPolicyId,
+        policyVersion,
+        requestedInterpretationTypes,
+        requestedAssertionDomains,
+        sharedRelationshipRequested,
+        personalMeaningRequested,
+        manualTriggerAcknowledged,
+        maxCandidatesRequested,
+        sourceManifestId,
+        sourceManifestHash,
+        sourceManifestEntries,
+        sourceManifestCanonical: manifestCanonical,
+        modelProviderId: payload?.modelProviderId ? String(payload.modelProviderId).trim() : null,
+        promptVersion: payload?.promptVersion ? String(payload.promptVersion).trim() : null,
+        promptHash: payload?.promptHash ? String(payload.promptHash).trim() : null,
+        generationConfigHash: payload?.generationConfigHash ? String(payload.generationConfigHash).trim() : null,
+        createdByEntityId,
+        createdAt: timestamp,
+        risk: deriveSynthesisRisk(requestedAssertionDomains, sharedRelationshipRequested, personalMeaningRequested),
+    };
 }
 
 export function resolveInterpretiveRisk(candidateInput) {
@@ -687,6 +937,30 @@ function createSubjectDispositionEvent(subjectDisposition, candidate, reviewEnve
     };
 }
 
+function createSynthesisPolicyEvent(policy) {
+    return {
+        eventId: createId('iglevent'),
+        eventType: 'SYNTHESIS_POLICY_REGISTERED',
+        occurredAt: policy.createdAt,
+        memoryScopeId: null,
+        interpretationId: null,
+        interpretationRevisionId: null,
+        payload: cloneJson(policy),
+    };
+}
+
+function createSynthesisRunEvent(run) {
+    return {
+        eventId: createId('iglevent'),
+        eventType: 'SYNTHESIS_RUN_REGISTERED',
+        occurredAt: run.createdAt,
+        memoryScopeId: run.memoryScopeId,
+        interpretationId: null,
+        interpretationRevisionId: null,
+        payload: cloneJson(run),
+    };
+}
+
 function appendLedgerEvents(ledgerPath, events) {
     const lines = events.map((entry) => JSON.stringify(entry)).join('\n');
     fs.appendFileSync(ledgerPath, `${lines}\n`, 'utf8');
@@ -702,6 +976,8 @@ const INTERPRETIVE_PROJECTION_TABLES = Object.freeze([
     'interpretation_grounding_links',
     'interpretation_subject_dispositions',
     'interpretation_revisions',
+    'interpretation_synthesis_runs',
+    'interpretation_synthesis_policies',
 ]);
 
 function clearInterpretiveProjection(adapter) {
@@ -805,6 +1081,252 @@ function recomputeCandidateReviewState(adapter, interpretationRevisionId, timest
     return reviewState;
 }
 
+function loadInterpretiveSynthesisPolicyProjection(adapter, synthesisPolicyId, policyVersion) {
+    const row = adapter.get(
+        'SELECT * FROM interpretation_synthesis_policies WHERE synthesis_policy_id = ? AND policy_version = ?',
+        [synthesisPolicyId, policyVersion],
+    );
+    if (!row) {
+        return null;
+    }
+    return {
+        synthesisPolicyId: row.synthesis_policy_id,
+        policyVersion: Number(row.policy_version),
+        memorySubjectId: row.memory_subject_id,
+        enabled: Number(row.enabled) === 1,
+        allowedTypes: JSON.parse(row.allowed_types_json),
+        allowedAssertionDomains: JSON.parse(row.allowed_assertion_domains_json),
+        prohibitedDomains: JSON.parse(row.prohibited_domains_json),
+        manualTriggerRequiredForHighRisk: Number(row.manual_trigger_required_for_high_risk) === 1,
+        maxCandidatesPerRun: Number(row.max_candidates_per_run),
+        policyHash: row.policy_hash,
+        details: JSON.parse(row.details_json),
+        createdAt: Number(row.created_at),
+    };
+}
+
+function loadLatestInterpretiveSynthesisPolicy(adapter, synthesisPolicyId) {
+    const row = adapter.get(
+        `SELECT * FROM interpretation_synthesis_policies
+         WHERE synthesis_policy_id = ?
+         ORDER BY policy_version DESC
+         LIMIT 1`,
+        [synthesisPolicyId],
+    );
+    if (!row) {
+        return null;
+    }
+    return loadInterpretiveSynthesisPolicyProjection(adapter, row.synthesis_policy_id, Number(row.policy_version));
+}
+
+function persistInterpretiveSynthesisPolicyRow(adapter, policy) {
+    adapter.run(
+        `INSERT INTO interpretation_synthesis_policies (
+            synthesis_policy_id, policy_version, memory_subject_id, enabled,
+            allowed_types_json, allowed_assertion_domains_json, prohibited_domains_json,
+            manual_trigger_required_for_high_risk, max_candidates_per_run, policy_hash,
+            details_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            policy.synthesisPolicyId,
+            policy.policyVersion,
+            policy.memorySubjectId,
+            policy.enabled ? 1 : 0,
+            stableStringify(policy.allowedTypes),
+            stableStringify(policy.allowedAssertionDomains),
+            stableStringify(policy.prohibitedDomains),
+            policy.manualTriggerRequiredForHighRisk ? 1 : 0,
+            policy.maxCandidatesPerRun,
+            policy.policyHash,
+            stableStringify(policy.details),
+            policy.createdAt,
+        ],
+    );
+}
+
+function loadInterpretiveSynthesisRunProjection(adapter, synthesisRunId) {
+    const row = adapter.get(
+        'SELECT * FROM interpretation_synthesis_runs WHERE synthesis_run_id = ?',
+        [synthesisRunId],
+    );
+    if (!row) {
+        return null;
+    }
+    return {
+        synthesisRunId: row.synthesis_run_id,
+        memoryScopeId: row.memory_scope_id,
+        memorySubjectId: row.memory_subject_id,
+        synthesisPolicyId: row.synthesis_policy_id,
+        policyVersion: Number(row.policy_version),
+        policyHash: row.policy_hash,
+        sourceManifestId: row.source_manifest_id,
+        sourceManifestHash: row.source_manifest_hash,
+        sourceManifest: JSON.parse(row.source_manifest_json),
+        modelProviderId: row.model_provider_id,
+        promptVersion: row.prompt_version,
+        promptHash: row.prompt_hash,
+        generationConfigHash: row.generation_config_hash,
+        requestedInterpretationTypes: JSON.parse(row.requested_interpretation_types_json),
+        requestedAssertionDomains: JSON.parse(row.requested_assertion_domains_json),
+        sharedRelationshipRequested: Number(row.shared_relationship_requested) === 1,
+        personalMeaningRequested: Number(row.personal_meaning_requested) === 1,
+        maxCandidatesRequested: Number(row.max_candidates_requested),
+        generatedCandidateIds: JSON.parse(row.generated_candidate_ids_json),
+        runStatus: row.run_status,
+        failureCode: row.failure_code,
+        failureDetails: row.failure_details_json ? JSON.parse(row.failure_details_json) : null,
+        createdByEntityId: row.created_by_entity_id,
+        manualTriggerAcknowledged: Number(row.manual_trigger_acknowledged) === 1,
+        createdAt: Number(row.created_at),
+        updatedAt: Number(row.updated_at),
+    };
+}
+
+function persistInterpretiveSynthesisRunRow(adapter, run) {
+    adapter.run(
+        `INSERT INTO interpretation_synthesis_runs (
+            synthesis_run_id, memory_scope_id, memory_subject_id, synthesis_policy_id,
+            policy_version, policy_hash, source_manifest_id, source_manifest_hash,
+            source_manifest_json, model_provider_id, prompt_version, prompt_hash,
+            generation_config_hash, requested_interpretation_types_json,
+            requested_assertion_domains_json, shared_relationship_requested,
+            personal_meaning_requested, max_candidates_requested, generated_candidate_ids_json,
+            run_status, failure_code, failure_details_json, created_by_entity_id,
+            manual_trigger_acknowledged, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            run.synthesisRunId,
+            run.memoryScopeId,
+            run.memorySubjectId,
+            run.synthesisPolicyId,
+            run.policyVersion,
+            run.policyHash,
+            run.sourceManifestId,
+            run.sourceManifestHash,
+            stableStringify(run.sourceManifest),
+            run.modelProviderId,
+            run.promptVersion,
+            run.promptHash,
+            run.generationConfigHash,
+            stableStringify(run.requestedInterpretationTypes),
+            stableStringify(run.requestedAssertionDomains),
+            run.sharedRelationshipRequested ? 1 : 0,
+            run.personalMeaningRequested ? 1 : 0,
+            run.maxCandidatesRequested,
+            stableStringify(run.generatedCandidateIds),
+            run.runStatus,
+            run.failureCode,
+            run.failureDetails ? stableStringify(run.failureDetails) : null,
+            run.createdByEntityId,
+            run.manualTriggerAcknowledged ? 1 : 0,
+            run.createdAt,
+            run.updatedAt,
+        ],
+    );
+}
+
+function resolveSynthesisPolicyForRun(adapter, frozen) {
+    const policy = frozen.policyVersion === null
+        ? loadLatestInterpretiveSynthesisPolicy(adapter, frozen.synthesisPolicyId)
+        : loadInterpretiveSynthesisPolicyProjection(adapter, frozen.synthesisPolicyId, frozen.policyVersion);
+    if (!policy) {
+        throw createError(404, `Synthesis policy ${frozen.synthesisPolicyId} was not found`, 'ARCH_SYNTHESIS_POLICY_NOT_FOUND');
+    }
+    if (policy.memorySubjectId !== frozen.memorySubjectId) {
+        throw createError(409, 'Synthesis policy subject does not match the requested memory subject', 'ARCH_SYNTHESIS_SUBJECT_MISMATCH');
+    }
+    return policy;
+}
+
+function buildRefusedSynthesisRun(frozen, policy, failureCode, failureDetails) {
+    return {
+        synthesisRunId: frozen.synthesisRunId,
+        memoryScopeId: frozen.memoryScopeId,
+        memorySubjectId: frozen.memorySubjectId,
+        synthesisPolicyId: policy.synthesisPolicyId,
+        policyVersion: policy.policyVersion,
+        policyHash: policy.policyHash,
+        sourceManifestId: frozen.sourceManifestId,
+        sourceManifestHash: frozen.sourceManifestHash,
+        sourceManifest: frozen.sourceManifestCanonical,
+        modelProviderId: frozen.modelProviderId,
+        promptVersion: frozen.promptVersion,
+        promptHash: frozen.promptHash,
+        generationConfigHash: frozen.generationConfigHash,
+        requestedInterpretationTypes: frozen.requestedInterpretationTypes,
+        requestedAssertionDomains: frozen.requestedAssertionDomains,
+        sharedRelationshipRequested: frozen.sharedRelationshipRequested,
+        personalMeaningRequested: frozen.personalMeaningRequested,
+        maxCandidatesRequested: frozen.maxCandidatesRequested,
+        generatedCandidateIds: [],
+        runStatus: 'REFUSED',
+        failureCode,
+        failureDetails,
+        createdByEntityId: frozen.createdByEntityId,
+        manualTriggerAcknowledged: frozen.manualTriggerAcknowledged,
+        createdAt: frozen.createdAt,
+        updatedAt: frozen.createdAt,
+    };
+}
+
+function evaluateSynthesisRunAdmission(frozen, policy) {
+    if (!policy.enabled) {
+        return {
+            admitted: false,
+            failureCode: 'SYNTHESIS_POLICY_DISABLED',
+            failureDetails: { reason: 'policy-disabled' },
+        };
+    }
+    const disallowedTypes = frozen.requestedInterpretationTypes.filter((entry) => !policy.allowedTypes.includes(entry));
+    if (disallowedTypes.length > 0) {
+        return {
+            admitted: false,
+            failureCode: 'SYNTHESIS_TYPE_NOT_ALLOWED',
+            failureDetails: { disallowedTypes },
+        };
+    }
+    const disallowedDomains = frozen.requestedAssertionDomains.filter((entry) => !policy.allowedAssertionDomains.includes(entry));
+    if (disallowedDomains.length > 0) {
+        return {
+            admitted: false,
+            failureCode: 'SYNTHESIS_ASSERTION_DOMAIN_NOT_ALLOWED',
+            failureDetails: { disallowedDomains },
+        };
+    }
+    const prohibitedDomains = frozen.requestedAssertionDomains.filter((entry) => policy.prohibitedDomains.includes(entry));
+    if (prohibitedDomains.length > 0) {
+        return {
+            admitted: false,
+            failureCode: 'SYNTHESIS_PROHIBITED_DOMAIN',
+            failureDetails: { prohibitedDomains },
+        };
+    }
+    if (frozen.maxCandidatesRequested > policy.maxCandidatesPerRun) {
+        return {
+            admitted: false,
+            failureCode: 'SYNTHESIS_CANDIDATE_LIMIT_EXCEEDED',
+            failureDetails: {
+                maxCandidatesRequested: frozen.maxCandidatesRequested,
+                maxCandidatesPerRun: policy.maxCandidatesPerRun,
+            },
+        };
+    }
+    if (policy.manualTriggerRequiredForHighRisk && frozen.risk.highRisk && !frozen.manualTriggerAcknowledged) {
+        return {
+            admitted: false,
+            failureCode: 'SYNTHESIS_MANUAL_TRIGGER_REQUIRED',
+            failureDetails: {
+                riskReasons: frozen.risk.riskReasons,
+            },
+        };
+    }
+    return {
+        admitted: true,
+        failureCode: null,
+        failureDetails: null,
+    };
+}
+
 function buildChildRevisionPayload(parentInterpretation, payload = {}, createdFromDispositionId, reviewerRole, timestamp) {
     const revised = payload?.revisedCandidate || {};
     const statement = String(revised.statement || '').trim();
@@ -906,6 +1428,78 @@ function buildPreparedFromLedgerEvents(events) {
     };
 }
 
+function applySynthesisLedgerEvent(adapter, event) {
+    if (event.eventType === 'SYNTHESIS_POLICY_REGISTERED') {
+        const policy = event.payload || {};
+        persistInterpretiveSynthesisPolicyRow(adapter, {
+            synthesisPolicyId: sanitizeIdentifier(policy.synthesisPolicyId, 'synthesisPolicyId'),
+            policyVersion: normalizePositiveInteger(policy.policyVersion, 'policyVersion', 1, 1_000_000),
+            memorySubjectId: sanitizeIdentifier(policy.memorySubjectId, 'memorySubjectId'),
+            enabled: policy.enabled === true,
+            allowedTypes: normalizeStringArray(policy.allowedTypes, 'allowedTypes', ALLOWED_INTERPRETATION_TYPES),
+            allowedAssertionDomains: normalizeStringArray(
+                policy.allowedAssertionDomains,
+                'allowedAssertionDomains',
+                ALLOWED_ASSERTION_DOMAINS,
+            ),
+            prohibitedDomains: Array.isArray(policy.prohibitedDomains)
+                ? normalizeStringArrayAllowEmpty(policy.prohibitedDomains, 'prohibitedDomains', ALLOWED_ASSERTION_DOMAINS)
+                : [],
+            manualTriggerRequiredForHighRisk: policy.manualTriggerRequiredForHighRisk === true,
+            maxCandidatesPerRun: normalizePositiveInteger(policy.maxCandidatesPerRun, 'maxCandidatesPerRun', 1, 100),
+            policyHash: String(policy.policyHash || '').trim(),
+            details: normalizeOptionalPlainObject(policy.details, 'details'),
+            createdAt: Number(policy.createdAt || event.occurredAt),
+        });
+        return;
+    }
+    if (event.eventType === 'SYNTHESIS_RUN_REGISTERED') {
+        const run = event.payload || {};
+        const runStatus = String(run.runStatus || '').trim();
+        if (!ALLOWED_SYNTHESIS_RUN_STATUSES.has(runStatus)) {
+            throw createError(500, `Interpretive synthesis replay received invalid run status ${runStatus}`, 'ARCH_INTERPRETIVE_LEDGER_INVALID');
+        }
+        persistInterpretiveSynthesisRunRow(adapter, {
+            synthesisRunId: sanitizeIdentifier(run.synthesisRunId, 'synthesisRunId'),
+            memoryScopeId: sanitizeIdentifier(run.memoryScopeId, 'memoryScopeId'),
+            memorySubjectId: sanitizeIdentifier(run.memorySubjectId, 'memorySubjectId'),
+            synthesisPolicyId: sanitizeIdentifier(run.synthesisPolicyId, 'synthesisPolicyId'),
+            policyVersion: normalizePositiveInteger(run.policyVersion, 'policyVersion', 1, 1_000_000),
+            policyHash: String(run.policyHash || '').trim(),
+            sourceManifestId: sanitizeIdentifier(run.sourceManifestId, 'sourceManifestId'),
+            sourceManifestHash: String(run.sourceManifestHash || '').trim(),
+            sourceManifest: cloneJson(run.sourceManifest || {}),
+            modelProviderId: run.modelProviderId ? String(run.modelProviderId).trim() : null,
+            promptVersion: run.promptVersion ? String(run.promptVersion).trim() : null,
+            promptHash: run.promptHash ? String(run.promptHash).trim() : null,
+            generationConfigHash: run.generationConfigHash ? String(run.generationConfigHash).trim() : null,
+            requestedInterpretationTypes: normalizeStringArray(
+                run.requestedInterpretationTypes,
+                'requestedInterpretationTypes',
+                ALLOWED_INTERPRETATION_TYPES,
+            ),
+            requestedAssertionDomains: normalizeStringArray(
+                run.requestedAssertionDomains,
+                'requestedAssertionDomains',
+                ALLOWED_ASSERTION_DOMAINS,
+            ),
+            sharedRelationshipRequested: run.sharedRelationshipRequested === true,
+            personalMeaningRequested: run.personalMeaningRequested === true,
+            maxCandidatesRequested: normalizePositiveInteger(run.maxCandidatesRequested, 'maxCandidatesRequested', 1, 100),
+            generatedCandidateIds: Array.isArray(run.generatedCandidateIds)
+                ? run.generatedCandidateIds.map((entry) => sanitizeIdentifier(entry, 'generatedCandidateId')).sort()
+                : [],
+            runStatus,
+            failureCode: run.failureCode ? String(run.failureCode).trim() : null,
+            failureDetails: run.failureDetails ? cloneJson(run.failureDetails) : null,
+            createdByEntityId: sanitizeIdentifier(run.createdByEntityId, 'createdByEntityId'),
+            manualTriggerAcknowledged: run.manualTriggerAcknowledged === true,
+            createdAt: Number(run.createdAt || event.occurredAt),
+            updatedAt: Number(run.updatedAt || event.occurredAt),
+        });
+    }
+}
+
 function applyInterpretiveFollowOnEvent(adapter, event) {
     if (event.eventType === 'REVIEW_DISPOSITION_RECORDED') {
         const payload = event.payload || {};
@@ -977,14 +1571,22 @@ export function replayInterpretiveLedger(request, options = {}) {
     const ledgerEvents = readInterpretiveLedgerEvents(options.ledgerPath || paths.interpretiveGovernanceLedgerPath);
     const grouped = new Map();
     const followOnEvents = [];
+    const synthesisEvents = [];
     for (const event of ledgerEvents) {
-        const key = String(event.interpretationRevisionId || '');
-        if (!key) {
-            throw createError(500, 'Interpretive ledger event is missing interpretationRevisionId', 'ARCH_INTERPRETIVE_LEDGER_INVALID');
+        if (['SYNTHESIS_POLICY_REGISTERED', 'SYNTHESIS_RUN_REGISTERED'].includes(event.eventType)) {
+            synthesisEvents.push(event);
+            continue;
         }
+        const key = String(event.interpretationRevisionId || '');
         if (['REVIEW_DISPOSITION_RECORDED', 'SUBJECT_DISPOSITION_RECORDED'].includes(event.eventType)) {
+            if (!key) {
+                throw createError(500, 'Interpretive ledger follow-on event is missing interpretationRevisionId', 'ARCH_INTERPRETIVE_LEDGER_INVALID');
+            }
             followOnEvents.push(event);
             continue;
+        }
+        if (!key) {
+            throw createError(500, 'Interpretive ledger event is missing interpretationRevisionId', 'ARCH_INTERPRETIVE_LEDGER_INVALID');
         }
         if (!grouped.has(key)) {
             grouped.set(key, []);
@@ -996,7 +1598,12 @@ export function replayInterpretiveLedger(request, options = {}) {
     try {
         seedInterpretivePolicyDefinitions(adapter);
         clearInterpretiveProjection(adapter);
+        for (const event of synthesisEvents.sort((a, b) => Number(a.occurredAt) - Number(b.occurredAt) || String(a.eventId).localeCompare(String(b.eventId)))) {
+            applySynthesisLedgerEvent(adapter, event);
+        }
         const rehydrated = [];
+        const replayedSynthesisPolicies = [];
+        const replayedSynthesisRuns = [];
         const revisionIds = [...grouped.keys()].sort((a, b) => a.localeCompare(b));
         for (const interpretationRevisionId of revisionIds) {
             const events = grouped.get(interpretationRevisionId)
@@ -1011,11 +1618,27 @@ export function replayInterpretiveLedger(request, options = {}) {
         for (const interpretationRevisionId of revisionIds) {
             rehydrated.push(loadInterpretiveCandidateProjection(adapter, interpretationRevisionId));
         }
+        const policyRows = adapter.all(
+            'SELECT synthesis_policy_id, policy_version FROM interpretation_synthesis_policies ORDER BY synthesis_policy_id, policy_version',
+        );
+        for (const row of policyRows) {
+            replayedSynthesisPolicies.push(
+                loadInterpretiveSynthesisPolicyProjection(adapter, row.synthesis_policy_id, Number(row.policy_version)),
+            );
+        }
+        const runRows = adapter.all(
+            'SELECT synthesis_run_id FROM interpretation_synthesis_runs ORDER BY created_at, synthesis_run_id',
+        );
+        for (const row of runRows) {
+            replayedSynthesisRuns.push(loadInterpretiveSynthesisRunProjection(adapter, row.synthesis_run_id));
+        }
         snapshotOperationalDatabase(adapter, paths);
         return {
             ok: true,
-            phase: 'c0.6.1',
+            phase: 'c0.6.3',
             replayedInterpretations: rehydrated,
+            replayedSynthesisPolicies,
+            replayedSynthesisRuns,
         };
     } finally {
         adapter.close();
@@ -1320,6 +1943,113 @@ export function loadInterpretiveCandidateProjection(adapter, interpretationRevis
         } : null,
         childRevisionIds: childRevisions.map((entry) => entry.interpretation_revision_id),
     };
+}
+
+export function upsertInterpretiveSynthesisPolicy(request, payload = {}) {
+    const timestamp = nowTimestamp(payload?.now);
+    const policy = buildSynthesisPolicyRecord(payload, timestamp);
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    fs.mkdirSync(paths.storageRoot, { recursive: true });
+
+    const adapter = openOperationalDatabase(paths, { now: timestamp });
+    try {
+        seedInterpretivePolicyDefinitions(adapter);
+        const existing = loadInterpretiveSynthesisPolicyProjection(adapter, policy.synthesisPolicyId, policy.policyVersion);
+        if (existing) {
+            if (existing.policyHash !== policy.policyHash) {
+                throw createError(
+                    409,
+                    `Synthesis policy ${policy.synthesisPolicyId} version ${policy.policyVersion} already exists with different content`,
+                    'ARCH_SYNTHESIS_POLICY_CONFLICT',
+                );
+            }
+            return {
+                ok: true,
+                phase: 'c0.6.3',
+                ledgerPath: paths.interpretiveGovernanceLedgerPath,
+                synthesisPolicy: existing,
+                created: false,
+            };
+        }
+        appendLedgerEvents(paths.interpretiveGovernanceLedgerPath, [createSynthesisPolicyEvent(policy)]);
+        adapter.transaction(() => {
+            persistInterpretiveSynthesisPolicyRow(adapter, policy);
+        });
+        snapshotOperationalDatabase(adapter, paths);
+        return {
+            ok: true,
+            phase: 'c0.6.3',
+            ledgerPath: paths.interpretiveGovernanceLedgerPath,
+            synthesisPolicy: loadInterpretiveSynthesisPolicyProjection(adapter, policy.synthesisPolicyId, policy.policyVersion),
+            created: true,
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function createInterpretiveSynthesisRun(request, payload = {}) {
+    const timestamp = nowTimestamp(payload?.now);
+    const frozen = buildFrozenSynthesisManifest(payload, timestamp);
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    fs.mkdirSync(paths.storageRoot, { recursive: true });
+
+    const adapter = openOperationalDatabase(paths, { now: timestamp });
+    try {
+        seedInterpretivePolicyDefinitions(adapter);
+        const existing = loadInterpretiveSynthesisRunProjection(adapter, frozen.synthesisRunId);
+        if (existing) {
+            throw createError(409, `Synthesis run ${frozen.synthesisRunId} already exists`, 'ARCH_SYNTHESIS_RUN_EXISTS');
+        }
+        const policy = resolveSynthesisPolicyForRun(adapter, frozen);
+        const admission = evaluateSynthesisRunAdmission(frozen, policy);
+        const run = admission.admitted
+            ? {
+                synthesisRunId: frozen.synthesisRunId,
+                memoryScopeId: frozen.memoryScopeId,
+                memorySubjectId: frozen.memorySubjectId,
+                synthesisPolicyId: policy.synthesisPolicyId,
+                policyVersion: policy.policyVersion,
+                policyHash: policy.policyHash,
+                sourceManifestId: frozen.sourceManifestId,
+                sourceManifestHash: frozen.sourceManifestHash,
+                sourceManifest: frozen.sourceManifestCanonical,
+                modelProviderId: frozen.modelProviderId,
+                promptVersion: frozen.promptVersion,
+                promptHash: frozen.promptHash,
+                generationConfigHash: frozen.generationConfigHash,
+                requestedInterpretationTypes: frozen.requestedInterpretationTypes,
+                requestedAssertionDomains: frozen.requestedAssertionDomains,
+                sharedRelationshipRequested: frozen.sharedRelationshipRequested,
+                personalMeaningRequested: frozen.personalMeaningRequested,
+                maxCandidatesRequested: frozen.maxCandidatesRequested,
+                generatedCandidateIds: [],
+                runStatus: 'READY_FOR_SYNTHESIS',
+                failureCode: null,
+                failureDetails: null,
+                createdByEntityId: frozen.createdByEntityId,
+                manualTriggerAcknowledged: frozen.manualTriggerAcknowledged,
+                createdAt: timestamp,
+                updatedAt: timestamp,
+            }
+            : buildRefusedSynthesisRun(frozen, policy, admission.failureCode, admission.failureDetails);
+        appendLedgerEvents(paths.interpretiveGovernanceLedgerPath, [createSynthesisRunEvent(run)]);
+        adapter.transaction(() => {
+            persistInterpretiveSynthesisRunRow(adapter, run);
+        });
+        snapshotOperationalDatabase(adapter, paths);
+        return {
+            ok: true,
+            phase: 'c0.6.3',
+            ledgerPath: paths.interpretiveGovernanceLedgerPath,
+            admitted: admission.admitted,
+            synthesisRun: loadInterpretiveSynthesisRunProjection(adapter, run.synthesisRunId),
+        };
+    } finally {
+        adapter.close();
+    }
 }
 
 export function createInterpretiveCandidate(request, payload = {}) {
@@ -1715,6 +2445,64 @@ export function listInterpretivePolicyDefinitions(request) {
                 onDisagreement: row.on_disagreement,
                 details: JSON.parse(row.details_json),
             })),
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function listInterpretiveSynthesisPolicies(request, filters = {}) {
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const adapter = openOperationalDatabase(paths);
+    try {
+        seedInterpretivePolicyDefinitions(adapter);
+        const params = [];
+        const where = [];
+        if (filters.memorySubjectId) {
+            where.push('memory_subject_id = ?');
+            params.push(sanitizeIdentifier(filters.memorySubjectId, 'memorySubjectId'));
+        }
+        if (filters.synthesisPolicyId) {
+            where.push('synthesis_policy_id = ?');
+            params.push(sanitizeIdentifier(filters.synthesisPolicyId, 'synthesisPolicyId'));
+        }
+        const rows = adapter.all(
+            `SELECT synthesis_policy_id, policy_version
+             FROM interpretation_synthesis_policies
+             ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
+             ORDER BY synthesis_policy_id, policy_version`,
+            params,
+        );
+        return {
+            ok: true,
+            phase: 'c0.6.3',
+            policies: rows.map((row) => (
+                loadInterpretiveSynthesisPolicyProjection(adapter, row.synthesis_policy_id, Number(row.policy_version))
+            )),
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function getInterpretiveSynthesisRun(request, synthesisRunId) {
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const adapter = openOperationalDatabase(paths);
+    try {
+        seedInterpretivePolicyDefinitions(adapter);
+        const synthesisRun = loadInterpretiveSynthesisRunProjection(
+            adapter,
+            sanitizeIdentifier(synthesisRunId, 'synthesisRunId'),
+        );
+        if (!synthesisRun) {
+            throw createError(404, `Synthesis run ${synthesisRunId} was not found`, 'ARCH_SYNTHESIS_RUN_NOT_FOUND');
+        }
+        return {
+            ok: true,
+            phase: 'c0.6.3',
+            synthesisRun,
         };
     } finally {
         adapter.close();

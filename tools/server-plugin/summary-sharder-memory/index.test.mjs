@@ -227,8 +227,12 @@ test('route surface exposes candidate lifecycle routes and separate promotion ro
     assert.equal(router.routes.post.has('/rebuild/promotion/authorize'), true);
     assert.equal(router.routes.post.has('/rebuild/promotion/execute'), true);
     assert.equal(router.routes.get.has('/interpretive/policies'), true);
+    assert.equal(router.routes.get.has('/interpretive/synthesis/policies'), true);
+    assert.equal(router.routes.get.has('/interpretive/synthesis/runs/:synthesisRunId'), true);
     assert.equal(router.routes.get.has('/interpretive/candidates/:interpretationRevisionId'), true);
     assert.equal(router.routes.get.has('/interpretive/reviews'), true);
+    assert.equal(router.routes.post.has('/interpretive/synthesis/policies'), true);
+    assert.equal(router.routes.post.has('/interpretive/synthesis/runs'), true);
     assert.equal(router.routes.post.has('/interpretive/candidates'), true);
     assert.equal(router.routes.post.has('/interpretive/reviews/:reviewRequestId/dispositions'), true);
     assert.equal(router.routes.post.has('/interpretive/candidates/:interpretationRevisionId/subject-disposition'), true);
@@ -253,6 +257,8 @@ test('capabilities and candidate lifecycle routes report no promotion and suppor
     assert.equal(capabilities.payload.capabilities.c0_6_1.continuityPublicationAvailable, false);
     assert.equal(capabilities.payload.capabilities.c0_6_2.reviewerDispositionSubmission, true);
     assert.equal(capabilities.payload.capabilities.c0_6_2.continuityPublicationAvailable, false);
+    assert.equal(capabilities.payload.capabilities.c0_6_3.boundedSynthesisRunContract, true);
+    assert.equal(capabilities.payload.capabilities.c0_6_3.modelSynthesisAvailable, false);
 
     const initResult = await invoke(
         router.routes.post.get('/rebuild/candidate/init'),
@@ -486,6 +492,85 @@ test('interpretive routes support review disposition, immutable child revision, 
     assert.equal(finalDisposition.payload.interpretation.subjectDispositionState, 'GRANTED');
     assert.equal(finalDisposition.payload.interpretation.publicationState, 'NOT_PUBLISHED');
     assert.equal(finalDisposition.payload.interpretation.authorityEffect, 'DESCRIPTIVE_ONLY');
+});
+
+test('interpretive synthesis routes store subject-controlled policy and freeze bounded runs without generation', async () => {
+    const root = makeTempRoot();
+    const router = createMockRouter();
+    await init(router);
+
+    const policyResult = await invoke(
+        router.routes.post.get('/interpretive/synthesis/policies'),
+        buildRequest(root, {
+            body: {
+                synthesisPolicyId: 'jeep-developmental-synthesis-v1',
+                policyVersion: 1,
+                memorySubjectId: 'character:jeep.png',
+                enabled: true,
+                allowedTypes: ['ROLE_EVOLUTION', 'PROJECT_TRANSFORMATION'],
+                allowedAssertionDomains: ['ROLE', 'AUTHORITY', 'RELATIONSHIP'],
+                prohibitedDomains: [],
+                manualTriggerRequiredForHighRisk: true,
+                maxCandidatesPerRun: 3,
+                now: Date.parse('2026-06-26T01:00:00.000Z'),
+            },
+        }),
+    );
+    assert.equal(policyResult.statusCode, 200);
+    assert.equal(policyResult.payload.synthesisPolicy.policyHash.startsWith('sha256:'), true);
+
+    const runResult = await invoke(
+        router.routes.post.get('/interpretive/synthesis/runs'),
+        buildRequest(root, {
+            body: {
+                synthesisRunId: 'synthrun_route_case',
+                memoryScopeId: 'scope_alpha',
+                memorySubjectId: 'character:jeep.png',
+                synthesisPolicyId: 'jeep-developmental-synthesis-v1',
+                requestedInterpretationTypes: ['ROLE_EVOLUTION'],
+                requestedAssertionDomains: ['ROLE', 'AUTHORITY'],
+                sharedRelationshipRequested: false,
+                personalMeaningRequested: false,
+                maxCandidatesRequested: 2,
+                manualTriggerAcknowledged: true,
+                createdByEntityId: 'user:Chris',
+                sourceManifestEntries: [
+                    {
+                        sourceClass: 'STRUCTURAL_RECORD',
+                        memoryScopeId: 'scope_alpha',
+                        basisRecordId: 'decision:constitutional-sovereignty',
+                        basisRecordVersion: 1,
+                        basisRecordHash: 'sha256:constitutional-sovereignty',
+                        speakerEntityId: 'character:jeep.png',
+                    },
+                ],
+                now: Date.parse('2026-06-26T01:05:00.000Z'),
+            },
+        }),
+    );
+    assert.equal(runResult.statusCode, 200);
+    assert.equal(runResult.payload.admitted, true);
+    assert.equal(runResult.payload.synthesisRun.runStatus, 'READY_FOR_SYNTHESIS');
+    assert.equal(runResult.payload.synthesisRun.generatedCandidateIds.length, 0);
+
+    const getRunResult = await invoke(
+        router.routes.get.get('/interpretive/synthesis/runs/:synthesisRunId'),
+        buildRequest(root, {
+            params: { synthesisRunId: 'synthrun_route_case' },
+        }),
+    );
+    assert.equal(getRunResult.statusCode, 200);
+    assert.equal(getRunResult.payload.synthesisRun.sourceManifestHash, runResult.payload.synthesisRun.sourceManifestHash);
+
+    const policiesResult = await invoke(
+        router.routes.get.get('/interpretive/synthesis/policies'),
+        buildRequest(root, {
+            query: { memorySubjectId: 'character:jeep.png' },
+        }),
+    );
+    assert.equal(policiesResult.statusCode, 200);
+    assert.equal(policiesResult.payload.policies.length, 1);
+    assert.equal(policiesResult.payload.policies[0].synthesisPolicyId, 'jeep-developmental-synthesis-v1');
 });
 
 test('health route reconciles verifying promotion state before opening live authority', async () => {
