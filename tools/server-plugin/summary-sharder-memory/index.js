@@ -40,8 +40,10 @@ import {
 } from './promotion.js';
 import {
     executeInterpretiveSynthesisRun,
+    executeInterpretivePublicationAuthorization,
     createInterpretiveSynthesisRun,
     createInterpretiveCandidate,
+    createInterpretivePublicationAuthorization,
     createInterpretiveRevision,
     getInterpretiveSynthesisRun,
     getInterpretiveCandidate,
@@ -622,6 +624,24 @@ export async function init(router) {
     router.post('/interpretive/candidates/:interpretationRevisionId/publication-qualifications', async (request, response) => {
         try {
             const result = qualifyInterpretivePublication(request, request.params.interpretationRevisionId, request.body || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/interpretive/publication/authorizations', async (request, response) => {
+        try {
+            const result = createInterpretivePublicationAuthorization(request, request.body || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/interpretive/publication/execute', async (request, response) => {
+        try {
+            const result = executeInterpretivePublicationAuthorization(request, request.body || {});
             return response.send(result);
         } catch (error) {
             return handleError(response, error);

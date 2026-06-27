@@ -89,9 +89,9 @@ export const CAPABILITIES = Object.freeze({
     c0_6_4: Object.freeze({
         publicationPolicyStorage: true,
         publicationQualification: true,
-        publicationAuthorizationAvailable: false,
-        continuityPublicationAvailable: false,
-        liveContinuityMutation: false,
+        publicationAuthorizationAvailable: true,
+        continuityPublicationAvailable: true,
+        liveContinuityMutation: true,
     }),
     c0_5: false,
     c1: false,

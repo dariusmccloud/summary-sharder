@@ -128,6 +128,20 @@ const ALLOWED_PUBLICATION_ELIGIBILITY_VERDICTS = new Set([
     'INELIGIBLE',
 ]);
 
+const ALLOWED_PUBLICATION_AUTHORIZATION_STATUSES = new Set([
+    'AUTHORIZED',
+    'CONSUMED',
+    'EXPIRED',
+]);
+
+const ALLOWED_DNM_PUBLICATION_STATES = new Set([
+    'PUBLISHED',
+]);
+
+const ALLOWED_DNM_LIFECYCLE_STATES = new Set([
+    'ACTIVE',
+]);
+
 const GROUNDING_OUTCOME_ORDER = Object.freeze({
     UNSUPPORTED: 0,
     BASIS_INCOMPLETE: 1,
@@ -198,6 +212,13 @@ function computePublicationPolicyHash(policy) {
     }).hash;
 }
 
+function computePublicationQualificationBindingHash(binding) {
+    return hashCanonical({
+        bindingVersion: 1,
+        ...binding,
+    }).hash;
+}
+
 function getPolicyDefinition(validationPolicyId, policyVersion) {
     return POLICY_DEFINITIONS.find((entry) => (
         entry.validationPolicyId === validationPolicyId
@@ -262,6 +283,47 @@ function createPublicationPolicyRevocationEvent(policy, timestamp) {
             revokedAt: timestamp,
             revocationReason: policy.revocationReason,
         },
+    };
+}
+
+function createPublicationAuthorizationEvent(authorization) {
+    return {
+        eventId: createId('dnmlevent'),
+        eventType: 'DNM_PUBLICATION_AUTHORIZED',
+        occurredAt: authorization.authorizedAt,
+        memoryScopeId: authorization.memoryScopeId,
+        interpretationId: null,
+        interpretationRevisionId: authorization.interpretationRevisionId,
+        payload: cloneJson(authorization),
+    };
+}
+
+function createPublicationAuthorizationRefusedEvent(authorization, refusalCodes, timestamp) {
+    return {
+        eventId: createId('dnmlevent'),
+        eventType: 'DNM_PUBLICATION_REFUSED',
+        occurredAt: timestamp,
+        memoryScopeId: authorization.memoryScopeId,
+        interpretationId: null,
+        interpretationRevisionId: authorization.interpretationRevisionId,
+        payload: {
+            publicationAuthorizationId: authorization.publicationAuthorizationId,
+            refusalCodes: Array.from(new Set(refusalCodes)).sort(),
+            status: 'EXPIRED',
+            refusedAt: timestamp,
+        },
+    };
+}
+
+function createDnmPublishedEvent(record) {
+    return {
+        eventId: createId('dnmlevent'),
+        eventType: 'DNM_PUBLISHED',
+        occurredAt: record.publishedAt,
+        memoryScopeId: record.memoryScopeId,
+        interpretationId: record.sourceInterpretationId,
+        interpretationRevisionId: record.sourceInterpretationRevisionId,
+        payload: cloneJson(record),
     };
 }
 
@@ -1586,6 +1648,97 @@ function loadLatestInterpretivePublicationPolicy(adapter, publicationPolicyId) {
     return loadInterpretivePublicationPolicyProjection(adapter, row.publication_policy_id, Number(row.policy_version));
 }
 
+function loadInterpretivePublicationQualificationRow(adapter, qualificationId) {
+    const row = adapter.get(
+        `SELECT * FROM interpretation_publication_qualifications
+         WHERE qualification_id = ?`,
+        [qualificationId],
+    );
+    if (!row) {
+        return null;
+    }
+    return {
+        qualificationId: row.qualification_id,
+        interpretationRevisionId: row.interpretation_revision_id,
+        publicationPolicyId: row.publication_policy_id,
+        policyVersion: Number(row.policy_version),
+        policyHash: row.policy_hash,
+        continuityTargetId: row.continuity_target_id,
+        continuityTargetType: row.continuity_target_type,
+        memoryScopeId: row.memory_scope_id,
+        memorySubjectId: row.memory_subject_id,
+        eligibilityVerdict: row.eligibility_verdict,
+        refusalCodes: JSON.parse(row.refusal_codes_json),
+        binding: JSON.parse(row.binding_json),
+        evaluatedAt: Number(row.evaluated_at),
+    };
+}
+
+function loadInterpretivePublicationAuthorizationProjection(adapter, publicationAuthorizationId) {
+    const row = adapter.get(
+        `SELECT * FROM interpretation_publication_authorizations
+         WHERE publication_authorization_id = ?`,
+        [publicationAuthorizationId],
+    );
+    if (!row) {
+        return null;
+    }
+    return {
+        publicationAuthorizationId: row.publication_authorization_id,
+        qualificationId: row.qualification_id,
+        interpretationRevisionId: row.interpretation_revision_id,
+        publicationPolicyId: row.publication_policy_id,
+        policyVersion: Number(row.policy_version),
+        policyHash: row.policy_hash,
+        continuityTargetId: row.continuity_target_id,
+        continuityTargetType: row.continuity_target_type,
+        memoryScopeId: row.memory_scope_id,
+        memorySubjectId: row.memory_subject_id,
+        authorizationNonce: row.authorization_nonce,
+        qualificationBindingHash: row.qualification_binding_hash,
+        authorizedBy: row.authorized_by,
+        authorizedAt: Number(row.authorized_at),
+        expiresAt: Number(row.expires_at),
+        status: row.status,
+        binding: JSON.parse(row.binding_json),
+        consumedAt: row.consumed_at === null ? null : Number(row.consumed_at),
+        dnmRecordId: row.dnm_record_id,
+    };
+}
+
+function loadDnmPublicationRecordProjection(adapter, dnmRecordId) {
+    const row = adapter.get(
+        `SELECT * FROM dnm_publication_records
+         WHERE dnm_record_id = ?`,
+        [dnmRecordId],
+    );
+    if (!row) {
+        return null;
+    }
+    return {
+        dnmRecordId: row.dnm_record_id,
+        continuityTargetId: row.continuity_target_id,
+        memorySubjectId: row.memory_subject_id,
+        memoryScopeId: row.memory_scope_id,
+        sourceInterpretationRevisionId: row.source_interpretation_revision_id,
+        sourceInterpretationId: row.source_interpretation_id,
+        publishedStatement: row.published_statement,
+        proposalContentHash: row.proposal_content_hash,
+        groundingBindingMode: row.grounding_binding_mode,
+        groundingEnvelopeHash: row.grounding_envelope_hash,
+        groundingProtocolVersion: Number(row.grounding_protocol_version),
+        groundingSourceSetHash: row.grounding_source_set_hash,
+        reviewEnvelopeHash: row.review_envelope_hash,
+        publicationPolicyId: row.publication_policy_id,
+        publicationPolicyVersion: Number(row.publication_policy_version),
+        publicationPolicyHash: row.publication_policy_hash,
+        publicationState: row.publication_state,
+        lifecycleState: row.lifecycle_state,
+        publishedAt: Number(row.published_at),
+        publicationAuthorizationId: row.publication_authorization_id,
+    };
+}
+
 function loadActionProvenanceRows(adapter, interpretationRevisionId) {
     return adapter.all(
         `SELECT * FROM interpretation_action_provenance
@@ -1658,6 +1811,74 @@ function persistInterpretivePublicationPolicyRow(adapter, policy) {
             Number(policy.createdAt),
             Number(policy.updatedAt),
             policy.revokedAt == null ? null : Number(policy.revokedAt),
+        ],
+    );
+}
+
+function persistInterpretivePublicationAuthorizationRow(adapter, authorization) {
+    adapter.run(
+        `INSERT OR REPLACE INTO interpretation_publication_authorizations (
+            publication_authorization_id, qualification_id, interpretation_revision_id,
+            publication_policy_id, policy_version, policy_hash, continuity_target_id,
+            continuity_target_type, memory_scope_id, memory_subject_id, authorization_nonce,
+            qualification_binding_hash, authorized_by, authorized_at, expires_at, status,
+            binding_json, consumed_at, dnm_record_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+        [
+            authorization.publicationAuthorizationId,
+            authorization.qualificationId,
+            authorization.interpretationRevisionId,
+            authorization.publicationPolicyId,
+            Number(authorization.policyVersion),
+            authorization.policyHash,
+            authorization.continuityTargetId,
+            authorization.continuityTargetType,
+            authorization.memoryScopeId,
+            authorization.memorySubjectId,
+            authorization.authorizationNonce,
+            authorization.qualificationBindingHash,
+            authorization.authorizedBy,
+            Number(authorization.authorizedAt),
+            Number(authorization.expiresAt),
+            authorization.status,
+            stableStringify(authorization.binding),
+            authorization.consumedAt == null ? null : Number(authorization.consumedAt),
+            authorization.dnmRecordId,
+        ],
+    );
+}
+
+function persistDnmPublicationRecordRow(adapter, record) {
+    adapter.run(
+        `INSERT OR REPLACE INTO dnm_publication_records (
+            dnm_record_id, continuity_target_id, memory_subject_id, memory_scope_id,
+            source_interpretation_revision_id, source_interpretation_id, published_statement,
+            proposal_content_hash, grounding_binding_mode, grounding_envelope_hash,
+            grounding_protocol_version, grounding_source_set_hash, review_envelope_hash,
+            publication_policy_id, publication_policy_version, publication_policy_hash,
+            publication_state, lifecycle_state, published_at, publication_authorization_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+        [
+            record.dnmRecordId,
+            record.continuityTargetId,
+            record.memorySubjectId,
+            record.memoryScopeId,
+            record.sourceInterpretationRevisionId,
+            record.sourceInterpretationId,
+            record.publishedStatement,
+            record.proposalContentHash,
+            record.groundingBindingMode,
+            record.groundingEnvelopeHash,
+            Number(record.groundingProtocolVersion),
+            record.groundingSourceSetHash,
+            record.reviewEnvelopeHash,
+            record.publicationPolicyId,
+            Number(record.publicationPolicyVersion),
+            record.publicationPolicyHash,
+            record.publicationState,
+            record.lifecycleState,
+            Number(record.publishedAt),
+            record.publicationAuthorizationId,
         ],
     );
 }
@@ -2848,7 +3069,7 @@ function applyDelegationPolicyLedgerEvent(adapter, event) {
     }
 }
 
-function applyPublicationPolicyLedgerEvent(adapter, event) {
+function applyPublicationLedgerEvent(adapter, event) {
     const payload = event.payload || {};
     if (event.eventType === 'DNM_PUBLICATION_POLICY_REGISTERED') {
         persistInterpretivePublicationPolicyRow(adapter, {
@@ -2891,6 +3112,95 @@ function applyPublicationPolicyLedgerEvent(adapter, event) {
             updatedAt: Number(payload.revokedAt || event.occurredAt),
             revokedAt: Number(payload.revokedAt || event.occurredAt),
         });
+        return;
+    }
+    if (event.eventType === 'DNM_PUBLICATION_AUTHORIZED') {
+        const status = normalizeEnumValue(payload.status, 'status', ALLOWED_PUBLICATION_AUTHORIZATION_STATUSES);
+        persistInterpretivePublicationAuthorizationRow(adapter, {
+            publicationAuthorizationId: sanitizeIdentifier(payload.publicationAuthorizationId, 'publicationAuthorizationId'),
+            qualificationId: sanitizeIdentifier(payload.qualificationId, 'qualificationId'),
+            interpretationRevisionId: sanitizeIdentifier(payload.interpretationRevisionId, 'interpretationRevisionId'),
+            publicationPolicyId: sanitizeIdentifier(payload.publicationPolicyId, 'publicationPolicyId'),
+            policyVersion: normalizePositiveInteger(payload.policyVersion, 'policyVersion', 1, 1_000_000),
+            policyHash: String(payload.policyHash || '').trim(),
+            continuityTargetId: sanitizeIdentifier(payload.continuityTargetId, 'continuityTargetId'),
+            continuityTargetType: normalizeEnumValue(payload.continuityTargetType, 'continuityTargetType', ALLOWED_CONTINUITY_TARGET_TYPES),
+            memoryScopeId: sanitizeIdentifier(payload.memoryScopeId, 'memoryScopeId'),
+            memorySubjectId: sanitizeIdentifier(payload.memorySubjectId, 'memorySubjectId'),
+            authorizationNonce: sanitizeIdentifier(payload.authorizationNonce, 'authorizationNonce'),
+            qualificationBindingHash: String(payload.qualificationBindingHash || '').trim(),
+            authorizedBy: sanitizeIdentifier(payload.authorizedBy, 'authorizedBy'),
+            authorizedAt: Number(payload.authorizedAt || event.occurredAt),
+            expiresAt: Number(payload.expiresAt),
+            status,
+            binding: cloneJson(payload.binding || {}),
+            consumedAt: payload.consumedAt == null ? null : Number(payload.consumedAt),
+            dnmRecordId: payload.dnmRecordId == null ? null : sanitizeIdentifier(payload.dnmRecordId, 'dnmRecordId'),
+        });
+        return;
+    }
+    if (event.eventType === 'DNM_PUBLICATION_REFUSED') {
+        const authorization = loadInterpretivePublicationAuthorizationProjection(
+            adapter,
+            sanitizeIdentifier(payload.publicationAuthorizationId, 'publicationAuthorizationId'),
+        );
+        if (!authorization) {
+            throw createError(500, `Publication authorization ${payload.publicationAuthorizationId} is missing during replay`, 'ARCH_PUBLICATION_LEDGER_INCOMPLETE');
+        }
+        persistInterpretivePublicationAuthorizationRow(adapter, {
+            ...authorization,
+            status: normalizeEnumValue(payload.status || 'EXPIRED', 'status', ALLOWED_PUBLICATION_AUTHORIZATION_STATUSES),
+            consumedAt: null,
+        });
+        return;
+    }
+    if (event.eventType === 'DNM_PUBLISHED') {
+        const interpretationRevisionId = sanitizeIdentifier(payload.sourceInterpretationRevisionId, 'sourceInterpretationRevisionId');
+        const interpretation = loadInterpretiveCandidateProjection(adapter, interpretationRevisionId);
+        if (!interpretation) {
+            throw createError(500, `Interpretation revision ${interpretationRevisionId} is missing during DNM publication replay`, 'ARCH_PUBLICATION_LEDGER_INCOMPLETE');
+        }
+        const publicationState = normalizeEnumValue(payload.publicationState, 'publicationState', ALLOWED_DNM_PUBLICATION_STATES);
+        const lifecycleState = normalizeEnumValue(payload.lifecycleState, 'lifecycleState', ALLOWED_DNM_LIFECYCLE_STATES);
+        const record = {
+            dnmRecordId: sanitizeIdentifier(payload.dnmRecordId, 'dnmRecordId'),
+            continuityTargetId: sanitizeIdentifier(payload.continuityTargetId, 'continuityTargetId'),
+            memorySubjectId: sanitizeIdentifier(payload.memorySubjectId, 'memorySubjectId'),
+            memoryScopeId: sanitizeIdentifier(payload.memoryScopeId, 'memoryScopeId'),
+            sourceInterpretationRevisionId: interpretationRevisionId,
+            sourceInterpretationId: sanitizeIdentifier(payload.sourceInterpretationId, 'sourceInterpretationId'),
+            publishedStatement: String(payload.publishedStatement || '').trim(),
+            proposalContentHash: String(payload.proposalContentHash || '').trim(),
+            groundingBindingMode: String(payload.groundingBindingMode || '').trim(),
+            groundingEnvelopeHash: String(payload.groundingEnvelopeHash || '').trim(),
+            groundingProtocolVersion: normalizePositiveInteger(payload.groundingProtocolVersion, 'groundingProtocolVersion', 1, 1_000_000),
+            groundingSourceSetHash: String(payload.groundingSourceSetHash || '').trim(),
+            reviewEnvelopeHash: String(payload.reviewEnvelopeHash || '').trim(),
+            publicationPolicyId: sanitizeIdentifier(payload.publicationPolicyId, 'publicationPolicyId'),
+            publicationPolicyVersion: normalizePositiveInteger(payload.publicationPolicyVersion, 'publicationPolicyVersion', 1, 1_000_000),
+            publicationPolicyHash: String(payload.publicationPolicyHash || '').trim(),
+            publicationState,
+            lifecycleState,
+            publishedAt: Number(payload.publishedAt || event.occurredAt),
+            publicationAuthorizationId: sanitizeIdentifier(payload.publicationAuthorizationId, 'publicationAuthorizationId'),
+        };
+        persistDnmPublicationRecordRow(adapter, record);
+        const authorization = loadInterpretivePublicationAuthorizationProjection(adapter, record.publicationAuthorizationId);
+        if (!authorization) {
+            throw createError(500, `Publication authorization ${record.publicationAuthorizationId} is missing during replay`, 'ARCH_PUBLICATION_LEDGER_INCOMPLETE');
+        }
+        persistInterpretivePublicationAuthorizationRow(adapter, {
+            ...authorization,
+            status: 'CONSUMED',
+            consumedAt: record.publishedAt,
+            dnmRecordId: record.dnmRecordId,
+        });
+        adapter.run(
+            `UPDATE interpretation_revisions
+             SET publication_state = 'PUBLISHED', authority_effect = 'DEVELOPMENTAL_MEMORY', updated_at = ?
+             WHERE interpretation_revision_id = ?`,
+            [record.publishedAt, interpretationRevisionId],
+        );
     }
 }
 
@@ -2997,22 +3307,48 @@ export function replayPublicationLedger(request, options = {}) {
     const adapter = openOperationalDatabase(paths, { now: options.now });
     try {
         adapter.transaction(() => {
+            adapter.run('DELETE FROM dnm_publication_records');
+            adapter.run('DELETE FROM interpretation_publication_authorizations');
             adapter.run('DELETE FROM interpretation_publication_policies');
+            adapter.run(
+                `UPDATE interpretation_revisions
+                 SET publication_state = 'NOT_PUBLISHED',
+                     authority_effect = CASE
+                        WHEN authority_effect = 'DEVELOPMENTAL_MEMORY' THEN 'DESCRIPTIVE_ONLY'
+                        ELSE authority_effect
+                     END`,
+            );
             for (const event of ledgerEvents) {
-                applyPublicationPolicyLedgerEvent(adapter, event);
+                applyPublicationLedgerEvent(adapter, event);
             }
         });
         snapshotOperationalDatabase(adapter, paths);
-        const rows = adapter.all(
+        const policyRows = adapter.all(
             `SELECT publication_policy_id, policy_version
              FROM interpretation_publication_policies
              ORDER BY publication_policy_id, policy_version`,
         );
+        const authorizationRows = adapter.all(
+            `SELECT publication_authorization_id
+             FROM interpretation_publication_authorizations
+             ORDER BY authorized_at, publication_authorization_id`,
+        );
+        const recordRows = adapter.all(
+            `SELECT dnm_record_id
+             FROM dnm_publication_records
+             ORDER BY published_at, dnm_record_id`,
+        );
         return {
             ok: true,
             phase: 'c0.6.4',
-            replayedPublicationPolicies: rows.map((row) => (
+            replayedPublicationPolicies: policyRows.map((row) => (
                 loadInterpretivePublicationPolicyProjection(adapter, row.publication_policy_id, Number(row.policy_version))
+            )),
+            replayedPublicationAuthorizations: authorizationRows.map((row) => (
+                loadInterpretivePublicationAuthorizationProjection(adapter, row.publication_authorization_id)
+            )),
+            replayedPublishedRecords: recordRows.map((row) => (
+                loadDnmPublicationRecordProjection(adapter, row.dnm_record_id)
             )),
         };
     } finally {
@@ -3542,6 +3878,71 @@ function evaluateInterpretivePublicationQualification(adapter, interpretation, p
         refusalCodes: Array.from(new Set(refusalCodes)).sort(),
         binding,
         evaluatedAt: timestamp,
+    };
+}
+
+function buildPublicationAuthorizationRecord(qualification, authorizedBy, expiresAt, timestamp) {
+    const qualificationBindingHash = computePublicationQualificationBindingHash(qualification.binding);
+    return {
+        publicationAuthorizationId: createId('dnmauth'),
+        qualificationId: qualification.qualificationId,
+        interpretationRevisionId: qualification.interpretationRevisionId,
+        publicationPolicyId: qualification.publicationPolicyId,
+        policyVersion: qualification.policyVersion,
+        policyHash: qualification.policyHash,
+        continuityTargetId: qualification.continuityTargetId,
+        continuityTargetType: qualification.continuityTargetType,
+        memoryScopeId: qualification.memoryScopeId,
+        memorySubjectId: qualification.memorySubjectId,
+        authorizationNonce: createId('dnmnonce'),
+        qualificationBindingHash,
+        authorizedBy,
+        authorizedAt: timestamp,
+        expiresAt,
+        status: 'AUTHORIZED',
+        binding: {
+            ...cloneJson(qualification.binding),
+            qualificationId: qualification.qualificationId,
+            qualificationEvaluatedAt: qualification.evaluatedAt,
+            qualificationBindingHash,
+        },
+        consumedAt: null,
+        dnmRecordId: null,
+    };
+}
+
+function expirePublicationAuthorization(adapter, authorization, refusalCodes, timestamp) {
+    const nextAuthorization = {
+        ...authorization,
+        status: 'EXPIRED',
+        consumedAt: null,
+    };
+    persistInterpretivePublicationAuthorizationRow(adapter, nextAuthorization);
+    return createPublicationAuthorizationRefusedEvent(nextAuthorization, refusalCodes, timestamp);
+}
+
+function buildPublicationExecutionRecord(authorization, interpretation, timestamp, dnmRecordId = createId('dnmrec')) {
+    return {
+        dnmRecordId,
+        continuityTargetId: authorization.continuityTargetId,
+        memorySubjectId: authorization.memorySubjectId,
+        memoryScopeId: authorization.memoryScopeId,
+        sourceInterpretationRevisionId: interpretation.interpretationRevisionId,
+        sourceInterpretationId: interpretation.interpretationId,
+        publishedStatement: interpretation.statement,
+        proposalContentHash: interpretation.proposalContentHash,
+        groundingBindingMode: authorization.binding.groundingBindingMode,
+        groundingEnvelopeHash: authorization.binding.groundingEnvelopeHash,
+        groundingProtocolVersion: Number(authorization.binding.groundingProtocolVersion),
+        groundingSourceSetHash: authorization.binding.groundingSourceSetHash,
+        reviewEnvelopeHash: interpretation.reviewEnvelopeHash,
+        publicationPolicyId: authorization.publicationPolicyId,
+        publicationPolicyVersion: authorization.policyVersion,
+        publicationPolicyHash: authorization.policyHash,
+        publicationState: 'PUBLISHED',
+        lifecycleState: 'ACTIVE',
+        publishedAt: timestamp,
+        publicationAuthorizationId: authorization.publicationAuthorizationId,
     };
 }
 
@@ -4738,6 +5139,200 @@ export function qualifyInterpretivePublication(request, interpretationRevisionId
             publicationAvailable: false,
             continuityActivationAvailable: false,
             qualification,
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function createInterpretivePublicationAuthorization(request, payload = {}) {
+    const timestamp = nowTimestamp(payload?.now);
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const qualificationId = sanitizeIdentifier(payload?.qualificationId, 'qualificationId');
+    const authorizedBy = sanitizeIdentifier(payload?.authorizedBy, 'authorizedBy');
+    const expiresAt = Number(payload?.expiresAt);
+    if (!Number.isFinite(expiresAt)) {
+        throw createError(400, 'expiresAt is required', 'ARCH_INVALID_PAYLOAD');
+    }
+    if (expiresAt <= timestamp) {
+        throw createError(400, 'expiresAt must be in the future', 'ARCH_INVALID_PAYLOAD');
+    }
+
+    const adapter = openOperationalDatabase(paths, { now: timestamp });
+    try {
+        const qualification = loadInterpretivePublicationQualificationRow(adapter, qualificationId);
+        if (!qualification) {
+            throw createError(404, `Publication qualification ${qualificationId} was not found`, 'ARCH_PUBLICATION_QUALIFICATION_NOT_FOUND');
+        }
+        if (qualification.eligibilityVerdict !== 'ELIGIBLE') {
+            throw createError(
+                409,
+                `Publication qualification ${qualificationId} is not eligible for authorization`,
+                'ARCH_PUBLICATION_QUALIFICATION_INELIGIBLE',
+                { refusalCodes: qualification.refusalCodes },
+            );
+        }
+        const interpretation = loadInterpretiveCandidateProjection(adapter, qualification.interpretationRevisionId);
+        if (!interpretation) {
+            throw createError(404, `Interpretation revision ${qualification.interpretationRevisionId} was not found`, 'ARCH_INTERPRETATION_NOT_FOUND');
+        }
+        const policy = loadInterpretivePublicationPolicyProjection(
+            adapter,
+            qualification.publicationPolicyId,
+            qualification.policyVersion,
+        );
+        if (!policy) {
+            throw createError(
+                409,
+                `Publication policy ${qualification.publicationPolicyId} v${qualification.policyVersion} is missing`,
+                'ARCH_PUBLICATION_POLICY_NOT_FOUND',
+            );
+        }
+        const requalification = evaluateInterpretivePublicationQualification(adapter, interpretation, policy, {
+            continuityTargetId: qualification.binding.continuityTargetId,
+            proposalContentHash: qualification.binding.proposalContentHash,
+            groundingEnvelopeHash: qualification.binding.groundingEnvelopeHash,
+            reviewEnvelopeHash: qualification.binding.reviewEnvelopeHash,
+            subjectDispositionRecordId: qualification.binding.subjectDispositionRecordId,
+        }, timestamp);
+        if (requalification.eligibilityVerdict !== 'ELIGIBLE') {
+            throw createError(
+                409,
+                'Publication qualification drifted before authorization',
+                'ARCH_PUBLICATION_QUALIFICATION_DRIFT',
+                { refusalCodes: requalification.refusalCodes },
+            );
+        }
+
+        const authorization = buildPublicationAuthorizationRecord(qualification, authorizedBy, expiresAt, timestamp);
+        appendLedgerEvents(paths.dnmPublicationLedgerPath, [createPublicationAuthorizationEvent(authorization)]);
+        adapter.transaction(() => {
+            persistInterpretivePublicationAuthorizationRow(adapter, authorization);
+        });
+        snapshotOperationalDatabase(adapter, paths);
+        return {
+            ok: true,
+            phase: 'c0.6.4',
+            publicationAuthorizationAvailable: true,
+            continuityPublicationAvailable: false,
+            authorization,
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function executeInterpretivePublicationAuthorization(request, payload = {}) {
+    const timestamp = nowTimestamp(payload?.now);
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const publicationAuthorizationId = sanitizeIdentifier(payload?.publicationAuthorizationId, 'publicationAuthorizationId');
+    const adapter = openOperationalDatabase(paths, { now: timestamp });
+    try {
+        const authorization = loadInterpretivePublicationAuthorizationProjection(adapter, publicationAuthorizationId);
+        if (!authorization) {
+            throw createError(404, `Publication authorization ${publicationAuthorizationId} was not found`, 'ARCH_PUBLICATION_AUTHORIZATION_NOT_FOUND');
+        }
+        if (authorization.status === 'CONSUMED') {
+            throw createError(409, `Publication authorization ${publicationAuthorizationId} was already used`, 'ARCH_PUBLICATION_AUTHORIZATION_CONSUMED');
+        }
+        if (authorization.status === 'EXPIRED' || authorization.expiresAt <= timestamp) {
+            if (authorization.status !== 'EXPIRED') {
+                const refusalCodes = ['PUBLICATION_AUTHORIZATION_EXPIRED'];
+                const refusalEvent = expirePublicationAuthorization(adapter, authorization, refusalCodes, timestamp);
+                appendLedgerEvents(paths.dnmPublicationLedgerPath, [refusalEvent]);
+                snapshotOperationalDatabase(adapter, paths);
+            }
+            throw createError(409, `Publication authorization ${publicationAuthorizationId} has expired`, 'ARCH_PUBLICATION_AUTHORIZATION_EXPIRED');
+        }
+
+        const interpretation = loadInterpretiveCandidateProjection(adapter, authorization.interpretationRevisionId);
+        if (!interpretation) {
+            const refusalCodes = ['INTERPRETATION_REVISION_NOT_FOUND'];
+            const refusalEvent = expirePublicationAuthorization(adapter, authorization, refusalCodes, timestamp);
+            appendLedgerEvents(paths.dnmPublicationLedgerPath, [refusalEvent]);
+            snapshotOperationalDatabase(adapter, paths);
+            throw createError(409, 'Publication authorization target interpretation is missing', 'ARCH_PUBLICATION_AUTHORIZATION_STALE', { refusalCodes });
+        }
+        const policy = loadInterpretivePublicationPolicyProjection(
+            adapter,
+            authorization.publicationPolicyId,
+            authorization.policyVersion,
+        );
+        if (!policy) {
+            const refusalCodes = ['PUBLICATION_POLICY_MISMATCH'];
+            const refusalEvent = expirePublicationAuthorization(adapter, authorization, refusalCodes, timestamp);
+            appendLedgerEvents(paths.dnmPublicationLedgerPath, [refusalEvent]);
+            snapshotOperationalDatabase(adapter, paths);
+            throw createError(409, 'Publication authorization policy binding is stale', 'ARCH_PUBLICATION_AUTHORIZATION_STALE', { refusalCodes });
+        }
+
+        const requalification = evaluateInterpretivePublicationQualification(adapter, interpretation, policy, {
+            continuityTargetId: authorization.binding.continuityTargetId,
+            proposalContentHash: authorization.binding.proposalContentHash,
+            groundingEnvelopeHash: authorization.binding.groundingEnvelopeHash,
+            reviewEnvelopeHash: authorization.binding.reviewEnvelopeHash,
+            subjectDispositionRecordId: authorization.binding.subjectDispositionRecordId,
+        }, timestamp);
+        const currentBindingHash = computePublicationQualificationBindingHash(requalification.binding);
+        const refusalCodes = [];
+        if (requalification.eligibilityVerdict !== 'ELIGIBLE') {
+            refusalCodes.push(...requalification.refusalCodes);
+        }
+        if (authorization.qualificationBindingHash !== currentBindingHash) {
+            refusalCodes.push('STALE_AUTHORIZATION_AGAINST_CHANGED_PUBLICATION_STATE');
+        }
+        if (authorization.binding.publicationPolicyHash !== policy.policyHash) {
+            refusalCodes.push('PUBLICATION_POLICY_MISMATCH');
+        }
+        if (authorization.binding.continuityTargetId !== interpretation.memorySubjectId) {
+            refusalCodes.push('CONTINUITY_TARGET_MISMATCH');
+        }
+
+        if (refusalCodes.length > 0) {
+            const uniqueRefusals = Array.from(new Set(refusalCodes)).sort();
+            const refusalEvent = expirePublicationAuthorization(adapter, authorization, uniqueRefusals, timestamp);
+            appendLedgerEvents(paths.dnmPublicationLedgerPath, [refusalEvent]);
+            snapshotOperationalDatabase(adapter, paths);
+            throw createError(
+                409,
+                'Publication authorization failed revalidation',
+                'ARCH_PUBLICATION_AUTHORIZATION_STALE',
+                { refusalCodes: uniqueRefusals },
+            );
+        }
+
+        const record = buildPublicationExecutionRecord(authorization, interpretation, timestamp);
+        const consumedAuthorization = {
+            ...authorization,
+            status: 'CONSUMED',
+            consumedAt: timestamp,
+            dnmRecordId: record.dnmRecordId,
+        };
+        appendLedgerEvents(paths.dnmPublicationLedgerPath, [
+            createDnmPublishedEvent(record),
+        ]);
+        adapter.transaction(() => {
+            persistDnmPublicationRecordRow(adapter, record);
+            persistInterpretivePublicationAuthorizationRow(adapter, consumedAuthorization);
+            adapter.run(
+                `UPDATE interpretation_revisions
+                 SET publication_state = 'PUBLISHED', authority_effect = 'DEVELOPMENTAL_MEMORY', updated_at = ?
+                 WHERE interpretation_revision_id = ?`,
+                [timestamp, interpretation.interpretationRevisionId],
+            );
+        });
+        snapshotOperationalDatabase(adapter, paths);
+        return {
+            ok: true,
+            phase: 'c0.6.4',
+            publicationAuthorizationAvailable: true,
+            continuityPublicationAvailable: true,
+            liveContinuityMutation: true,
+            authorization: loadInterpretivePublicationAuthorizationProjection(adapter, consumedAuthorization.publicationAuthorizationId),
+            publishedRecord: loadDnmPublicationRecordProjection(adapter, record.dnmRecordId),
+            interpretation: loadInterpretiveCandidateProjection(adapter, interpretation.interpretationRevisionId),
         };
     } finally {
         adapter.close();

@@ -6,7 +6,9 @@ import path from 'node:path';
 
 import { getStoragePaths, openOperationalDatabase } from './core.js';
 import {
+    createInterpretivePublicationAuthorization,
     executeInterpretiveSynthesisRun,
+    executeInterpretivePublicationAuthorization,
     createInterpretiveSynthesisRun,
     createInterpretiveCandidate,
     createInterpretiveRevision,
@@ -1203,4 +1205,229 @@ test('publication qualification preserves synthesis envelope provenance distinct
         qualification.qualification.binding.groundingProtocolVersion,
         executed.synthesisRun.proposals[0].groundingEvaluation.evaluationProtocolVersion,
     );
+});
+
+test('publication authorization and execution publish exact granted revision into DNM once', () => {
+    const root = makeTempRoot();
+    const request = buildRequest(root);
+    upsertInterpretivePublicationPolicy(request, makePublicationPolicyPayload());
+
+    const created = createInterpretiveCandidate(request, makeBasePayload({
+        interpretationId: 'interp_publish_case',
+        interpretationRevisionId: 'interprev_publish_case_v1',
+    }));
+    const subjectRequest = created.interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'MEMORY_SUBJECT');
+    const withEdit = submitInterpretiveReviewDisposition(request, subjectRequest.reviewRequestId, {
+        actorEntityId: 'character:jeep.png',
+        disposition: 'APPROVE_WITH_EDIT',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        reasonCodes: ['SCOPE_TOO_BROAD'],
+        revisedCandidate: {
+            interpretationRevisionId: 'interprev_publish_case_v2',
+            statement: 'Jeep evolved into the primary architectural authority over continuity and memory requirements within a shared architecture with Chris.',
+        },
+        now: Date.parse('2026-06-26T02:00:00.000Z'),
+    });
+    const participantRequest = withEdit.childInterpretation.reviewRequests.find((entry) => entry.reviewerRole === 'RELATIONAL_PARTICIPANT');
+    submitInterpretiveReviewDisposition(request, participantRequest.reviewRequestId, {
+        actorEntityId: 'user:Chris',
+        disposition: 'APPROVE',
+        reviewEnvelopeHash: withEdit.childInterpretation.reviewEnvelopeHash,
+        now: Date.parse('2026-06-26T02:00:05.000Z'),
+    });
+    const granted = recordInterpretiveSubjectDisposition(request, 'interprev_publish_case_v2', {
+        actorEntityId: 'character:jeep.png',
+        state: 'GRANTED',
+        reviewEnvelopeHash: withEdit.childInterpretation.reviewEnvelopeHash,
+        now: Date.parse('2026-06-26T02:00:10.000Z'),
+    });
+    const qualification = qualifyInterpretivePublication(request, 'interprev_publish_case_v2', {
+        publicationPolicyId: 'dnm-publication-v1',
+        continuityTargetId: 'character:jeep.png',
+        proposalContentHash: granted.interpretation.proposalContentHash,
+        reviewEnvelopeHash: granted.interpretation.reviewEnvelopeHash,
+        subjectDispositionRecordId: granted.subjectDisposition.subjectDispositionId,
+        now: Date.parse('2026-06-26T02:00:15.000Z'),
+    });
+    const authorization = createInterpretivePublicationAuthorization(request, {
+        qualificationId: qualification.qualification.qualificationId,
+        authorizedBy: 'user:Chris',
+        expiresAt: Date.parse('2026-06-26T03:00:00.000Z'),
+        now: Date.parse('2026-06-26T02:00:20.000Z'),
+    });
+    assert.equal(authorization.authorization.status, 'AUTHORIZED');
+    assert.equal(authorization.continuityPublicationAvailable, false);
+
+    const executed = executeInterpretivePublicationAuthorization(request, {
+        publicationAuthorizationId: authorization.authorization.publicationAuthorizationId,
+        now: Date.parse('2026-06-26T02:00:25.000Z'),
+    });
+
+    assert.equal(executed.ok, true);
+    assert.equal(executed.publicationAuthorizationAvailable, true);
+    assert.equal(executed.continuityPublicationAvailable, true);
+    assert.equal(executed.liveContinuityMutation, true);
+    assert.equal(executed.authorization.status, 'CONSUMED');
+    assert.equal(executed.publishedRecord.sourceInterpretationRevisionId, 'interprev_publish_case_v2');
+    assert.equal(executed.publishedRecord.publicationState, 'PUBLISHED');
+    assert.equal(executed.interpretation.publicationState, 'PUBLISHED');
+    assert.equal(executed.interpretation.authorityEffect, 'DEVELOPMENTAL_MEMORY');
+    assert.equal(executed.publishedRecord.proposalContentHash, granted.interpretation.proposalContentHash);
+    assert.equal(executed.publishedRecord.groundingEnvelopeHash, qualification.qualification.binding.groundingEnvelopeHash);
+
+    assert.throws(
+        () => executeInterpretivePublicationAuthorization(request, {
+            publicationAuthorizationId: authorization.authorization.publicationAuthorizationId,
+            now: Date.parse('2026-06-26T02:00:30.000Z'),
+        }),
+        /already used/i,
+    );
+});
+
+test('publication execution fails closed when bound state drifts after authorization', () => {
+    const root = makeTempRoot();
+    const request = buildRequest(root);
+    upsertInterpretivePublicationPolicy(request, makePublicationPolicyPayload({
+        immutableChildRequiredForTypes: [],
+        requiredGroundingOutcome: 'SUPPORTED',
+    }));
+
+    const created = createInterpretiveCandidate(request, makeBasePayload({
+        interpretationId: 'interp_publish_drift_case',
+        interpretationRevisionId: 'interprev_publish_drift_case_v1',
+    }));
+    const subjectRequest = created.interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'MEMORY_SUBJECT');
+    const participantRequest = created.interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'RELATIONAL_PARTICIPANT');
+    submitInterpretiveReviewDisposition(request, subjectRequest.reviewRequestId, {
+        actorEntityId: 'character:jeep.png',
+        disposition: 'APPROVE',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        now: Date.parse('2026-06-26T02:10:00.000Z'),
+    });
+    submitInterpretiveReviewDisposition(request, participantRequest.reviewRequestId, {
+        actorEntityId: 'user:Chris',
+        disposition: 'APPROVE',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        now: Date.parse('2026-06-26T02:10:05.000Z'),
+    });
+    const granted = recordInterpretiveSubjectDisposition(request, 'interprev_publish_drift_case_v1', {
+        actorEntityId: 'character:jeep.png',
+        state: 'GRANTED',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        now: Date.parse('2026-06-26T02:10:10.000Z'),
+    });
+    const qualification = qualifyInterpretivePublication(request, 'interprev_publish_drift_case_v1', {
+        publicationPolicyId: 'dnm-publication-v1',
+        continuityTargetId: 'character:jeep.png',
+        proposalContentHash: granted.interpretation.proposalContentHash,
+        reviewEnvelopeHash: granted.interpretation.reviewEnvelopeHash,
+        subjectDispositionRecordId: granted.subjectDisposition.subjectDispositionId,
+        now: Date.parse('2026-06-26T02:10:15.000Z'),
+    });
+    const authorization = createInterpretivePublicationAuthorization(request, {
+        qualificationId: qualification.qualification.qualificationId,
+        authorizedBy: 'user:Chris',
+        expiresAt: Date.parse('2026-06-26T03:10:00.000Z'),
+        now: Date.parse('2026-06-26T02:10:20.000Z'),
+    });
+
+    recordInterpretiveSubjectDisposition(request, 'interprev_publish_drift_case_v1', {
+        actorEntityId: 'character:jeep.png',
+        state: 'DENIED',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        commentary: 'State drift after qualification.',
+        now: Date.parse('2026-06-26T02:10:25.000Z'),
+    });
+
+    assert.throws(
+        () => executeInterpretivePublicationAuthorization(request, {
+            publicationAuthorizationId: authorization.authorization.publicationAuthorizationId,
+            now: Date.parse('2026-06-26T02:10:30.000Z'),
+        }),
+        /failed revalidation/i,
+    );
+
+    const adapter = openOperationalDatabase(getStoragePaths(root));
+    try {
+        const authRow = adapter.get(
+            'SELECT status FROM interpretation_publication_authorizations WHERE publication_authorization_id = ?',
+            [authorization.authorization.publicationAuthorizationId],
+        );
+        const recordCount = adapter.get('SELECT COUNT(*) AS count FROM dnm_publication_records').count;
+        assert.equal(authRow.status, 'EXPIRED');
+        assert.equal(recordCount, 0);
+    } finally {
+        adapter.close();
+    }
+});
+
+test('publication ledger replay restores policies, authorizations, and published DNM records', () => {
+    const sourceRoot = makeTempRoot();
+    const sourceRequest = buildRequest(sourceRoot);
+    upsertInterpretivePublicationPolicy(sourceRequest, makePublicationPolicyPayload({
+        immutableChildRequiredForTypes: [],
+        requiredGroundingOutcome: 'SUPPORTED',
+    }));
+    const created = createInterpretiveCandidate(sourceRequest, makeBasePayload({
+        interpretationId: 'interp_publish_replay_case',
+        interpretationRevisionId: 'interprev_publish_replay_case_v1',
+    }));
+    const subjectRequest = created.interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'MEMORY_SUBJECT');
+    const participantRequest = created.interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'RELATIONAL_PARTICIPANT');
+    submitInterpretiveReviewDisposition(sourceRequest, subjectRequest.reviewRequestId, {
+        actorEntityId: 'character:jeep.png',
+        disposition: 'APPROVE',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        now: Date.parse('2026-06-26T02:20:00.000Z'),
+    });
+    submitInterpretiveReviewDisposition(sourceRequest, participantRequest.reviewRequestId, {
+        actorEntityId: 'user:Chris',
+        disposition: 'APPROVE',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        now: Date.parse('2026-06-26T02:20:05.000Z'),
+    });
+    const granted = recordInterpretiveSubjectDisposition(sourceRequest, 'interprev_publish_replay_case_v1', {
+        actorEntityId: 'character:jeep.png',
+        state: 'GRANTED',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        now: Date.parse('2026-06-26T02:20:10.000Z'),
+    });
+    const qualification = qualifyInterpretivePublication(sourceRequest, 'interprev_publish_replay_case_v1', {
+        publicationPolicyId: 'dnm-publication-v1',
+        continuityTargetId: 'character:jeep.png',
+        proposalContentHash: granted.interpretation.proposalContentHash,
+        reviewEnvelopeHash: granted.interpretation.reviewEnvelopeHash,
+        subjectDispositionRecordId: granted.subjectDisposition.subjectDispositionId,
+        now: Date.parse('2026-06-26T02:20:15.000Z'),
+    });
+    const authorization = createInterpretivePublicationAuthorization(sourceRequest, {
+        qualificationId: qualification.qualification.qualificationId,
+        authorizedBy: 'user:Chris',
+        expiresAt: Date.parse('2026-06-26T03:20:00.000Z'),
+        now: Date.parse('2026-06-26T02:20:20.000Z'),
+    });
+    const executed = executeInterpretivePublicationAuthorization(sourceRequest, {
+        publicationAuthorizationId: authorization.authorization.publicationAuthorizationId,
+        now: Date.parse('2026-06-26T02:20:25.000Z'),
+    });
+
+    const sourcePaths = getStoragePaths(sourceRoot);
+    const targetRoot = makeTempRoot();
+    const targetPaths = getStoragePaths(targetRoot);
+    fs.mkdirSync(targetPaths.storageRoot, { recursive: true });
+    fs.copyFileSync(sourcePaths.interpretiveGovernanceLedgerPath, targetPaths.interpretiveGovernanceLedgerPath);
+    fs.copyFileSync(sourcePaths.dnmPublicationLedgerPath, targetPaths.dnmPublicationLedgerPath);
+
+    replayInterpretiveLedger(buildRequest(targetRoot));
+    const replayed = replayPublicationLedger(buildRequest(targetRoot));
+    assert.equal(replayed.ok, true);
+    assert.equal(replayed.replayedPublicationPolicies.length, 1);
+    assert.equal(replayed.replayedPublicationAuthorizations.length, 1);
+    assert.equal(replayed.replayedPublishedRecords.length, 1);
+    assert.equal(replayed.replayedPublicationAuthorizations[0].status, 'CONSUMED');
+    assert.equal(replayed.replayedPublishedRecords[0].dnmRecordId, executed.publishedRecord.dnmRecordId);
+
+    const replayedCandidate = getInterpretiveCandidate(buildRequest(targetRoot), 'interprev_publish_replay_case_v1');
+    assert.equal(replayedCandidate.interpretation.publicationState, 'PUBLISHED');
+    assert.equal(replayedCandidate.interpretation.authorityEffect, 'DEVELOPMENTAL_MEMORY');
 });

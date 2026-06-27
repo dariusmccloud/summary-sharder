@@ -241,6 +241,8 @@ test('route surface exposes candidate lifecycle routes and separate promotion ro
     assert.equal(router.routes.post.has('/interpretive/delegation-policies/:delegationPolicyId/revoke'), true);
     assert.equal(router.routes.post.has('/interpretive/publication/policies'), true);
     assert.equal(router.routes.post.has('/interpretive/publication/policies/:publicationPolicyId/revoke'), true);
+    assert.equal(router.routes.post.has('/interpretive/publication/authorizations'), true);
+    assert.equal(router.routes.post.has('/interpretive/publication/execute'), true);
     assert.equal(router.routes.post.has('/interpretive/reviews/:reviewRequestId/dispositions'), true);
     assert.equal(router.routes.post.has('/interpretive/candidates/:interpretationRevisionId/subject-disposition'), true);
     assert.equal(router.routes.post.has('/interpretive/candidates/:interpretationRevisionId/revisions'), true);
@@ -272,8 +274,9 @@ test('capabilities and candidate lifecycle routes report no promotion and suppor
     assert.equal(capabilities.payload.capabilities.c0_6_3.modelSynthesisAvailable, false);
     assert.equal(capabilities.payload.capabilities.c0_6_4.publicationPolicyStorage, true);
     assert.equal(capabilities.payload.capabilities.c0_6_4.publicationQualification, true);
-    assert.equal(capabilities.payload.capabilities.c0_6_4.publicationAuthorizationAvailable, false);
-    assert.equal(capabilities.payload.capabilities.c0_6_4.continuityPublicationAvailable, false);
+    assert.equal(capabilities.payload.capabilities.c0_6_4.publicationAuthorizationAvailable, true);
+    assert.equal(capabilities.payload.capabilities.c0_6_4.continuityPublicationAvailable, true);
+    assert.equal(capabilities.payload.capabilities.c0_6_4.liveContinuityMutation, true);
 
     const initResult = await invoke(
         router.routes.post.get('/rebuild/candidate/init'),
@@ -350,7 +353,7 @@ test('capabilities and candidate lifecycle routes report no promotion and suppor
     assert.equal(cleanupResult.payload.promotionAvailable, false);
 });
 
-test('publication policy and qualification routes stay read-only with publication unavailable', async () => {
+test('publication policy, qualification, authorization, and execute routes enforce governed DNM publication', async () => {
     const root = makeTempRoot();
     const router = createMockRouter();
     await init(router);
@@ -385,6 +388,9 @@ test('publication policy and qualification routes stay read-only with publicatio
         }),
     );
     assert.equal(createResult.statusCode, 200);
+    const interpretation = createResult.payload.interpretation;
+    const subjectRequest = interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'MEMORY_SUBJECT');
+    const participantRequest = interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'RELATIONAL_PARTICIPANT');
 
     const policyResult = await invoke(
         router.routes.post.get('/interpretive/publication/policies'),
@@ -411,6 +417,48 @@ test('publication policy and qualification routes stay read-only with publicatio
     assert.equal(policyResult.statusCode, 200);
     assert.equal(policyResult.payload.created, true);
 
+    const subjectReview = await invoke(
+        router.routes.post.get('/interpretive/reviews/:reviewRequestId/dispositions'),
+        buildRequest(root, {
+            params: { reviewRequestId: subjectRequest.reviewRequestId },
+            body: {
+                actorEntityId: 'character:jeep.png',
+                disposition: 'APPROVE',
+                reviewEnvelopeHash: interpretation.reviewEnvelopeHash,
+                now: Date.parse('2026-06-26T00:14:06.000Z'),
+            },
+        }),
+    );
+    assert.equal(subjectReview.statusCode, 200);
+    const participantReview = await invoke(
+        router.routes.post.get('/interpretive/reviews/:reviewRequestId/dispositions'),
+        buildRequest(root, {
+            params: { reviewRequestId: participantRequest.reviewRequestId },
+            body: {
+                actorEntityId: 'user:Chris',
+                disposition: 'APPROVE',
+                reviewEnvelopeHash: interpretation.reviewEnvelopeHash,
+                now: Date.parse('2026-06-26T00:14:07.000Z'),
+            },
+        }),
+    );
+    assert.equal(participantReview.statusCode, 200);
+    const granted = await invoke(
+        router.routes.post.get('/interpretive/candidates/:interpretationRevisionId/subject-disposition'),
+        buildRequest(root, {
+            params: {
+                interpretationRevisionId: 'interprev_route_publication_case_v1',
+            },
+            body: {
+                actorEntityId: 'character:jeep.png',
+                state: 'GRANTED',
+                reviewEnvelopeHash: interpretation.reviewEnvelopeHash,
+                now: Date.parse('2026-06-26T00:14:08.000Z'),
+            },
+        }),
+    );
+    assert.equal(granted.statusCode, 200);
+
     const qualificationResult = await invoke(
         router.routes.post.get('/interpretive/candidates/:interpretationRevisionId/publication-qualifications'),
         buildRequest(root, {
@@ -420,6 +468,9 @@ test('publication policy and qualification routes stay read-only with publicatio
             body: {
                 publicationPolicyId: 'dnm-publication-v1',
                 continuityTargetId: 'character:jeep.png',
+                proposalContentHash: granted.payload.interpretation.proposalContentHash,
+                reviewEnvelopeHash: granted.payload.interpretation.reviewEnvelopeHash,
+                subjectDispositionRecordId: granted.payload.subjectDisposition.subjectDispositionId,
                 now: Date.parse('2026-06-26T00:14:10.000Z'),
             },
         }),
@@ -427,8 +478,40 @@ test('publication policy and qualification routes stay read-only with publicatio
     assert.equal(qualificationResult.statusCode, 200);
     assert.equal(qualificationResult.payload.publicationAvailable, false);
     assert.equal(qualificationResult.payload.continuityActivationAvailable, false);
-    assert.equal(qualificationResult.payload.qualification.eligibilityVerdict, 'INELIGIBLE');
-    assert.equal(qualificationResult.payload.qualification.refusalCodes.includes('SUBJECT_DISPOSITION_STATE_MISMATCH'), true);
+    assert.equal(qualificationResult.payload.qualification.eligibilityVerdict, 'ELIGIBLE');
+
+    const authorizationResult = await invoke(
+        router.routes.post.get('/interpretive/publication/authorizations'),
+        buildRequest(root, {
+            body: {
+                qualificationId: qualificationResult.payload.qualification.qualificationId,
+                authorizedBy: 'user:Chris',
+                expiresAt: Date.parse('2026-06-26T01:14:10.000Z'),
+                now: Date.parse('2026-06-26T00:14:12.000Z'),
+            },
+        }),
+    );
+    assert.equal(authorizationResult.statusCode, 200);
+    assert.equal(authorizationResult.payload.publicationAuthorizationAvailable, true);
+    assert.equal(authorizationResult.payload.continuityPublicationAvailable, false);
+    assert.equal(authorizationResult.payload.authorization.status, 'AUTHORIZED');
+
+    const executeResult = await invoke(
+        router.routes.post.get('/interpretive/publication/execute'),
+        buildRequest(root, {
+            body: {
+                publicationAuthorizationId: authorizationResult.payload.authorization.publicationAuthorizationId,
+                now: Date.parse('2026-06-26T00:14:15.000Z'),
+            },
+        }),
+    );
+    assert.equal(executeResult.statusCode, 200);
+    assert.equal(executeResult.payload.continuityPublicationAvailable, true);
+    assert.equal(executeResult.payload.liveContinuityMutation, true);
+    assert.equal(executeResult.payload.authorization.status, 'CONSUMED');
+    assert.equal(executeResult.payload.publishedRecord.publicationState, 'PUBLISHED');
+    assert.equal(executeResult.payload.interpretation.publicationState, 'PUBLISHED');
+    assert.equal(executeResult.payload.interpretation.authorityEffect, 'DEVELOPMENTAL_MEMORY');
 });
 
 test('interpretive routes create pending governed candidates without publication', async () => {
