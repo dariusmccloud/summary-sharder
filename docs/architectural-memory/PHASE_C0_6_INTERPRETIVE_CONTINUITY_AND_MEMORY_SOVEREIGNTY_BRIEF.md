@@ -26,10 +26,12 @@ Implemented sub-slice:
 
 - `docs/architectural-memory/PHASE_C0_6_1_INTERPRETATION_CANDIDATE_SCHEMA_AND_VALIDATION_POLICY_RESOLUTION_BRIEF.md`
 - `docs/architectural-memory/C0_6_1_COMPLETION_REPORT.md`
+- `docs/architectural-memory/PHASE_C0_6_3_BOUNDED_SYNTHESIS_PROPOSAL_GENERATION_AND_GROUNDING_BRIEF.md`
+- `docs/architectural-memory/C0_6_3_COMPLETION_REPORT.md`
 
 Active next sub-slice:
 
-- `docs/architectural-memory/PHASE_C0_6_3_BOUNDED_SYNTHESIS_PROPOSAL_GENERATION_AND_GROUNDING_BRIEF.md`
+- `docs/architectural-memory/PHASE_C0_6_4_PUBLICATION_AUTHORITY_AND_PORTABLE_DNM_CONTRACT_BRIEF.md`
 
 ## Governing Doctrine
 
