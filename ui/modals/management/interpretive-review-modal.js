@@ -8,23 +8,25 @@ import {
 } from '../../../core/summarization/architectural-authority-server-api.js';
 import { escapeHtml, formatDate } from '../../common/ui-utils.js';
 import {
+    buildInterpretiveRevisedCandidatePayload,
     REVIEW_DISPOSITION_OPTIONS,
     SUBJECT_DISPOSITION_OPTIONS,
     filterDelegationPoliciesForAction,
     getInterpretiveSubmissionModeOptions,
     parseInterpretiveTokenList,
     resolveDefaultInterpretiveSubmissionMode,
+    shouldShowInterpretiveRevisionEditor,
 } from './interpretive-review-form-state.js';
 
 const REVIEW_STATUS_OPTIONS = Object.freeze([
-    { value: '', label: 'All statuses' },
-    { value: 'PENDING', label: 'Pending' },
-    { value: 'APPROVED', label: 'Approved' },
-    { value: 'APPROVE_WITH_EDIT', label: 'Approve With Edit' },
-    { value: 'APPROVE_FOR_SCOPE_ONLY', label: 'Approve For Scope Only' },
-    { value: 'CONTESTED', label: 'Contested' },
-    { value: 'DEFERRED', label: 'Deferred' },
-    { value: 'REJECTED', label: 'Rejected' },
+    { value: '', label: 'All Request Statuses' },
+    { value: 'PENDING', label: 'Pending Requests' },
+    { value: 'APPROVED', label: 'Approved Requests' },
+    { value: 'APPROVE_WITH_EDIT', label: 'Approve With Edit Requests' },
+    { value: 'APPROVE_FOR_SCOPE_ONLY', label: 'Approve For Scope Only Requests' },
+    { value: 'CONTESTED', label: 'Contested Requests' },
+    { value: 'DEFERRED', label: 'Deferred Requests' },
+    { value: 'REJECTED', label: 'Rejected Requests' },
 ]);
 
 function formatTimestamp(value) {
@@ -192,11 +194,19 @@ function buildDelegationPolicyOptions(policies = []) {
     if (items.length === 0) {
         return '<option value="">No matching active policy</option>';
     }
+    if (items.length === 1) {
+        const [policy] = items;
+        return `
+            <option value="${escapeHtml(policy.delegationPolicyId)}" selected>
+                ${escapeHtml(`${policy.delegationPolicyId} v${policy.policyVersion} [Evidence ${policy.evidenceRequirement}]`)}
+            </option>
+        `;
+    }
     return [
         '<option value="">Select delegation policy</option>',
         ...items.map((policy) => `
             <option value="${escapeHtml(policy.delegationPolicyId)}">
-                ${escapeHtml(`${policy.delegationPolicyId} v${policy.policyVersion} [${policy.evidenceRequirement}]`)}
+                ${escapeHtml(`${policy.delegationPolicyId} v${policy.policyVersion} [Evidence ${policy.evidenceRequirement}]`)}
             </option>
         `),
     ].join('');
@@ -250,8 +260,11 @@ function renderActionForm({
         continuityTargetId: interpretation.memorySubjectId,
     });
     const selectOptions = formKind === 'review'
-        ? REVIEW_DISPOSITION_OPTIONS
+        ? (reviewRequest?.reviewerRole === 'MEMORY_SUBJECT'
+            ? REVIEW_DISPOSITION_OPTIONS
+            : REVIEW_DISPOSITION_OPTIONS.filter((entry) => entry.value !== 'APPROVE_WITH_EDIT'))
         : SUBJECT_DISPOSITION_OPTIONS;
+    const defaultDispositionValue = selectOptions[0]?.value || '';
     const submitLabel = formKind === 'review'
         ? 'Record Review'
         : 'Record Subject Disposition';
@@ -273,6 +286,7 @@ function renderActionForm({
                 data-interpretation-revision-id="${escapeHtml(interpretation.interpretationRevisionId)}"
                 data-review-envelope-hash="${escapeHtml(reviewRequest?.reviewEnvelopeHash || interpretation.reviewEnvelopeHash || '')}"
                 data-review-request-id="${escapeHtml(reviewRequest?.reviewRequestId || '')}"
+                data-parent-statement="${escapeHtml(interpretation.statement || '')}"
                 data-default-actor-id="${escapeHtml(currentActorId || '')}">
                 ${renderKeyValueGrid([
                     { label: 'Disposition Owner', value: `<code>${escapeHtml(ownerId)}</code>` },
@@ -282,10 +296,10 @@ function renderActionForm({
 
                 <div class="ss-interpretive-review-form-grid">
                     <label class="ss-interpretive-review-field">
-                        <span>${escapeHtml(formKind === 'review' ? 'Disposition' : 'Subject Disposition')}</span>
+                        <span>${escapeHtml(formKind === 'review' ? 'Review Disposition' : 'Subject Disposition')}</span>
                         <select class="text_pole" name="${formKind === 'review' ? 'disposition' : 'state'}">
                             ${selectOptions.map((entry) => `
-                                <option value="${escapeHtml(entry.value)}">${escapeHtml(entry.label)}</option>
+                                <option value="${escapeHtml(entry.value)}"${entry.value === defaultDispositionValue ? ' selected' : ''}>${escapeHtml(entry.label)}</option>
                             `).join('')}
                         </select>
                     </label>
@@ -299,7 +313,7 @@ function renderActionForm({
 
                     <label class="ss-interpretive-review-field">
                         <span>Recorded By</span>
-                        <input class="text_pole" type="text" name="submittedByActorId" value="${escapeHtml(defaultActorId)}" />
+                        <input class="text_pole" type="text" name="submittedByActorId" value="${escapeHtml(defaultActorId)}" readonly />
                     </label>
 
                     <label class="ss-interpretive-review-field" data-field="delegationPolicyId"${defaultMode === 'TRUSTED_DELEGATE' ? '' : ' hidden'}>
@@ -307,7 +321,7 @@ function renderActionForm({
                         <select class="text_pole" name="delegationPolicyId">
                             ${buildDelegationPolicyOptions(applicablePolicies)}
                         </select>
-                        <span class="ss-hint">Trusted delegation binds the exact policy version and hash on submit.</span>
+                        <span class="ss-hint">Trusted delegation requires a matching policy and binds its exact version and hash on submit.</span>
                     </label>
                 </div>
 
@@ -332,7 +346,18 @@ function renderActionForm({
                 </label>
 
                 ${formKind === 'review' ? `
-                    <div class="ss-hint">Immutable <code>APPROVE_WITH_EDIT</code> revision flow remains reserved for the later editor slice.</div>
+                    <div class="ss-interpretive-review-section" data-field="revisedCandidate"${shouldShowInterpretiveRevisionEditor(formKind, defaultDispositionValue) ? '' : ' hidden'}>
+                        <h4>Immutable Child Revision</h4>
+                        <div class="ss-hint">This records the review disposition against the parent revision and creates a new child revision for subsequent review and subject disposition.</div>
+                        <div class="ss-interpretive-review-card">
+                            <strong>Parent Statement</strong>
+                            <div class="ss-interpretive-review-statement">${escapeHtml(interpretation.statement || '')}</div>
+                        </div>
+                        <label class="ss-interpretive-review-field">
+                            <span>Child Statement</span>
+                            <textarea class="text_pole" rows="5" name="revisedStatement" placeholder="Enter the narrower approved statement.">${escapeHtml(interpretation.statement || '')}</textarea>
+                        </label>
+                    </div>
                 ` : ''}
 
                 <div class="ss-interpretive-review-form-actions">
@@ -420,8 +445,15 @@ function renderSubjectDispositionSection(interpretation, policiesById, currentAc
         || interpretation.reviewState === 'PENDING'
         || interpretation.reviewState === 'DEFERRED';
 
+    const supersededByChild = !blocked
+        && !interpretation.subjectDisposition
+        && Array.isArray(interpretation.childRevisionIds)
+        && interpretation.childRevisionIds.length > 0;
+
     const formHtml = blocked
         ? '<div class="ss-hint">Subject disposition remains blocked until all required reviews are complete.</div>'
+        : supersededByChild
+            ? '<div class="ss-hint">Subject disposition moved to the child revision created by Approve With Edit. Grant or reject the current child revision instead of the parent.</div>'
         : renderActionForm({
             formKind: 'subject',
             ownerId: interpretation.memorySubjectId,
@@ -495,6 +527,8 @@ function renderCandidateDetail(interpretation, policiesById, options = {}) {
                 <h4>Identity and Lifecycle</h4>
                 ${renderKeyValueGrid([
                     { label: 'Interpretation ID', value: `<code>${escapeHtml(interpretation.interpretationId || 'n/a')}</code>` },
+                    { label: 'Parent Revision', value: interpretation.parentRevisionId ? `<code>${escapeHtml(interpretation.parentRevisionId)}</code>` : 'None' },
+                    { label: 'Created From Disposition', value: interpretation.createdFromDispositionId ? `<code>${escapeHtml(interpretation.createdFromDispositionId)}</code>` : 'None' },
                     { label: 'Memory Scope', value: `<code>${escapeHtml(interpretation.memoryScopeId || 'n/a')}</code>` },
                     { label: 'Memory Subject', value: `<code>${escapeHtml(interpretation.memorySubjectId || 'n/a')}</code>` },
                     { label: 'Revision Reason', value: escapeHtml(interpretation.revisionReason || 'n/a') },
@@ -588,8 +622,9 @@ function renderModalHtml(state) {
                     <p class="ss-hint">Governed review surface. Review and subject-disposition actions are allowed here; continuity publication and activation remain unavailable.</p>
                 </div>
                 <div class="ss-interpretive-review-filter">
-                    <label for="ss-interpretive-review-status-filter">Review Status</label>
+                    <label for="ss-interpretive-review-status-filter">Queue Filter</label>
                     <select id="ss-interpretive-review-status-filter" class="text_pole">${statusOptions}</select>
+                    <div class="ss-hint">Filters the request list only. Record actions from the review card.</div>
                 </div>
             </div>
 
@@ -786,10 +821,13 @@ export async function openInterpretiveReviewModal() {
 
         function syncActionForm(form) {
             const mode = String(form.querySelector('[name="submissionMode"]')?.value || '').trim();
+            const formKind = String(form.dataset.formKind || '').trim();
+            const disposition = String(form.querySelector('[name="disposition"]')?.value || '').trim();
             const policyField = form.querySelector('[data-field="delegationPolicyId"]');
             const policySelect = form.querySelector('[name="delegationPolicyId"]');
             const evidenceField = form.querySelector('[data-field="subjectEvidenceRefs"]');
             const evidenceHint = form.querySelector('[data-field-hint="subjectEvidenceRefs"]');
+            const revisedCandidateField = form.querySelector('[data-field="revisedCandidate"]');
             const applicablePolicies = buildApplicablePolicies(form);
 
             if (policySelect) {
@@ -810,6 +848,9 @@ export async function openInterpretiveReviewModal() {
                 evidenceHint.textContent = mode === 'SUBJECT_EXPRESSED_AND_RECORDED'
                     ? 'Required for recorded subject expression.'
                     : 'Optional for trusted delegation.';
+            }
+            if (revisedCandidateField) {
+                revisedCandidateField.hidden = !shouldShowInterpretiveRevisionEditor(formKind, disposition);
             }
         }
 
@@ -850,18 +891,40 @@ export async function openInterpretiveReviewModal() {
                 commentary: String(form.querySelector('[name="commentary"]')?.value || '').trim(),
             };
 
+            if (shouldShowInterpretiveRevisionEditor('review', payload.disposition)) {
+                const revisedPayload = buildInterpretiveRevisedCandidatePayload({
+                    parentStatement: String(form.dataset.parentStatement || '').trim(),
+                    revisedStatement: form.querySelector('[name="revisedStatement"]')?.value || '',
+                });
+                if (revisedPayload.error) {
+                    setInlineFormStatus(form, 'error', revisedPayload.error);
+                    return;
+                }
+                payload.revisedCandidate = revisedPayload.revisedCandidate;
+            }
+
             setFormBusy(form, true);
             setInlineFormStatus(form, 'info', 'Submitting governed review disposition...');
             try {
                 const response = await submitInterpretiveReviewDisposition(reviewRequestId, payload);
                 state.currentActorId = payload.submittedByActorId || state.currentActorId;
+                const childInterpretation = response?.childInterpretation || null;
                 state.actionStatus = {
                     kind: 'review',
                     tone: 'success',
-                    message: `Recorded ${response?.disposition?.disposition || payload.disposition} for ${ownerId}.`,
+                    message: childInterpretation?.interpretationRevisionId
+                        ? `Recorded ${response?.disposition?.disposition || payload.disposition} for ${ownerId}. Opened child revision ${childInterpretation.interpretationRevisionId}.`
+                        : `Recorded ${response?.disposition?.disposition || payload.disposition} for ${ownerId}.`,
                 };
                 if (state.selectedInterpretationRevisionId) {
                     state.candidateCache.delete(state.selectedInterpretationRevisionId);
+                }
+                if (childInterpretation?.interpretationRevisionId) {
+                    state.candidateCache.delete(childInterpretation.interpretationRevisionId);
+                    state.selectedInterpretationRevisionId = childInterpretation.interpretationRevisionId;
+                    const nextPendingRequest = (Array.isArray(childInterpretation.reviewRequests) ? childInterpretation.reviewRequests : [])
+                        .find((entry) => entry.status === 'PENDING' || entry.status === 'DEFERRED');
+                    state.selectedReviewRequestId = nextPendingRequest?.reviewRequestId || null;
                 }
                 await refreshReviews({ preserveDetail: true });
             } catch (error) {
@@ -940,6 +1003,10 @@ export async function openInterpretiveReviewModal() {
                         state.currentActorId,
                     );
                 }
+                syncActionForm(form);
+                return;
+            }
+            if (event.target.name === 'disposition') {
                 syncActionForm(form);
                 return;
             }

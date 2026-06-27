@@ -459,20 +459,6 @@ test('interpretive routes support review disposition, immutable child revision, 
     const subjectRequest = interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'MEMORY_SUBJECT');
     const participantRequest = interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'RELATIONAL_PARTICIPANT');
 
-    const participantDisposition = await invoke(
-        router.routes.post.get('/interpretive/reviews/:reviewRequestId/dispositions'),
-        buildRequest(root, {
-            params: { reviewRequestId: participantRequest.reviewRequestId },
-            body: {
-                actorEntityId: 'user:Chris',
-                disposition: 'APPROVE',
-                reviewEnvelopeHash: interpretation.reviewEnvelopeHash,
-                now: Date.parse('2026-06-25T13:10:05.000Z'),
-            },
-        }),
-    );
-    assert.equal(participantDisposition.statusCode, 200);
-
     const subjectDisposition = await invoke(
         router.routes.post.get('/interpretive/reviews/:reviewRequestId/dispositions'),
         buildRequest(root, {
@@ -497,6 +483,25 @@ test('interpretive routes support review disposition, immutable child revision, 
     assert.equal(subjectDisposition.payload.childInterpretation.interpretationRevisionId, 'interprev_route_review_case_v2');
     assert.equal(subjectDisposition.payload.disposition.provenance.submittedByActorId, 'user:Chris');
     assert.equal(subjectDisposition.payload.childInterpretation.revisionCreationProvenance.dispositionOwnerId, 'character:jeep.png');
+    assert.equal(
+        subjectDisposition.payload.childInterpretation.reviewRequests.some((entry) => entry.reviewerRole === 'MEMORY_SUBJECT'),
+        false,
+    );
+
+    const childParticipantRequest = subjectDisposition.payload.childInterpretation.reviewRequests.find((entry) => entry.reviewerRole === 'RELATIONAL_PARTICIPANT');
+    const participantDisposition = await invoke(
+        router.routes.post.get('/interpretive/reviews/:reviewRequestId/dispositions'),
+        buildRequest(root, {
+            params: { reviewRequestId: childParticipantRequest.reviewRequestId },
+            body: {
+                actorEntityId: 'user:Chris',
+                disposition: 'APPROVE',
+                reviewEnvelopeHash: subjectDisposition.payload.childInterpretation.reviewEnvelopeHash,
+                now: Date.parse('2026-06-25T13:10:15.000Z'),
+            },
+        }),
+    );
+    assert.equal(participantDisposition.statusCode, 200);
 
     const reviews = await invoke(
         router.routes.get.get('/interpretive/reviews'),
@@ -510,19 +515,20 @@ test('interpretive routes support review disposition, immutable child revision, 
     const finalDisposition = await invoke(
         router.routes.post.get('/interpretive/candidates/:interpretationRevisionId/subject-disposition'),
         buildRequest(root, {
-            params: { interpretationRevisionId: 'interprev_route_review_case_v1' },
+            params: { interpretationRevisionId: 'interprev_route_review_case_v2' },
             body: {
                 submittedByActorId: 'user:Chris',
                 dispositionOwnerId: 'character:jeep.png',
                 submissionMode: 'TRUSTED_DELEGATE',
                 delegationPolicyId: 'jeep-chris-continuity-delegation',
                 state: 'GRANTED',
-                reviewEnvelopeHash: interpretation.reviewEnvelopeHash,
+                reviewEnvelopeHash: subjectDisposition.payload.childInterpretation.reviewEnvelopeHash,
                 now: Date.parse('2026-06-25T13:10:20.000Z'),
             },
         }),
     );
     assert.equal(finalDisposition.statusCode, 200);
+    assert.equal(finalDisposition.payload.interpretation.interpretationRevisionId, 'interprev_route_review_case_v2');
     assert.equal(finalDisposition.payload.interpretation.subjectDispositionState, 'GRANTED');
     assert.equal(finalDisposition.payload.subjectDisposition.provenance.submittedByActorId, 'user:Chris');
     assert.equal(finalDisposition.payload.interpretation.publicationState, 'NOT_PUBLISHED');

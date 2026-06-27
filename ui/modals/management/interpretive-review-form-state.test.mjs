@@ -2,16 +2,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+    buildInterpretiveRevisedCandidatePayload,
     REVIEW_DISPOSITION_OPTIONS,
     SUBJECT_DISPOSITION_OPTIONS,
     filterDelegationPoliciesForAction,
     getInterpretiveSubmissionModeOptions,
     parseInterpretiveTokenList,
     resolveDefaultInterpretiveSubmissionMode,
+    shouldShowInterpretiveRevisionEditor,
 } from './interpretive-review-form-state.js';
 
-test('review disposition options exclude immutable edit flow in this slice', () => {
-    assert.equal(REVIEW_DISPOSITION_OPTIONS.some((entry) => entry.value === 'APPROVE_WITH_EDIT'), false);
+test('review disposition options include immutable edit flow for the governed editor slice', () => {
+    assert.equal(REVIEW_DISPOSITION_OPTIONS.some((entry) => entry.value === 'APPROVE_WITH_EDIT'), true);
     assert.deepEqual(
         SUBJECT_DISPOSITION_OPTIONS.map((entry) => entry.value),
         ['GRANTED', 'REJECTED', 'CONTESTED', 'DEFERRED'],
@@ -107,4 +109,36 @@ test('resolveDefaultInterpretiveSubmissionMode prefers active trusted delegation
     });
 
     assert.equal(mode, 'TRUSTED_DELEGATE');
+});
+
+test('shouldShowInterpretiveRevisionEditor only enables child revision editing for review approve-with-edit', () => {
+    assert.equal(shouldShowInterpretiveRevisionEditor('review', 'APPROVE_WITH_EDIT'), true);
+    assert.equal(shouldShowInterpretiveRevisionEditor('review', 'APPROVE'), false);
+    assert.equal(shouldShowInterpretiveRevisionEditor('subject', 'APPROVE_WITH_EDIT'), false);
+});
+
+test('buildInterpretiveRevisedCandidatePayload requires a changed statement', () => {
+    assert.deepEqual(
+        buildInterpretiveRevisedCandidatePayload({
+            parentStatement: 'Parent statement.',
+            revisedStatement: '',
+        }),
+        { error: 'Revised statement is required for Approve With Edit.' },
+    );
+
+    assert.deepEqual(
+        buildInterpretiveRevisedCandidatePayload({
+            parentStatement: 'Parent statement.',
+            revisedStatement: 'Parent statement.',
+        }),
+        { error: 'Revised statement must differ from the parent statement.' },
+    );
+
+    assert.deepEqual(
+        buildInterpretiveRevisedCandidatePayload({
+            parentStatement: 'Parent statement.',
+            revisedStatement: 'Child statement.',
+        }),
+        { revisedCandidate: { statement: 'Child statement.' } },
+    );
 });

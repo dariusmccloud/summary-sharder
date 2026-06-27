@@ -1,5 +1,6 @@
 export const REVIEW_DISPOSITION_OPTIONS = Object.freeze([
     { value: 'APPROVE', label: 'Approve' },
+    { value: 'APPROVE_WITH_EDIT', label: 'Approve With Edit' },
     { value: 'APPROVE_FOR_SCOPE_ONLY', label: 'Approve For Scope Only' },
     { value: 'REJECT', label: 'Reject' },
     { value: 'CONTEST', label: 'Contest' },
@@ -92,4 +93,29 @@ export function resolveDefaultInterpretiveSubmissionMode({
     return owner === subject
         ? 'SUBJECT_EXPRESSED_AND_RECORDED'
         : 'DIRECT_REVIEWER_ACTION';
+}
+
+export function shouldShowInterpretiveRevisionEditor(formKind, disposition) {
+    return String(formKind || '').trim() === 'review'
+        && String(disposition || '').trim() === 'APPROVE_WITH_EDIT';
+}
+
+export function buildInterpretiveRevisedCandidatePayload({ parentStatement = '', revisedStatement = '' } = {}) {
+    const parent = String(parentStatement || '').trim();
+    const statement = String(revisedStatement || '').trim();
+    if (!statement) {
+        return {
+            error: 'Revised statement is required for Approve With Edit.',
+        };
+    }
+    if (parent && statement === parent) {
+        return {
+            error: 'Revised statement must differ from the parent statement.',
+        };
+    }
+    return {
+        revisedCandidate: {
+            statement,
+        },
+    };
 }

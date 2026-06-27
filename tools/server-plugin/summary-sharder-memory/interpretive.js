@@ -2141,6 +2141,9 @@ function buildChildRevisionPayload(parentInterpretation, payload = {}, createdFr
     if (!statement) {
         throw createError(400, 'revisedCandidate.statement is required for APPROVE_WITH_EDIT', 'ARCH_INVALID_PAYLOAD');
     }
+    if (statement === String(parentInterpretation.statement || '').trim()) {
+        throw createError(400, 'revisedCandidate.statement must differ from the parent statement', 'ARCH_INVALID_PAYLOAD');
+    }
     return {
         interpretationId: parentInterpretation.interpretationId,
         interpretationRevisionId: revised.interpretationRevisionId || createId('interprev'),
@@ -2158,6 +2161,55 @@ function buildChildRevisionPayload(parentInterpretation, payload = {}, createdFr
         groundingLinks: revised.groundingLinks || parentInterpretation.groundingLinks,
         now: timestamp,
     };
+}
+
+function carryForwardPreparedReviewerApproval(prepared, reviewerRole, reviewerEntityId, timestamp) {
+    const obligations = prepared.obligations.filter((entry) => !(
+        entry.reviewerRole === reviewerRole
+        && entry.reviewerEntityId === reviewerEntityId
+    ));
+    const lifecycle = deriveLifecycleStates(prepared.groundingOutcome, obligations);
+    const reviewEnvelopeHash = buildReviewEnvelopeHash(
+        prepared.candidate.proposalContentHash,
+        prepared.candidate.groundingLinks,
+        prepared.groundingOutcome,
+        prepared.risk,
+        prepared.policy,
+        obligations,
+    );
+    const reviewRequests = buildReviewRequests(
+        obligations,
+        prepared.candidate.interpretationRevisionId,
+        reviewEnvelopeHash,
+        timestamp,
+    );
+    prepared.obligations = obligations;
+    prepared.reviewRequests = reviewRequests;
+    Object.assign(prepared.candidate, lifecycle, {
+        reviewEnvelopeHash,
+    });
+    return prepared;
+}
+
+function supersedeSiblingReviewRequestsAfterChild(adapter, interpretationRevisionId, retainedReviewRequestId) {
+    const siblingRequests = adapter.all(
+        `SELECT review_request_id, review_obligation_id
+         FROM interpretation_review_requests
+         WHERE interpretation_revision_id = ?
+           AND review_request_id <> ?
+           AND status IN ('PENDING', 'DEFERRED')`,
+        [interpretationRevisionId, retainedReviewRequestId],
+    );
+    for (const row of siblingRequests) {
+        adapter.run(
+            'UPDATE interpretation_review_requests SET status = ? WHERE review_request_id = ?',
+            ['SUPERSEDED_BY_CHILD', row.review_request_id],
+        );
+        adapter.run(
+            'UPDATE interpretation_review_obligations SET obligation_state = ?, blocking_reason = ? WHERE review_obligation_id = ?',
+            ['COMPLETED', 'SUPERSEDED_BY_CHILD', row.review_obligation_id],
+        );
+    }
 }
 
 export function readInterpretiveLedgerEvents(ledgerPath) {
@@ -2458,6 +2510,13 @@ function applyInterpretiveFollowOnEvent(adapter, event) {
             'UPDATE interpretation_review_obligations SET obligation_state = ?, blocking_reason = ? WHERE review_obligation_id = ?',
             [deriveObligationStateFromRequestStatus(dispositionStatus), 'NONE', request.review_obligation_id],
         );
+        if (payload.childInterpretationRevisionId) {
+            supersedeSiblingReviewRequestsAfterChild(
+                adapter,
+                event.interpretationRevisionId,
+                payload.reviewRequestId,
+            );
+        }
         recomputeCandidateReviewState(adapter, event.interpretationRevisionId, Number(payload.submittedAt || event.occurredAt));
         return;
     }
@@ -3435,7 +3494,12 @@ export function submitInterpretiveReviewDisposition(request, reviewRequestId, pa
                 subjectEvidenceRefs: childRevisionProvenance?.subjectEvidenceRefs || [],
                 createdAt: timestamp,
             });
-            childPrepared = prepareInterpretiveCandidate(childPayload, timestamp);
+            childPrepared = carryForwardPreparedReviewerApproval(
+                prepareInterpretiveCandidate(childPayload, timestamp),
+                requestRow.reviewer_role,
+                requestRow.reviewer_entity_id,
+                timestamp,
+            );
             childInterpretation = childPrepared.candidate.interpretationRevisionId;
             reviewDisposition.childInterpretationRevisionId = childInterpretation;
         }
@@ -3475,10 +3539,15 @@ export function submitInterpretiveReviewDisposition(request, reviewRequestId, pa
                 'UPDATE interpretation_review_obligations SET obligation_state = ?, blocking_reason = ? WHERE review_obligation_id = ?',
                 [deriveObligationStateFromRequestStatus(requestStatus), 'NONE', requestRow.review_obligation_id],
             );
-            recomputeCandidateReviewState(adapter, interpretation.interpretationRevisionId, timestamp);
             if (childPrepared) {
+                supersedeSiblingReviewRequestsAfterChild(
+                    adapter,
+                    interpretation.interpretationRevisionId,
+                    requestRow.review_request_id,
+                );
                 persistPreparedCandidateRows(adapter, childPrepared, timestamp);
             }
+            recomputeCandidateReviewState(adapter, interpretation.interpretationRevisionId, timestamp);
         });
         snapshotOperationalDatabase(adapter, paths);
         return {
@@ -3522,6 +3591,13 @@ export function recordInterpretiveSubjectDisposition(request, interpretationRevi
         }
         if (interpretation.reviewEnvelopeHash !== reviewEnvelopeHash) {
             throw createError(409, 'Subject disposition is stale for this review envelope', 'ARCH_STALE_REVIEW_ENVELOPE');
+        }
+        if (Array.isArray(interpretation.childRevisionIds) && interpretation.childRevisionIds.length > 0) {
+            throw createError(
+                409,
+                'Subject disposition must be recorded against the latest child revision created by APPROVE_WITH_EDIT',
+                'ARCH_SUBJECT_DISPOSITION_SUPERSEDED',
+            );
         }
         const pendingRequests = interpretation.reviewRequests.filter((entry) => entry.status === 'PENDING' || entry.status === 'DEFERRED');
         if (pendingRequests.length > 0 || interpretation.reviewState === 'BLOCKED' || interpretation.reviewState === 'PENDING' || interpretation.reviewState === 'DEFERRED') {

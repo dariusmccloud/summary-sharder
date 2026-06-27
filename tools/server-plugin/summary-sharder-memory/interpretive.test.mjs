@@ -668,10 +668,22 @@ test('APPROVE_WITH_EDIT creates an immutable child revision and leaves publicati
     assert.equal(dispositionResult.childInterpretation.reviewState, 'PENDING');
     assert.equal(dispositionResult.childInterpretation.publicationState, 'NOT_PUBLISHED');
     assert.equal(dispositionResult.childInterpretation.authorityEffect, 'DESCRIPTIVE_ONLY');
+    assert.equal(
+        dispositionResult.childInterpretation.reviewRequests.some((entry) => entry.reviewerRole === 'MEMORY_SUBJECT'),
+        false,
+    );
+    assert.equal(
+        dispositionResult.childInterpretation.reviewRequests.some((entry) => entry.reviewerRole === 'RELATIONAL_PARTICIPANT'),
+        true,
+    );
 
     const loadedParent = getInterpretiveCandidate(request, 'interprev_edit_case_v1');
     const loadedChild = getInterpretiveCandidate(request, 'interprev_edit_case_v2');
     assert.equal(loadedParent.interpretation.statement, makeBasePayload().statement);
+    assert.equal(
+        loadedParent.interpretation.reviewRequests.some((entry) => entry.status === 'SUPERSEDED_BY_CHILD'),
+        true,
+    );
     assert.equal(loadedChild.interpretation.statement, 'Jeep evolved into the primary architectural authority over continuity and memory requirements within a shared architecture with Chris.');
 });
 
@@ -721,22 +733,54 @@ test('trusted delegate may record the memory subject review edit and final grant
         delegatedReview.interpretation.reviewDispositions.find((entry) => entry.reviewDispositionId === delegatedReview.disposition.reviewDispositionId)?.provenance?.submittedByActorId,
         'user:Chris',
     );
+    assert.equal(
+        delegatedReview.childInterpretation.reviewRequests.some((entry) => entry.reviewerRole === 'MEMORY_SUBJECT'),
+        false,
+    );
+    assert.equal(
+        delegatedReview.childInterpretation.reviewRequests.some((entry) => entry.reviewerRole === 'RELATIONAL_PARTICIPANT'),
+        true,
+    );
 
-    const finalSubject = recordInterpretiveSubjectDisposition(request, 'interprev_delegate_case_v1', {
+    assert.throws(
+        () => recordInterpretiveSubjectDisposition(request, 'interprev_delegate_case_v1', {
+            submittedByActorId: 'user:Chris',
+            dispositionOwnerId: 'character:jeep.png',
+            submissionMode: 'TRUSTED_DELEGATE',
+            delegationPolicyId: 'jeep-chris-continuity-delegation',
+            state: 'GRANTED',
+            reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+            commentary: 'Parent grant is refused once a child revision exists.',
+            now: Date.parse('2026-06-25T12:06:39.000Z'),
+        }),
+        /latest child revision created by APPROVE_WITH_EDIT/i,
+    );
+
+    const childParticipantRequest = delegatedReview.childInterpretation.reviewRequests.find((entry) => entry.reviewerRole === 'RELATIONAL_PARTICIPANT');
+    submitInterpretiveReviewDisposition(request, childParticipantRequest.reviewRequestId, {
+        actorEntityId: 'user:Chris',
+        disposition: 'APPROVE',
+        reviewEnvelopeHash: delegatedReview.childInterpretation.reviewEnvelopeHash,
+        commentary: 'Chris affirms the narrowed child revision.',
+        now: Date.parse('2026-06-25T12:06:40.000Z'),
+    });
+
+    const finalSubject = recordInterpretiveSubjectDisposition(request, 'interprev_delegate_case_v2', {
         submittedByActorId: 'user:Chris',
         dispositionOwnerId: 'character:jeep.png',
         submissionMode: 'TRUSTED_DELEGATE',
         delegationPolicyId: 'jeep-chris-continuity-delegation',
         state: 'GRANTED',
-        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        reviewEnvelopeHash: delegatedReview.childInterpretation.reviewEnvelopeHash,
         commentary: 'Granted under Jeep-owned delegated authority.',
-        now: Date.parse('2026-06-25T12:06:40.000Z'),
+        now: Date.parse('2026-06-25T12:06:45.000Z'),
     });
 
     assert.equal(finalSubject.subjectDisposition.provenance.dispositionOwnerId, 'character:jeep.png');
     assert.equal(finalSubject.subjectDisposition.provenance.submittedByActorId, 'user:Chris');
     assert.equal(finalSubject.subjectDisposition.provenance.submissionMode, 'TRUSTED_DELEGATE');
     assert.equal(finalSubject.subjectDisposition.provenance.delegationPolicyHash, delegation.delegationPolicy.policyHash);
+    assert.equal(finalSubject.interpretation.interpretationRevisionId, 'interprev_delegate_case_v2');
     assert.equal(finalSubject.interpretation.subjectDispositionState, 'GRANTED');
     assert.equal(finalSubject.interpretation.publicationState, 'NOT_PUBLISHED');
     assert.equal(finalSubject.interpretation.authorityEffect, 'DESCRIPTIVE_ONLY');
@@ -892,16 +936,17 @@ test('interpretive governance ledger replays review dispositions, child revision
         },
         now: Date.parse('2026-06-25T12:09:00.000Z'),
     });
-    submitInterpretiveReviewDisposition(sourceRequest, participantRequest.reviewRequestId, {
+    const childParticipantRequest = withEdit.childInterpretation.reviewRequests.find((entry) => entry.reviewerRole === 'RELATIONAL_PARTICIPANT');
+    submitInterpretiveReviewDisposition(sourceRequest, childParticipantRequest.reviewRequestId, {
         actorEntityId: 'user:Chris',
         disposition: 'APPROVE',
-        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        reviewEnvelopeHash: withEdit.childInterpretation.reviewEnvelopeHash,
         now: Date.parse('2026-06-25T12:09:05.000Z'),
     });
-    recordInterpretiveSubjectDisposition(sourceRequest, 'interprev_replay_review_case_v1', {
+    recordInterpretiveSubjectDisposition(sourceRequest, 'interprev_replay_review_case_v2', {
         actorEntityId: 'character:jeep.png',
         state: 'GRANTED',
-        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        reviewEnvelopeHash: withEdit.childInterpretation.reviewEnvelopeHash,
         now: Date.parse('2026-06-25T12:09:10.000Z'),
     });
 
@@ -917,11 +962,17 @@ test('interpretive governance ledger replays review dispositions, child revision
 
     const replayedParent = getInterpretiveCandidate(buildRequest(targetRoot), 'interprev_replay_review_case_v1');
     const replayedChild = getInterpretiveCandidate(buildRequest(targetRoot), 'interprev_replay_review_case_v2');
-    assert.equal(replayedParent.interpretation.reviewDispositions.length, 2);
-    assert.equal(replayedParent.interpretation.subjectDispositionState, 'GRANTED');
+    assert.equal(replayedParent.interpretation.reviewDispositions.length, 1);
+    assert.equal(replayedParent.interpretation.subjectDispositionState, 'PENDING');
     assert.equal(replayedParent.interpretation.childRevisionIds.includes(withEdit.childInterpretation.interpretationRevisionId), true);
-    assert.equal(replayedParent.interpretation.subjectDisposition.provenance.dispositionOwnerId, 'character:jeep.png');
-    assert.equal(replayedParent.interpretation.subjectDisposition.provenance.submissionMode, 'DIRECT_SUBJECT_ACTION');
+    assert.equal(
+        replayedParent.interpretation.reviewRequests.some((entry) => entry.status === 'SUPERSEDED_BY_CHILD'),
+        true,
+    );
     assert.equal(replayedChild.interpretation.parentRevisionId, 'interprev_replay_review_case_v1');
+    assert.equal(replayedChild.interpretation.reviewDispositions.length, 1);
+    assert.equal(replayedChild.interpretation.subjectDispositionState, 'GRANTED');
+    assert.equal(replayedChild.interpretation.subjectDisposition.provenance.dispositionOwnerId, 'character:jeep.png');
+    assert.equal(replayedChild.interpretation.subjectDisposition.provenance.submissionMode, 'DIRECT_SUBJECT_ACTION');
     assert.equal(replayedChild.interpretation.revisionCreationProvenance.dispositionOwnerId, 'character:jeep.png');
 });
