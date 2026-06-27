@@ -429,3 +429,173 @@ Do not begin `C0.6.4` implementation until this contract is reviewed for:
 - replay and refusal completeness
 - supersession and withdrawal lifecycle sufficiency
 - continued jurisdiction separation from `C0.75`
+
+## Remaining C0.6.4 Slice Order
+
+The remaining `C0.6.4` path should be completed in this order:
+
+```text
+close C0.6.4-1 / C0.6.4-2
+-> define C0.6.4-3 lifecycle contract
+-> implement supersession, withdrawal, and delta review
+-> add publication operator surface
+-> run complete gold-path proof
+-> freeze and release v1.0
+```
+
+Backend lifecycle closure comes before the full publication UI.
+
+The operator surface must not hard-code lifecycle assumptions while publication semantics are still moving.
+
+## Remaining Slice Boundaries
+
+### C0.6.4-3: Lifecycle Governance
+
+This slice should own:
+
+- supersession
+- withdrawal
+- delta review
+- historical publication lineage preservation
+- current-active DNM resolution
+- replay of the complete DNM lifecycle
+
+The governing distinctions must remain explicit:
+
+```text
+SUPERSEDED
+-> a later approved meaning replaces the current active meaning
+
+WITHDRAWN
+-> the subject no longer endorses current continuity use
+
+REJECTED REVISION
+-> a proposed replacement never became active
+
+HISTORICAL APPROVAL
+-> remains true as a record of what was previously accepted
+```
+
+Withdrawal must not rewrite history into `never approved`.
+
+It changes current continuity authority, not historical review fact.
+
+### C0.6.4-4: Publication UI
+
+This slice should provide:
+
+- qualification inspection
+- one-time publication authorization submission
+- active DNM inspection
+- supersession action surface
+- withdrawal action surface
+- lineage and delta inspection
+- explicit separation between:
+  - structural fact
+  - interpretive history
+  - current continuity
+
+The UI must not collapse these jurisdictions into a generic delete or overwrite action.
+
+### C0.6.4-5: Cross-Host and Recovery Proof
+
+This slice should prove:
+
+- DNM ledger replay into an empty projection
+- restart preservation
+- stale authorization refusal
+- nonce replay refusal
+- supersession replay
+- withdrawal replay
+- identical current-active DNM resolution on Node and Bun
+- corpus unchanged
+- structural authority unchanged
+- interpretive review history unchanged
+
+## Upgrade And Authority-Reconciliation Release Gate
+
+Before `v1.0`, the system must prove governed upgrade and reconciliation behavior, not only fresh install behavior.
+
+The release-hardening path must include:
+
+```text
+pre-v1 governed installation
+-> install v1 payload
+-> migrate additive schemas
+-> replay all authority ledgers
+-> reconcile projections
+-> preserve every hash-bound record
+-> preserve capability boundaries
+-> restart successfully
+```
+
+No candidate, disposition, delegation, qualification, authorization, publication, or DNM record may silently disappear or change meaning during upgrade.
+
+This release gate must explicitly preserve:
+
+- structural live generations
+- interpretive governance ledgers
+- review projections
+- synthesis runs
+- granted but unpublished revisions
+- publication policies
+- publication qualifications
+- publication authorizations
+- published DNM records
+
+## v1.0 Exit Criteria
+
+`v1.0` should mean that the governed memory lifecycle works end to end:
+
+```text
+portable source
+-> reconstruct structural truth
+-> promote operational authority
+-> propose developmental meaning
+-> ground and review it
+-> grant subject continuity
+-> publish governed DNM
+-> revise, withdraw, supersede, replay, and recover it
+```
+
+Release should remain blocked until all of the following are true:
+
+1. Every authority stream is portable and replayable:
+   - source corpus
+   - structural authority artifacts
+   - interpretive governance ledger
+   - DNM publication ledger
+2. Every cross-stream reference is validated:
+   - published DNM resolves to exact interpretation revision
+   - exact review and subject disposition
+   - exact qualification and authorization
+   - exact continuity target
+3. No jurisdictional shortcuts exist:
+   - structural promotion cannot publish DNM
+   - review grant cannot publish automatically
+   - synthesis cannot approve
+   - operator action cannot erase subject ownership
+   - UI cannot invent eligibility
+4. Lifecycle is complete:
+   - publish
+   - supersede
+   - withdraw
+   - delta review
+   - replay
+   - recover
+5. The operator surface is usable:
+   - no CLI required for ordinary governed operation
+   - evidence and consequences are visible
+   - stale and blocked states are understandable
+   - authority owner and acting operator remain clear
+6. Install and upgrade are proven:
+   - fresh install
+   - packaged payload verification
+   - pre-v1 upgrade
+   - restart
+   - projection rebuild
+   - rollback/recovery documentation
+7. Capability posture is frozen:
+   - explicit supported capabilities
+   - explicit unavailable capabilities
+   - no ambiguous present-but-unofficial routes
