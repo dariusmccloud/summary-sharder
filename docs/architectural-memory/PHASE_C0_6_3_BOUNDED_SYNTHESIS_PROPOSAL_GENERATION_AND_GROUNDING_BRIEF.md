@@ -2,21 +2,22 @@
 
 ## Status
 
-STATUS: ACTIVE C0.6.3 IMPLEMENTATION CONTRACT
+STATUS: IMPLEMENTED AND VERIFIED
 
-`C0.6.1` and `C0.6.2` are complete and closed.
+`C0.6.3` is complete and closed.
 
-Their implementation and host-proof records are preserved in:
+Its implementation and host-proof records are preserved in:
 
 - `docs/architectural-memory/C0_6_1_COMPLETION_REPORT.md`
 - `docs/architectural-memory/C0_6_2_COMPLETION_REPORT.md`
+- `docs/architectural-memory/C0_6_3_COMPLETION_REPORT.md`
 - `docs/architectural-memory/evidence/C0_6_2_GOVERNED_REVIEW_AND_SUBJECT_DISPOSITION_HOST_PROOF.md`
+- `docs/architectural-memory/evidence/C0_6_3_SYNTHESIS_TO_REVIEW_ROUTING_HOST_PROOF.md`
+- `docs/architectural-memory/evidence/C0_6_3_4_READ_ONLY_INTERPRETIVE_REVIEW_UI_HOST_PROOF.md`
+- `docs/architectural-memory/evidence/C0_6_3_6_GOVERNED_REVIEW_UI_HOST_PROOF.md`
+- `docs/architectural-memory/evidence/C0_6_3_7_IMMUTABLE_REVISION_UI_HOST_PROOF.md`
 
-`C0.6.3` is the next implementation slice.
-
-It exists to let the system propose grounded interpretive candidates from a frozen body of evidence without treating generation, citation, or model confidence as truth.
-
-Do not implement continuity publication, structural-authority mutation, review auto-submission, or subject-disposition automation in this slice.
+This document remains the governing record of the bounded `C0.6.3` contract that was implemented and verified.
 
 ## Governing Finding
 
