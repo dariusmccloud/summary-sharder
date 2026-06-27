@@ -386,6 +386,34 @@ export function schemaStatements() {
             published_at INTEGER NOT NULL,
             publication_authorization_id TEXT NOT NULL
         )`,
+        `CREATE TABLE IF NOT EXISTS dnm_publication_lifecycle_metadata (
+            dnm_record_id TEXT PRIMARY KEY,
+            continuity_target_id TEXT NOT NULL,
+            superseded_by_dnm_record_id TEXT,
+            supersedes_dnm_record_id TEXT,
+            superseded_at INTEGER,
+            supersession_reason_codes_json TEXT NOT NULL DEFAULT '[]',
+            supersession_commentary TEXT,
+            supersession_provenance_json TEXT,
+            withdrawn_at INTEGER,
+            withdrawal_reason_codes_json TEXT NOT NULL DEFAULT '[]',
+            withdrawal_commentary TEXT,
+            withdrawal_provenance_json TEXT,
+            delta_review_state TEXT NOT NULL DEFAULT 'NONE',
+            latest_delta_review_id TEXT,
+            updated_at INTEGER NOT NULL
+        )`,
+        `CREATE TABLE IF NOT EXISTS dnm_delta_reviews (
+            delta_review_id TEXT PRIMARY KEY,
+            dnm_record_id TEXT NOT NULL,
+            continuity_target_id TEXT NOT NULL,
+            source_interpretation_revision_id TEXT,
+            delta_state TEXT NOT NULL,
+            reason_codes_json TEXT NOT NULL,
+            commentary TEXT,
+            provenance_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )`,
     ];
 }
 

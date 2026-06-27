@@ -70,6 +70,9 @@ const ALLOWED_DELEGATION_ACTIONS = new Set([
     'REVIEW_DISPOSITION',
     'SUBJECT_REVISION',
     'SUBJECT_DISPOSITION',
+    'DNM_SUPERSESSION',
+    'DNM_WITHDRAWAL',
+    'DNM_DELTA_REVIEW',
 ]);
 
 const ALLOWED_DELEGATION_EVIDENCE_REQUIREMENTS = new Set([
@@ -140,6 +143,16 @@ const ALLOWED_DNM_PUBLICATION_STATES = new Set([
 
 const ALLOWED_DNM_LIFECYCLE_STATES = new Set([
     'ACTIVE',
+    'SUPERSEDED',
+    'WITHDRAWN',
+    'CONTEST_REOPENED',
+    'DELTA_PENDING',
+]);
+
+const ALLOWED_DNM_DELTA_REVIEW_STATES = new Set([
+    'NONE',
+    'PENDING',
+    'CLOSED',
 ]);
 
 const GROUNDING_OUTCOME_ORDER = Object.freeze({
@@ -324,6 +337,42 @@ function createDnmPublishedEvent(record) {
         interpretationId: record.sourceInterpretationId,
         interpretationRevisionId: record.sourceInterpretationRevisionId,
         payload: cloneJson(record),
+    };
+}
+
+function createDnmSupersededEvent(payload) {
+    return {
+        eventId: createId('dnmlevent'),
+        eventType: 'DNM_SUPERSEDED',
+        occurredAt: payload.supersededAt,
+        memoryScopeId: payload.memoryScopeId,
+        interpretationId: payload.replacementInterpretationId,
+        interpretationRevisionId: payload.replacementInterpretationRevisionId,
+        payload: cloneJson(payload),
+    };
+}
+
+function createDnmWithdrawnEvent(payload) {
+    return {
+        eventId: createId('dnmlevent'),
+        eventType: 'DNM_WITHDRAWN',
+        occurredAt: payload.withdrawnAt,
+        memoryScopeId: payload.memoryScopeId,
+        interpretationId: payload.sourceInterpretationId,
+        interpretationRevisionId: payload.sourceInterpretationRevisionId,
+        payload: cloneJson(payload),
+    };
+}
+
+function createDnmDeltaReviewRecordedEvent(payload) {
+    return {
+        eventId: createId('dnmlevent'),
+        eventType: 'DNM_DELTA_REVIEW_RECORDED',
+        occurredAt: payload.createdAt,
+        memoryScopeId: payload.memoryScopeId,
+        interpretationId: payload.sourceInterpretationId,
+        interpretationRevisionId: payload.sourceInterpretationRevisionId,
+        payload: cloneJson(payload),
     };
 }
 
@@ -1715,6 +1764,8 @@ function loadDnmPublicationRecordProjection(adapter, dnmRecordId) {
     if (!row) {
         return null;
     }
+    const metadata = loadDnmPublicationLifecycleMetadata(adapter, dnmRecordId);
+    const deltaReviews = loadDnmDeltaReviewRows(adapter, dnmRecordId);
     return {
         dnmRecordId: row.dnm_record_id,
         continuityTargetId: row.continuity_target_id,
@@ -1736,7 +1787,79 @@ function loadDnmPublicationRecordProjection(adapter, dnmRecordId) {
         lifecycleState: row.lifecycle_state,
         publishedAt: Number(row.published_at),
         publicationAuthorizationId: row.publication_authorization_id,
+        supersededByDnmRecordId: metadata?.supersededByDnmRecordId || null,
+        supersedesDnmRecordId: metadata?.supersedesDnmRecordId || null,
+        supersededAt: metadata?.supersededAt ?? null,
+        withdrawnAt: metadata?.withdrawnAt ?? null,
+        deltaReviewState: metadata?.deltaReviewState || 'NONE',
+        latestDeltaReviewId: metadata?.latestDeltaReviewId || null,
+        lifecycleMetadata: metadata,
+        deltaReviews,
     };
+}
+
+function loadDnmPublicationLifecycleMetadata(adapter, dnmRecordId) {
+    const row = adapter.get(
+        `SELECT * FROM dnm_publication_lifecycle_metadata
+         WHERE dnm_record_id = ?`,
+        [dnmRecordId],
+    );
+    if (!row) {
+        return null;
+    }
+    return {
+        dnmRecordId: row.dnm_record_id,
+        continuityTargetId: row.continuity_target_id,
+        supersededByDnmRecordId: row.superseded_by_dnm_record_id,
+        supersedesDnmRecordId: row.supersedes_dnm_record_id,
+        supersededAt: row.superseded_at == null ? null : Number(row.superseded_at),
+        supersessionReasonCodes: JSON.parse(row.supersession_reason_codes_json),
+        supersessionCommentary: row.supersession_commentary,
+        supersessionProvenance: row.supersession_provenance_json ? JSON.parse(row.supersession_provenance_json) : null,
+        withdrawnAt: row.withdrawn_at == null ? null : Number(row.withdrawn_at),
+        withdrawalReasonCodes: JSON.parse(row.withdrawal_reason_codes_json),
+        withdrawalCommentary: row.withdrawal_commentary,
+        withdrawalProvenance: row.withdrawal_provenance_json ? JSON.parse(row.withdrawal_provenance_json) : null,
+        deltaReviewState: row.delta_review_state,
+        latestDeltaReviewId: row.latest_delta_review_id,
+        updatedAt: Number(row.updated_at),
+    };
+}
+
+function loadDnmDeltaReviewRows(adapter, dnmRecordId) {
+    return adapter.all(
+        `SELECT * FROM dnm_delta_reviews
+         WHERE dnm_record_id = ?
+         ORDER BY created_at, delta_review_id`,
+        [dnmRecordId],
+    ).map((row) => ({
+        deltaReviewId: row.delta_review_id,
+        dnmRecordId: row.dnm_record_id,
+        continuityTargetId: row.continuity_target_id,
+        sourceInterpretationRevisionId: row.source_interpretation_revision_id,
+        deltaState: row.delta_state,
+        reasonCodes: JSON.parse(row.reason_codes_json),
+        commentary: row.commentary,
+        provenance: JSON.parse(row.provenance_json),
+        createdAt: Number(row.created_at),
+    }));
+}
+
+function loadCurrentActiveDnmRecordForTarget(adapter, continuityTargetId) {
+    const rows = adapter.all(
+        `SELECT dnm_record_id
+         FROM dnm_publication_records
+         WHERE continuity_target_id = ? AND lifecycle_state = 'ACTIVE'
+         ORDER BY published_at DESC, dnm_record_id DESC`,
+        [continuityTargetId],
+    );
+    if (rows.length === 0) {
+        return null;
+    }
+    if (rows.length > 1) {
+        throw createError(500, `Multiple active DNM records exist for ${continuityTargetId}`, 'ARCH_DNM_ACTIVE_STATE_CONFLICT');
+    }
+    return loadDnmPublicationRecordProjection(adapter, rows[0].dnm_record_id);
 }
 
 function loadActionProvenanceRows(adapter, interpretationRevisionId) {
@@ -1879,6 +2002,54 @@ function persistDnmPublicationRecordRow(adapter, record) {
             record.lifecycleState,
             Number(record.publishedAt),
             record.publicationAuthorizationId,
+        ],
+    );
+}
+
+function persistDnmPublicationLifecycleMetadataRow(adapter, metadata) {
+    adapter.run(
+        `INSERT OR REPLACE INTO dnm_publication_lifecycle_metadata (
+            dnm_record_id, continuity_target_id, superseded_by_dnm_record_id, supersedes_dnm_record_id,
+            superseded_at, supersession_reason_codes_json, supersession_commentary, supersession_provenance_json,
+            withdrawn_at, withdrawal_reason_codes_json, withdrawal_commentary, withdrawal_provenance_json,
+            delta_review_state, latest_delta_review_id, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+        [
+            metadata.dnmRecordId,
+            metadata.continuityTargetId,
+            metadata.supersededByDnmRecordId,
+            metadata.supersedesDnmRecordId,
+            metadata.supersededAt == null ? null : Number(metadata.supersededAt),
+            stableStringify(metadata.supersessionReasonCodes || []),
+            metadata.supersessionCommentary || null,
+            metadata.supersessionProvenance ? stableStringify(metadata.supersessionProvenance) : null,
+            metadata.withdrawnAt == null ? null : Number(metadata.withdrawnAt),
+            stableStringify(metadata.withdrawalReasonCodes || []),
+            metadata.withdrawalCommentary || null,
+            metadata.withdrawalProvenance ? stableStringify(metadata.withdrawalProvenance) : null,
+            metadata.deltaReviewState || 'NONE',
+            metadata.latestDeltaReviewId || null,
+            Number(metadata.updatedAt),
+        ],
+    );
+}
+
+function persistDnmDeltaReviewRow(adapter, review) {
+    adapter.run(
+        `INSERT OR REPLACE INTO dnm_delta_reviews (
+            delta_review_id, dnm_record_id, continuity_target_id, source_interpretation_revision_id,
+            delta_state, reason_codes_json, commentary, provenance_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+        [
+            review.deltaReviewId,
+            review.dnmRecordId,
+            review.continuityTargetId,
+            review.sourceInterpretationRevisionId,
+            review.deltaState,
+            stableStringify(review.reasonCodes || []),
+            review.commentary || null,
+            stableStringify(review.provenance || {}),
+            Number(review.createdAt),
         ],
     );
 }
@@ -3185,6 +3356,7 @@ function applyPublicationLedgerEvent(adapter, event) {
             publicationAuthorizationId: sanitizeIdentifier(payload.publicationAuthorizationId, 'publicationAuthorizationId'),
         };
         persistDnmPublicationRecordRow(adapter, record);
+        persistDnmPublicationLifecycleMetadataRow(adapter, buildDefaultDnmLifecycleMetadata(record));
         const authorization = loadInterpretivePublicationAuthorizationProjection(adapter, record.publicationAuthorizationId);
         if (!authorization) {
             throw createError(500, `Publication authorization ${record.publicationAuthorizationId} is missing during replay`, 'ARCH_PUBLICATION_LEDGER_INCOMPLETE');
@@ -3198,9 +3370,86 @@ function applyPublicationLedgerEvent(adapter, event) {
         adapter.run(
             `UPDATE interpretation_revisions
              SET publication_state = 'PUBLISHED', authority_effect = 'DEVELOPMENTAL_MEMORY', updated_at = ?
-             WHERE interpretation_revision_id = ?`,
+                WHERE interpretation_revision_id = ?`,
             [record.publishedAt, interpretationRevisionId],
         );
+        return;
+    }
+    if (event.eventType === 'DNM_SUPERSEDED') {
+        const previousRecord = loadDnmPublicationRecordProjection(adapter, sanitizeIdentifier(payload.supersededDnmRecordId, 'supersededDnmRecordId'));
+        const replacementRecord = loadDnmPublicationRecordProjection(adapter, sanitizeIdentifier(payload.replacementDnmRecordId, 'replacementDnmRecordId'));
+        if (!previousRecord || !replacementRecord) {
+            throw createError(500, 'DNM supersession replay is missing required records', 'ARCH_PUBLICATION_LEDGER_INCOMPLETE');
+        }
+        persistDnmPublicationRecordRow(adapter, {
+            ...previousRecord,
+            lifecycleState: 'SUPERSEDED',
+        });
+        persistDnmPublicationRecordRow(adapter, {
+            ...replacementRecord,
+            lifecycleState: 'ACTIVE',
+        });
+        persistDnmPublicationLifecycleMetadataRow(adapter, {
+            ...(loadDnmPublicationLifecycleMetadata(adapter, previousRecord.dnmRecordId) || buildDefaultDnmLifecycleMetadata(previousRecord)),
+            supersededByDnmRecordId: replacementRecord.dnmRecordId,
+            supersededAt: Number(payload.supersededAt || event.occurredAt),
+            supersessionReasonCodes: normalizeReasonCodes(payload.reasonCodes, 'reasonCodes'),
+            supersessionCommentary: normalizeOptionalCommentary(payload.commentary, 'commentary'),
+            supersessionProvenance: cloneJson(payload.provenance || null),
+            updatedAt: Number(payload.supersededAt || event.occurredAt),
+        });
+        persistDnmPublicationLifecycleMetadataRow(adapter, {
+            ...(loadDnmPublicationLifecycleMetadata(adapter, replacementRecord.dnmRecordId) || buildDefaultDnmLifecycleMetadata(replacementRecord)),
+            supersedesDnmRecordId: previousRecord.dnmRecordId,
+            deltaReviewState: 'NONE',
+            updatedAt: Number(payload.supersededAt || event.occurredAt),
+        });
+        return;
+    }
+    if (event.eventType === 'DNM_WITHDRAWN') {
+        const record = loadDnmPublicationRecordProjection(adapter, sanitizeIdentifier(payload.dnmRecordId, 'dnmRecordId'));
+        if (!record) {
+            throw createError(500, `DNM record ${payload.dnmRecordId} is missing during withdrawal replay`, 'ARCH_PUBLICATION_LEDGER_INCOMPLETE');
+        }
+        persistDnmPublicationRecordRow(adapter, {
+            ...record,
+            lifecycleState: 'WITHDRAWN',
+        });
+        persistDnmPublicationLifecycleMetadataRow(adapter, {
+            ...(loadDnmPublicationLifecycleMetadata(adapter, record.dnmRecordId) || buildDefaultDnmLifecycleMetadata(record)),
+            withdrawnAt: Number(payload.withdrawnAt || event.occurredAt),
+            withdrawalReasonCodes: normalizeReasonCodes(payload.reasonCodes, 'reasonCodes'),
+            withdrawalCommentary: normalizeOptionalCommentary(payload.commentary, 'commentary'),
+            withdrawalProvenance: cloneJson(payload.provenance || null),
+            updatedAt: Number(payload.withdrawnAt || event.occurredAt),
+        });
+        return;
+    }
+    if (event.eventType === 'DNM_DELTA_REVIEW_RECORDED') {
+        const record = loadDnmPublicationRecordProjection(adapter, sanitizeIdentifier(payload.dnmRecordId, 'dnmRecordId'));
+        if (!record) {
+            throw createError(500, `DNM record ${payload.dnmRecordId} is missing during delta review replay`, 'ARCH_PUBLICATION_LEDGER_INCOMPLETE');
+        }
+        const review = {
+            deltaReviewId: sanitizeIdentifier(payload.deltaReviewId, 'deltaReviewId'),
+            dnmRecordId: record.dnmRecordId,
+            continuityTargetId: sanitizeIdentifier(payload.continuityTargetId, 'continuityTargetId'),
+            sourceInterpretationRevisionId: payload.sourceInterpretationRevisionId
+                ? sanitizeIdentifier(payload.sourceInterpretationRevisionId, 'sourceInterpretationRevisionId')
+                : null,
+            deltaState: normalizeEnumValue(payload.deltaState, 'deltaState', ALLOWED_DNM_DELTA_REVIEW_STATES),
+            reasonCodes: normalizeReasonCodes(payload.reasonCodes, 'reasonCodes'),
+            commentary: normalizeOptionalCommentary(payload.commentary, 'commentary'),
+            provenance: cloneJson(payload.provenance || {}),
+            createdAt: Number(payload.createdAt || event.occurredAt),
+        };
+        persistDnmDeltaReviewRow(adapter, review);
+        persistDnmPublicationLifecycleMetadataRow(adapter, {
+            ...(loadDnmPublicationLifecycleMetadata(adapter, record.dnmRecordId) || buildDefaultDnmLifecycleMetadata(record)),
+            deltaReviewState: review.deltaState,
+            latestDeltaReviewId: review.deltaReviewId,
+            updatedAt: review.createdAt,
+        });
     }
 }
 
@@ -3307,6 +3556,8 @@ export function replayPublicationLedger(request, options = {}) {
     const adapter = openOperationalDatabase(paths, { now: options.now });
     try {
         adapter.transaction(() => {
+            adapter.run('DELETE FROM dnm_delta_reviews');
+            adapter.run('DELETE FROM dnm_publication_lifecycle_metadata');
             adapter.run('DELETE FROM dnm_publication_records');
             adapter.run('DELETE FROM interpretation_publication_authorizations');
             adapter.run('DELETE FROM interpretation_publication_policies');
@@ -3921,7 +4172,13 @@ function expirePublicationAuthorization(adapter, authorization, refusalCodes, ti
     return createPublicationAuthorizationRefusedEvent(nextAuthorization, refusalCodes, timestamp);
 }
 
-function buildPublicationExecutionRecord(authorization, interpretation, timestamp, dnmRecordId = createId('dnmrec')) {
+function buildPublicationExecutionRecord(
+    authorization,
+    interpretation,
+    timestamp,
+    dnmRecordId = createId('dnmrec'),
+    lifecycleState = 'ACTIVE',
+) {
     return {
         dnmRecordId,
         continuityTargetId: authorization.continuityTargetId,
@@ -3940,9 +4197,106 @@ function buildPublicationExecutionRecord(authorization, interpretation, timestam
         publicationPolicyVersion: authorization.policyVersion,
         publicationPolicyHash: authorization.policyHash,
         publicationState: 'PUBLISHED',
-        lifecycleState: 'ACTIVE',
+        lifecycleState,
         publishedAt: timestamp,
         publicationAuthorizationId: authorization.publicationAuthorizationId,
+    };
+}
+
+function buildDefaultDnmLifecycleMetadata(record) {
+    return {
+        dnmRecordId: record.dnmRecordId,
+        continuityTargetId: record.continuityTargetId,
+        supersededByDnmRecordId: null,
+        supersedesDnmRecordId: null,
+        supersededAt: null,
+        supersessionReasonCodes: [],
+        supersessionCommentary: null,
+        supersessionProvenance: null,
+        withdrawnAt: null,
+        withdrawalReasonCodes: [],
+        withdrawalCommentary: null,
+        withdrawalProvenance: null,
+        deltaReviewState: 'NONE',
+        latestDeltaReviewId: null,
+        updatedAt: record.publishedAt,
+    };
+}
+
+function buildDnmLifecycleInterpretation(record) {
+    return {
+        memoryScopeId: record.memoryScopeId,
+        memorySubjectId: record.memorySubjectId,
+    };
+}
+
+function authorizeDnmLifecycleAction(adapter, record, {
+    actionKind,
+    dispositionOwnerId,
+    submittedByActorId,
+    submissionMode,
+    delegationPolicyId = null,
+    subjectEvidenceRefs = [],
+}) {
+    return authorizeInterpretiveAction(adapter, {
+        interpretation: buildDnmLifecycleInterpretation(record),
+        actionKind,
+        dispositionOwnerId,
+        submittedByActorId,
+        submissionMode,
+        delegationPolicyId,
+        subjectEvidenceRefs,
+    });
+}
+
+function buildDnmSupersessionAction(previousRecord, replacementRecord, provenance, reasonCodes, commentary, timestamp) {
+    return {
+        dnmSupersessionId: createId('dnmsup'),
+        supersededDnmRecordId: previousRecord.dnmRecordId,
+        replacementDnmRecordId: replacementRecord.dnmRecordId,
+        continuityTargetId: previousRecord.continuityTargetId,
+        memoryScopeId: previousRecord.memoryScopeId,
+        memorySubjectId: previousRecord.memorySubjectId,
+        supersededInterpretationRevisionId: previousRecord.sourceInterpretationRevisionId,
+        replacementInterpretationRevisionId: replacementRecord.sourceInterpretationRevisionId,
+        replacementInterpretationId: replacementRecord.sourceInterpretationId,
+        reasonCodes,
+        commentary,
+        provenance,
+        supersededAt: timestamp,
+    };
+}
+
+function buildDnmWithdrawalAction(record, provenance, reasonCodes, commentary, timestamp) {
+    return {
+        dnmWithdrawalId: createId('dnmwith'),
+        dnmRecordId: record.dnmRecordId,
+        continuityTargetId: record.continuityTargetId,
+        memoryScopeId: record.memoryScopeId,
+        memorySubjectId: record.memorySubjectId,
+        sourceInterpretationRevisionId: record.sourceInterpretationRevisionId,
+        sourceInterpretationId: record.sourceInterpretationId,
+        reasonCodes,
+        commentary,
+        provenance,
+        withdrawnAt: timestamp,
+    };
+}
+
+function buildDnmDeltaReviewRecord(record, sourceInterpretationRevisionId, deltaState, reasonCodes, commentary, provenance, timestamp) {
+    return {
+        deltaReviewId: createId('dnmdelta'),
+        dnmRecordId: record.dnmRecordId,
+        continuityTargetId: record.continuityTargetId,
+        memoryScopeId: record.memoryScopeId,
+        memorySubjectId: record.memorySubjectId,
+        sourceInterpretationRevisionId,
+        sourceInterpretationId: record.sourceInterpretationId,
+        deltaState,
+        reasonCodes,
+        commentary,
+        provenance,
+        createdAt: timestamp,
     };
 }
 
@@ -4976,6 +5330,59 @@ export function revokeInterpretiveDelegationPolicy(request, delegationPolicyId, 
     }
 }
 
+export function listDnmPublicationRecords(request, filters = {}) {
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const adapter = openOperationalDatabase(paths);
+    try {
+        const params = [];
+        const where = [];
+        if (filters.continuityTargetId) {
+            where.push('continuity_target_id = ?');
+            params.push(sanitizeIdentifier(filters.continuityTargetId, 'continuityTargetId'));
+        }
+        if (filters.memorySubjectId) {
+            where.push('memory_subject_id = ?');
+            params.push(sanitizeIdentifier(filters.memorySubjectId, 'memorySubjectId'));
+        }
+        if (filters.lifecycleState) {
+            where.push('lifecycle_state = ?');
+            params.push(normalizeEnumValue(filters.lifecycleState, 'lifecycleState', ALLOWED_DNM_LIFECYCLE_STATES));
+        }
+        const rows = adapter.all(
+            `SELECT dnm_record_id
+             FROM dnm_publication_records
+             ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
+             ORDER BY published_at, dnm_record_id`,
+            params,
+        );
+        return {
+            ok: true,
+            phase: 'c0.6.4',
+            records: rows.map((row) => loadDnmPublicationRecordProjection(adapter, row.dnm_record_id)),
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function getCurrentActiveDnmRecord(request, continuityTargetId) {
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const adapter = openOperationalDatabase(paths);
+    try {
+        const normalizedTargetId = sanitizeIdentifier(continuityTargetId, 'continuityTargetId');
+        return {
+            ok: true,
+            phase: 'c0.6.4',
+            continuityTargetId: normalizedTargetId,
+            currentActiveRecord: loadCurrentActiveDnmRecordForTarget(adapter, normalizedTargetId),
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
 export function listInterpretivePublicationPolicies(request, filters = {}) {
     const userRoot = getAuthenticatedUserRoot(request);
     const paths = getStoragePaths(userRoot);
@@ -5004,6 +5411,282 @@ export function listInterpretivePublicationPolicies(request, filters = {}) {
             policies: rows.map((row) => (
                 loadInterpretivePublicationPolicyProjection(adapter, row.publication_policy_id, Number(row.policy_version))
             )),
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function supersedeDnmPublicationRecord(request, payload = {}) {
+    const timestamp = nowTimestamp(payload?.now);
+    const submittedByActorId = normalizeActorEntityId(payload);
+    const priorDnmRecordId = sanitizeIdentifier(payload?.priorDnmRecordId, 'priorDnmRecordId');
+    const replacementDnmRecordId = sanitizeIdentifier(payload?.replacementDnmRecordId, 'replacementDnmRecordId');
+    const reasonCodes = normalizeReasonCodes(payload?.reasonCodes, 'reasonCodes');
+    const commentary = normalizeOptionalCommentary(payload?.commentary, 'commentary');
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const adapter = openOperationalDatabase(paths, { now: timestamp });
+    try {
+        const priorRecord = loadDnmPublicationRecordProjection(adapter, priorDnmRecordId);
+        if (!priorRecord) {
+            throw createError(404, `DNM record ${priorDnmRecordId} was not found`, 'ARCH_DNM_RECORD_NOT_FOUND');
+        }
+        const replacementRecord = loadDnmPublicationRecordProjection(adapter, replacementDnmRecordId);
+        if (!replacementRecord) {
+            throw createError(404, `DNM record ${replacementDnmRecordId} was not found`, 'ARCH_DNM_RECORD_NOT_FOUND');
+        }
+        if (priorRecord.dnmRecordId === replacementRecord.dnmRecordId) {
+            throw createError(409, 'Replacement DNM record must differ from the prior active record', 'ARCH_DNM_SUPERSESSION_INVALID');
+        }
+        if (priorRecord.continuityTargetId !== replacementRecord.continuityTargetId) {
+            throw createError(409, 'Replacement DNM record targets a different continuity subject', 'ARCH_DNM_SUPERSESSION_TARGET_MISMATCH');
+        }
+        if (priorRecord.lifecycleState !== 'ACTIVE') {
+            throw createError(409, 'Prior DNM record is not currently active', 'ARCH_DNM_SUPERSESSION_STALE');
+        }
+        if (replacementRecord.publicationState !== 'PUBLISHED') {
+            throw createError(409, 'Replacement DNM record is not published', 'ARCH_DNM_SUPERSESSION_INVALID');
+        }
+        if (!['DELTA_PENDING', 'ACTIVE'].includes(replacementRecord.lifecycleState)) {
+            throw createError(409, 'Replacement DNM record is not in a supersedable lifecycle state', 'ARCH_DNM_SUPERSESSION_INVALID');
+        }
+        const currentActive = loadCurrentActiveDnmRecordForTarget(adapter, priorRecord.continuityTargetId);
+        if (!currentActive || currentActive.dnmRecordId !== priorRecord.dnmRecordId) {
+            throw createError(409, 'Current active DNM record drifted before supersession', 'ARCH_DNM_SUPERSESSION_STALE');
+        }
+        const dispositionOwnerId = payload?.dispositionOwnerId
+            ? sanitizeIdentifier(payload.dispositionOwnerId, 'dispositionOwnerId')
+            : priorRecord.memorySubjectId;
+        if (dispositionOwnerId !== priorRecord.memorySubjectId) {
+            throw createError(403, 'DNM supersession owner must match the memory subject', 'ARCH_SUBJECT_IDENTITY_MISMATCH');
+        }
+        const submissionMode = payload?.submissionMode
+            ? normalizeSubmissionMode(payload.submissionMode, 'submissionMode')
+            : defaultSubjectSubmissionMode(priorRecord.memorySubjectId, submittedByActorId);
+        const authorization = authorizeDnmLifecycleAction(adapter, priorRecord, {
+            actionKind: 'DNM_SUPERSESSION',
+            dispositionOwnerId,
+            submittedByActorId,
+            submissionMode,
+            delegationPolicyId: payload?.delegationPolicyId || null,
+            subjectEvidenceRefs: payload?.subjectEvidenceRefs,
+        });
+        const provenance = createActionProvenanceRecord({
+            interpretationRevisionId: replacementRecord.sourceInterpretationRevisionId,
+            actionKind: 'DNM_SUPERSESSION',
+            actionTargetId: replacementRecord.dnmRecordId,
+            dispositionOwnerId,
+            submittedByActorId,
+            submissionMode,
+            delegationPolicy: authorization.delegationPolicy,
+            subjectEvidenceRefs: authorization.subjectEvidenceRefs,
+            createdAt: timestamp,
+        });
+        const supersession = buildDnmSupersessionAction(
+            priorRecord,
+            replacementRecord,
+            provenance,
+            reasonCodes,
+            commentary,
+            timestamp,
+        );
+        appendLedgerEvents(paths.dnmPublicationLedgerPath, [createDnmSupersededEvent(supersession)]);
+        adapter.transaction(() => {
+            persistDnmPublicationRecordRow(adapter, {
+                ...priorRecord,
+                lifecycleState: 'SUPERSEDED',
+            });
+            persistDnmPublicationRecordRow(adapter, {
+                ...replacementRecord,
+                lifecycleState: 'ACTIVE',
+            });
+            persistDnmPublicationLifecycleMetadataRow(adapter, {
+                ...(loadDnmPublicationLifecycleMetadata(adapter, priorRecord.dnmRecordId) || buildDefaultDnmLifecycleMetadata(priorRecord)),
+                supersededByDnmRecordId: replacementRecord.dnmRecordId,
+                supersededAt: timestamp,
+                supersessionReasonCodes: reasonCodes,
+                supersessionCommentary: commentary,
+                supersessionProvenance: provenance,
+                updatedAt: timestamp,
+            });
+            persistDnmPublicationLifecycleMetadataRow(adapter, {
+                ...(loadDnmPublicationLifecycleMetadata(adapter, replacementRecord.dnmRecordId) || buildDefaultDnmLifecycleMetadata(replacementRecord)),
+                supersedesDnmRecordId: priorRecord.dnmRecordId,
+                deltaReviewState: 'NONE',
+                updatedAt: timestamp,
+            });
+        });
+        snapshotOperationalDatabase(adapter, paths);
+        return {
+            ok: true,
+            phase: 'c0.6.4',
+            supersession,
+            priorRecord: loadDnmPublicationRecordProjection(adapter, priorRecord.dnmRecordId),
+            replacementRecord: loadDnmPublicationRecordProjection(adapter, replacementRecord.dnmRecordId),
+            currentActiveRecord: loadCurrentActiveDnmRecordForTarget(adapter, priorRecord.continuityTargetId),
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function withdrawDnmPublicationRecord(request, payload = {}) {
+    const timestamp = nowTimestamp(payload?.now);
+    const submittedByActorId = normalizeActorEntityId(payload);
+    const dnmRecordId = sanitizeIdentifier(payload?.dnmRecordId, 'dnmRecordId');
+    const reasonCodes = normalizeReasonCodes(payload?.reasonCodes, 'reasonCodes');
+    const commentary = normalizeOptionalCommentary(payload?.commentary, 'commentary');
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const adapter = openOperationalDatabase(paths, { now: timestamp });
+    try {
+        const record = loadDnmPublicationRecordProjection(adapter, dnmRecordId);
+        if (!record) {
+            throw createError(404, `DNM record ${dnmRecordId} was not found`, 'ARCH_DNM_RECORD_NOT_FOUND');
+        }
+        if (record.lifecycleState !== 'ACTIVE') {
+            throw createError(409, 'DNM record is not currently active', 'ARCH_DNM_WITHDRAWAL_STALE');
+        }
+        const currentActive = loadCurrentActiveDnmRecordForTarget(adapter, record.continuityTargetId);
+        if (!currentActive || currentActive.dnmRecordId !== record.dnmRecordId) {
+            throw createError(409, 'Current active DNM record drifted before withdrawal', 'ARCH_DNM_WITHDRAWAL_STALE');
+        }
+        const dispositionOwnerId = payload?.dispositionOwnerId
+            ? sanitizeIdentifier(payload.dispositionOwnerId, 'dispositionOwnerId')
+            : record.memorySubjectId;
+        if (dispositionOwnerId !== record.memorySubjectId) {
+            throw createError(403, 'DNM withdrawal owner must match the memory subject', 'ARCH_SUBJECT_IDENTITY_MISMATCH');
+        }
+        const submissionMode = payload?.submissionMode
+            ? normalizeSubmissionMode(payload.submissionMode, 'submissionMode')
+            : defaultSubjectSubmissionMode(record.memorySubjectId, submittedByActorId);
+        const authorization = authorizeDnmLifecycleAction(adapter, record, {
+            actionKind: 'DNM_WITHDRAWAL',
+            dispositionOwnerId,
+            submittedByActorId,
+            submissionMode,
+            delegationPolicyId: payload?.delegationPolicyId || null,
+            subjectEvidenceRefs: payload?.subjectEvidenceRefs,
+        });
+        const provenance = createActionProvenanceRecord({
+            interpretationRevisionId: record.sourceInterpretationRevisionId,
+            actionKind: 'DNM_WITHDRAWAL',
+            actionTargetId: record.dnmRecordId,
+            dispositionOwnerId,
+            submittedByActorId,
+            submissionMode,
+            delegationPolicy: authorization.delegationPolicy,
+            subjectEvidenceRefs: authorization.subjectEvidenceRefs,
+            createdAt: timestamp,
+        });
+        const withdrawal = buildDnmWithdrawalAction(record, provenance, reasonCodes, commentary, timestamp);
+        appendLedgerEvents(paths.dnmPublicationLedgerPath, [createDnmWithdrawnEvent(withdrawal)]);
+        adapter.transaction(() => {
+            persistDnmPublicationRecordRow(adapter, {
+                ...record,
+                lifecycleState: 'WITHDRAWN',
+            });
+            persistDnmPublicationLifecycleMetadataRow(adapter, {
+                ...(loadDnmPublicationLifecycleMetadata(adapter, record.dnmRecordId) || buildDefaultDnmLifecycleMetadata(record)),
+                withdrawnAt: timestamp,
+                withdrawalReasonCodes: reasonCodes,
+                withdrawalCommentary: commentary,
+                withdrawalProvenance: provenance,
+                updatedAt: timestamp,
+            });
+        });
+        snapshotOperationalDatabase(adapter, paths);
+        return {
+            ok: true,
+            phase: 'c0.6.4',
+            withdrawal,
+            record: loadDnmPublicationRecordProjection(adapter, record.dnmRecordId),
+            currentActiveRecord: loadCurrentActiveDnmRecordForTarget(adapter, record.continuityTargetId),
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function recordDnmDeltaReview(request, payload = {}) {
+    const timestamp = nowTimestamp(payload?.now);
+    const submittedByActorId = normalizeActorEntityId(payload);
+    const reasonCodes = normalizeReasonCodes(payload?.reasonCodes, 'reasonCodes');
+    const commentary = normalizeOptionalCommentary(payload?.commentary, 'commentary');
+    const deltaState = normalizeEnumValue(payload?.deltaState, 'deltaState', ALLOWED_DNM_DELTA_REVIEW_STATES, 'PENDING');
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const adapter = openOperationalDatabase(paths, { now: timestamp });
+    try {
+        const explicitRecordId = payload?.dnmRecordId ? sanitizeIdentifier(payload.dnmRecordId, 'dnmRecordId') : null;
+        const explicitTargetId = payload?.continuityTargetId ? sanitizeIdentifier(payload.continuityTargetId, 'continuityTargetId') : null;
+        let record = explicitRecordId ? loadDnmPublicationRecordProjection(adapter, explicitRecordId) : null;
+        if (!record && explicitTargetId) {
+            record = loadCurrentActiveDnmRecordForTarget(adapter, explicitTargetId);
+        }
+        if (!record) {
+            throw createError(404, 'A target DNM record could not be resolved for delta review', 'ARCH_DNM_RECORD_NOT_FOUND');
+        }
+        if (explicitTargetId && record.continuityTargetId !== explicitTargetId) {
+            throw createError(409, 'Delta review continuity target does not match the resolved DNM record', 'ARCH_DNM_DELTA_TARGET_MISMATCH');
+        }
+        const dispositionOwnerId = payload?.dispositionOwnerId
+            ? sanitizeIdentifier(payload.dispositionOwnerId, 'dispositionOwnerId')
+            : record.memorySubjectId;
+        if (dispositionOwnerId !== record.memorySubjectId) {
+            throw createError(403, 'DNM delta review owner must match the memory subject', 'ARCH_SUBJECT_IDENTITY_MISMATCH');
+        }
+        const submissionMode = payload?.submissionMode
+            ? normalizeSubmissionMode(payload.submissionMode, 'submissionMode')
+            : defaultSubjectSubmissionMode(record.memorySubjectId, submittedByActorId);
+        const authorization = authorizeDnmLifecycleAction(adapter, record, {
+            actionKind: 'DNM_DELTA_REVIEW',
+            dispositionOwnerId,
+            submittedByActorId,
+            submissionMode,
+            delegationPolicyId: payload?.delegationPolicyId || null,
+            subjectEvidenceRefs: payload?.subjectEvidenceRefs,
+        });
+        const provenance = createActionProvenanceRecord({
+            interpretationRevisionId: payload?.sourceInterpretationRevisionId
+                ? sanitizeIdentifier(payload.sourceInterpretationRevisionId, 'sourceInterpretationRevisionId')
+                : record.sourceInterpretationRevisionId,
+            actionKind: 'DNM_DELTA_REVIEW',
+            actionTargetId: record.dnmRecordId,
+            dispositionOwnerId,
+            submittedByActorId,
+            submissionMode,
+            delegationPolicy: authorization.delegationPolicy,
+            subjectEvidenceRefs: authorization.subjectEvidenceRefs,
+            createdAt: timestamp,
+        });
+        const review = buildDnmDeltaReviewRecord(
+            record,
+            provenance.interpretationRevisionId,
+            deltaState,
+            reasonCodes,
+            commentary,
+            provenance,
+            timestamp,
+        );
+        appendLedgerEvents(paths.dnmPublicationLedgerPath, [createDnmDeltaReviewRecordedEvent(review)]);
+        adapter.transaction(() => {
+            persistDnmDeltaReviewRow(adapter, review);
+            persistDnmPublicationLifecycleMetadataRow(adapter, {
+                ...(loadDnmPublicationLifecycleMetadata(adapter, record.dnmRecordId) || buildDefaultDnmLifecycleMetadata(record)),
+                deltaReviewState: deltaState,
+                latestDeltaReviewId: review.deltaReviewId,
+                updatedAt: timestamp,
+            });
+        });
+        snapshotOperationalDatabase(adapter, paths);
+        return {
+            ok: true,
+            phase: 'c0.6.4',
+            deltaReview: review,
+            record: loadDnmPublicationRecordProjection(adapter, record.dnmRecordId),
+            currentActiveRecord: loadCurrentActiveDnmRecordForTarget(adapter, record.continuityTargetId),
         };
     } finally {
         adapter.close();
@@ -5303,7 +5986,15 @@ export function executeInterpretivePublicationAuthorization(request, payload = {
             );
         }
 
-        const record = buildPublicationExecutionRecord(authorization, interpretation, timestamp);
+        const existingActiveRecord = loadCurrentActiveDnmRecordForTarget(adapter, authorization.continuityTargetId);
+        const initialLifecycleState = existingActiveRecord ? 'DELTA_PENDING' : 'ACTIVE';
+        const record = buildPublicationExecutionRecord(
+            authorization,
+            interpretation,
+            timestamp,
+            createId('dnmrec'),
+            initialLifecycleState,
+        );
         const consumedAuthorization = {
             ...authorization,
             status: 'CONSUMED',
@@ -5315,6 +6006,7 @@ export function executeInterpretivePublicationAuthorization(request, payload = {
         ]);
         adapter.transaction(() => {
             persistDnmPublicationRecordRow(adapter, record);
+            persistDnmPublicationLifecycleMetadataRow(adapter, buildDefaultDnmLifecycleMetadata(record));
             persistInterpretivePublicationAuthorizationRow(adapter, consumedAuthorization);
             adapter.run(
                 `UPDATE interpretation_revisions
@@ -5332,6 +6024,7 @@ export function executeInterpretivePublicationAuthorization(request, payload = {
             liveContinuityMutation: true,
             authorization: loadInterpretivePublicationAuthorizationProjection(adapter, consumedAuthorization.publicationAuthorizationId),
             publishedRecord: loadDnmPublicationRecordProjection(adapter, record.dnmRecordId),
+            currentActiveRecord: loadCurrentActiveDnmRecordForTarget(adapter, authorization.continuityTargetId),
             interpretation: loadInterpretiveCandidateProjection(adapter, interpretation.interpretationRevisionId),
         };
     } finally {

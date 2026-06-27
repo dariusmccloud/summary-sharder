@@ -12,21 +12,26 @@ import {
     createInterpretiveSynthesisRun,
     createInterpretiveCandidate,
     createInterpretiveRevision,
+    getCurrentActiveDnmRecord,
     getInterpretiveCandidate,
     getInterpretiveSynthesisRun,
     listInterpretiveDelegationPolicies,
+    listDnmPublicationRecords,
     listInterpretivePublicationPolicies,
     listInterpretivePolicyDefinitions,
     listInterpretiveSynthesisPolicies,
     listInterpretiveReviews,
     prepareInterpretiveCandidate,
     qualifyInterpretivePublication,
+    recordDnmDeltaReview,
     recordInterpretiveSubjectDisposition,
     replayPublicationLedger,
     replayInterpretiveLedger,
     revokeInterpretiveDelegationPolicy,
     revokeInterpretivePublicationPolicy,
+    supersedeDnmPublicationRecord,
     submitInterpretiveReviewDisposition,
+    withdrawDnmPublicationRecord,
     upsertInterpretiveDelegationPolicy,
     upsertInterpretivePublicationPolicy,
     upsertInterpretiveSynthesisPolicy,
@@ -269,6 +274,63 @@ function makePublicationPolicyPayload(overrides = {}) {
         },
         now: Date.parse('2026-06-26T00:10:00.000Z'),
         ...overrides,
+    };
+}
+
+function publishGrantedRevision(request, options = {}) {
+    const interpretationId = options.interpretationId || 'interp_publish_default';
+    const interpretationRevisionId = options.interpretationRevisionId || 'interprev_publish_default_v1';
+    const nowBase = options.nowBase || Date.parse('2026-06-26T02:00:00.000Z');
+    const created = createInterpretiveCandidate(request, makeBasePayload({
+        interpretationId,
+        interpretationRevisionId,
+        statement: options.statement || 'Jeep evolved into the primary continuity authority within a shared architecture.',
+        now: nowBase,
+    }));
+    const subjectRequest = created.interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'MEMORY_SUBJECT');
+    const participantRequest = created.interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'RELATIONAL_PARTICIPANT');
+    submitInterpretiveReviewDisposition(request, subjectRequest.reviewRequestId, {
+        actorEntityId: 'character:jeep.png',
+        disposition: 'APPROVE',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        now: nowBase + 1000,
+    });
+    submitInterpretiveReviewDisposition(request, participantRequest.reviewRequestId, {
+        actorEntityId: 'user:Chris',
+        disposition: 'APPROVE',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        now: nowBase + 2000,
+    });
+    const granted = recordInterpretiveSubjectDisposition(request, interpretationRevisionId, {
+        actorEntityId: 'character:jeep.png',
+        state: 'GRANTED',
+        reviewEnvelopeHash: created.interpretation.reviewEnvelopeHash,
+        now: nowBase + 3000,
+    });
+    const qualification = qualifyInterpretivePublication(request, interpretationRevisionId, {
+        publicationPolicyId: options.publicationPolicyId || 'dnm-publication-v1',
+        continuityTargetId: options.continuityTargetId || 'character:jeep.png',
+        proposalContentHash: granted.interpretation.proposalContentHash,
+        reviewEnvelopeHash: granted.interpretation.reviewEnvelopeHash,
+        subjectDispositionRecordId: granted.subjectDisposition.subjectDispositionId,
+        now: nowBase + 4000,
+    });
+    const authorization = createInterpretivePublicationAuthorization(request, {
+        qualificationId: qualification.qualification.qualificationId,
+        authorizedBy: options.authorizedBy || 'user:Chris',
+        expiresAt: nowBase + 60_000,
+        now: nowBase + 5000,
+    });
+    const executed = executeInterpretivePublicationAuthorization(request, {
+        publicationAuthorizationId: authorization.authorization.publicationAuthorizationId,
+        now: nowBase + 6000,
+    });
+    return {
+        created,
+        granted,
+        qualification,
+        authorization,
+        executed,
     };
 }
 
@@ -1282,6 +1344,124 @@ test('publication authorization and execution publish exact granted revision int
         }),
         /already used/i,
     );
+});
+
+test('second publication for the same continuity target stays delta-pending until superseded', () => {
+    const root = makeTempRoot();
+    const request = buildRequest(root);
+    upsertInterpretivePublicationPolicy(request, makePublicationPolicyPayload({
+        immutableChildRequiredForTypes: [],
+    }));
+
+    const first = publishGrantedRevision(request, {
+        interpretationId: 'interp_dnm_pending_v1',
+        interpretationRevisionId: 'interprev_dnm_pending_v1',
+        statement: 'Jeep became the primary continuity authority.',
+        nowBase: Date.parse('2026-06-26T04:00:00.000Z'),
+    });
+    const second = publishGrantedRevision(request, {
+        interpretationId: 'interp_dnm_pending_v2',
+        interpretationRevisionId: 'interprev_dnm_pending_v2',
+        statement: 'Jeep became the primary continuity authority within a shared architecture with Chris.',
+        nowBase: Date.parse('2026-06-26T04:10:00.000Z'),
+    });
+
+    assert.equal(first.executed.publishedRecord.lifecycleState, 'ACTIVE');
+    assert.equal(second.executed.publishedRecord.lifecycleState, 'DELTA_PENDING');
+
+    const listed = listDnmPublicationRecords(request, {
+        continuityTargetId: 'character:jeep.png',
+    });
+    assert.equal(listed.records.length, 2);
+    assert.deepEqual(
+        listed.records.map((record) => record.lifecycleState),
+        ['ACTIVE', 'DELTA_PENDING'],
+    );
+
+    const current = getCurrentActiveDnmRecord(request, 'character:jeep.png');
+    assert.equal(current.currentActiveRecord.dnmRecordId, first.executed.publishedRecord.dnmRecordId);
+});
+
+test('supersession, delta review, withdrawal, and replay preserve DNM lifecycle lineage', () => {
+    const sourceRoot = makeTempRoot();
+    const sourceRequest = buildRequest(sourceRoot);
+    upsertInterpretivePublicationPolicy(sourceRequest, makePublicationPolicyPayload({
+        immutableChildRequiredForTypes: [],
+    }));
+
+    const first = publishGrantedRevision(sourceRequest, {
+        interpretationId: 'interp_dnm_lifecycle_v1',
+        interpretationRevisionId: 'interprev_dnm_lifecycle_v1',
+        statement: 'Jeep became the primary continuity authority.',
+        nowBase: Date.parse('2026-06-26T05:00:00.000Z'),
+    });
+    const second = publishGrantedRevision(sourceRequest, {
+        interpretationId: 'interp_dnm_lifecycle_v2',
+        interpretationRevisionId: 'interprev_dnm_lifecycle_v2',
+        statement: 'Jeep became the primary continuity authority within a shared architecture with Chris.',
+        nowBase: Date.parse('2026-06-26T05:10:00.000Z'),
+    });
+
+    const superseded = supersedeDnmPublicationRecord(sourceRequest, {
+        actorEntityId: 'character:jeep.png',
+        priorDnmRecordId: first.executed.publishedRecord.dnmRecordId,
+        replacementDnmRecordId: second.executed.publishedRecord.dnmRecordId,
+        reasonCodes: ['SCOPE_TOO_BROAD'],
+        commentary: 'The later DNM record narrows the published continuity claim.',
+        now: Date.parse('2026-06-26T05:20:00.000Z'),
+    });
+    assert.equal(superseded.priorRecord.lifecycleState, 'SUPERSEDED');
+    assert.equal(superseded.replacementRecord.lifecycleState, 'ACTIVE');
+    assert.equal(superseded.currentActiveRecord.dnmRecordId, second.executed.publishedRecord.dnmRecordId);
+
+    const deltaReview = recordDnmDeltaReview(sourceRequest, {
+        actorEntityId: 'character:jeep.png',
+        continuityTargetId: 'character:jeep.png',
+        deltaState: 'PENDING',
+        reasonCodes: ['CONTRARY_EVIDENCE_PRESENT'],
+        commentary: 'Record a follow-up delta review without mutating current active continuity.',
+        now: Date.parse('2026-06-26T05:25:00.000Z'),
+    });
+    assert.equal(deltaReview.record.deltaReviewState, 'PENDING');
+    assert.equal(deltaReview.currentActiveRecord.dnmRecordId, second.executed.publishedRecord.dnmRecordId);
+
+    const withdrawn = withdrawDnmPublicationRecord(sourceRequest, {
+        actorEntityId: 'character:jeep.png',
+        dnmRecordId: second.executed.publishedRecord.dnmRecordId,
+        reasonCodes: ['CONTRARY_EVIDENCE_PRESENT'],
+        commentary: 'Withdraw the currently active DNM record pending reevaluation.',
+        now: Date.parse('2026-06-26T05:30:00.000Z'),
+    });
+    assert.equal(withdrawn.record.lifecycleState, 'WITHDRAWN');
+    assert.equal(withdrawn.currentActiveRecord, null);
+
+    const sourcePaths = getStoragePaths(sourceRoot);
+    const targetRoot = makeTempRoot();
+    const targetPaths = getStoragePaths(targetRoot);
+    fs.mkdirSync(targetPaths.storageRoot, { recursive: true });
+    fs.copyFileSync(sourcePaths.interpretiveGovernanceLedgerPath, targetPaths.interpretiveGovernanceLedgerPath);
+    fs.copyFileSync(sourcePaths.dnmPublicationLedgerPath, targetPaths.dnmPublicationLedgerPath);
+
+    replayInterpretiveLedger(buildRequest(targetRoot));
+    const replayed = replayPublicationLedger(buildRequest(targetRoot));
+    assert.equal(replayed.replayedPublishedRecords.length, 2);
+
+    const records = listDnmPublicationRecords(buildRequest(targetRoot), {
+        continuityTargetId: 'character:jeep.png',
+    });
+    assert.equal(records.records.length, 2);
+    const replayedFirst = records.records.find((record) => record.dnmRecordId === first.executed.publishedRecord.dnmRecordId);
+    const replayedSecond = records.records.find((record) => record.dnmRecordId === second.executed.publishedRecord.dnmRecordId);
+    assert.equal(replayedFirst.lifecycleState, 'SUPERSEDED');
+    assert.equal(replayedFirst.supersededByDnmRecordId, second.executed.publishedRecord.dnmRecordId);
+    assert.equal(replayedSecond.lifecycleState, 'WITHDRAWN');
+    assert.equal(replayedSecond.supersedesDnmRecordId, first.executed.publishedRecord.dnmRecordId);
+    assert.equal(replayedSecond.deltaReviewState, 'PENDING');
+    assert.equal(replayedSecond.deltaReviews.length, 1);
+    assert.equal(replayedSecond.deltaReviews[0].deltaState, 'PENDING');
+
+    const current = getCurrentActiveDnmRecord(buildRequest(targetRoot), 'character:jeep.png');
+    assert.equal(current.currentActiveRecord, null);
 });
 
 test('publication execution fails closed when bound state drifts after authorization', () => {

@@ -45,18 +45,23 @@ import {
     createInterpretiveCandidate,
     createInterpretivePublicationAuthorization,
     createInterpretiveRevision,
+    getCurrentActiveDnmRecord,
     getInterpretiveSynthesisRun,
     getInterpretiveCandidate,
     listInterpretiveDelegationPolicies,
+    listDnmPublicationRecords,
     listInterpretivePublicationPolicies,
     listInterpretiveReviews,
     listInterpretivePolicyDefinitions,
     listInterpretiveSynthesisPolicies,
     qualifyInterpretivePublication,
+    recordDnmDeltaReview,
     recordInterpretiveSubjectDisposition,
     revokeInterpretivePublicationPolicy,
     revokeInterpretiveDelegationPolicy,
+    supersedeDnmPublicationRecord,
     submitInterpretiveReviewDisposition,
+    withdrawDnmPublicationRecord,
     upsertInterpretiveDelegationPolicy,
     upsertInterpretivePublicationPolicy,
     upsertInterpretiveSynthesisPolicy,
@@ -642,6 +647,51 @@ export async function init(router) {
     router.post('/interpretive/publication/execute', async (request, response) => {
         try {
             const result = executeInterpretivePublicationAuthorization(request, request.body || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.get('/interpretive/publication/records', async (request, response) => {
+        try {
+            const result = listDnmPublicationRecords(request, request.query || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.get('/interpretive/publication/targets/:continuityTargetId/current', async (request, response) => {
+        try {
+            const result = getCurrentActiveDnmRecord(request, request.params.continuityTargetId);
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/interpretive/publication/supersede', async (request, response) => {
+        try {
+            const result = supersedeDnmPublicationRecord(request, request.body || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/interpretive/publication/withdraw', async (request, response) => {
+        try {
+            const result = withdrawDnmPublicationRecord(request, request.body || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/interpretive/publication/delta-reviews', async (request, response) => {
+        try {
+            const result = recordDnmDeltaReview(request, request.body || {});
             return response.send(result);
         } catch (error) {
             return handleError(response, error);

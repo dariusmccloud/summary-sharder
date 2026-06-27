@@ -79,15 +79,15 @@
   "payloadFiles": [
     {
       "relativePath": "core.js",
-      "sha256": "053e4fd4a27fc8f70d9b824a8463e2d97f9b3ab2ff4be877860c1f73c8c4a133"
+      "sha256": "5833fb3de9c9f1050f0ca4bae879fc26e96c8bd66e7e25f1fe493bbfb3d6b499"
     },
     {
       "relativePath": "index.js",
-      "sha256": "2c871d569fec8a6d98d5c1df37543dc1c1eb207472cc3dd4c6dd9080e7c03dae"
+      "sha256": "cd0d4ad231424b80e2ac63a88628ae1ea9b0c77410d5c171981d5904f78d48e7"
     },
     {
       "relativePath": "interpretive.js",
-      "sha256": "b2762d821aa45f4e077348ac4356c72f27eef585af275915a5f445c3ca629380"
+      "sha256": "76cb3289e7260247c330a2f1fb7119d0c78d16b2589735ab24bf4b3ca94394d7"
     },
     {
       "relativePath": "lib/core/chat/archive-policy.js",
@@ -159,7 +159,7 @@
     },
     {
       "relativePath": "schema.js",
-      "sha256": "32473ddf3fb6439c9884863275cf6664dba6ca6913a166d3c6e81af25eebc4dd"
+      "sha256": "7f9f8344384de7e2cc39377a480b5f4ffc920ce3a2a7849b8138e88155a1a255"
     },
     {
       "relativePath": "sqlite-bun.js",
