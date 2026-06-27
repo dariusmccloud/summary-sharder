@@ -46,13 +46,17 @@ import {
     getInterpretiveSynthesisRun,
     getInterpretiveCandidate,
     listInterpretiveDelegationPolicies,
+    listInterpretivePublicationPolicies,
     listInterpretiveReviews,
     listInterpretivePolicyDefinitions,
     listInterpretiveSynthesisPolicies,
+    qualifyInterpretivePublication,
     recordInterpretiveSubjectDisposition,
+    revokeInterpretivePublicationPolicy,
     revokeInterpretiveDelegationPolicy,
     submitInterpretiveReviewDisposition,
     upsertInterpretiveDelegationPolicy,
+    upsertInterpretivePublicationPolicy,
     upsertInterpretiveSynthesisPolicy,
 } from './interpretive.js';
 
@@ -507,9 +511,36 @@ export async function init(router) {
         }
     });
 
+    router.get('/interpretive/publication/policies', async (request, response) => {
+        try {
+            const result = listInterpretivePublicationPolicies(request, request.query || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
     router.post('/interpretive/delegation-policies', async (request, response) => {
         try {
             const result = upsertInterpretiveDelegationPolicy(request, request.body || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/interpretive/publication/policies', async (request, response) => {
+        try {
+            const result = upsertInterpretivePublicationPolicy(request, request.body || {});
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/interpretive/publication/policies/:publicationPolicyId/revoke', async (request, response) => {
+        try {
+            const result = revokeInterpretivePublicationPolicy(request, request.params.publicationPolicyId, request.body || {});
             return response.send(result);
         } catch (error) {
             return handleError(response, error);
@@ -582,6 +613,15 @@ export async function init(router) {
     router.get('/interpretive/candidates/:interpretationRevisionId', async (request, response) => {
         try {
             const result = getInterpretiveCandidate(request, request.params.interpretationRevisionId);
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.post('/interpretive/candidates/:interpretationRevisionId/publication-qualifications', async (request, response) => {
+        try {
+            const result = qualifyInterpretivePublication(request, request.params.interpretationRevisionId, request.body || {});
             return response.send(result);
         } catch (error) {
             return handleError(response, error);

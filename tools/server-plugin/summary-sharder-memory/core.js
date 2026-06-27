@@ -86,6 +86,13 @@ export const CAPABILITIES = Object.freeze({
         structuralAuthorityMutation: false,
         modelSynthesisAvailable: false,
     }),
+    c0_6_4: Object.freeze({
+        publicationPolicyStorage: true,
+        publicationQualification: true,
+        publicationAuthorizationAvailable: false,
+        continuityPublicationAvailable: false,
+        liveContinuityMutation: false,
+    }),
     c0_5: false,
     c1: false,
     c2: false,
@@ -166,6 +173,7 @@ export function getStoragePaths(userRoot) {
     const snapshotPath = path.join(storageRoot, 'architectural-memory.snapshot.db');
     const statePath = path.join(storageRoot, 'architectural-memory.state.json');
     const interpretiveGovernanceLedgerPath = path.join(storageRoot, 'interpretive-governance-ledger.jsonl');
+    const dnmPublicationLedgerPath = path.join(storageRoot, 'dnm-publication-ledger.jsonl');
     const generationsRoot = path.join(storageRoot, 'generations');
     const promotionsRoot = path.join(storageRoot, 'promotions');
     const promotionAuthorizationsRoot = path.join(promotionsRoot, 'authorizations');
@@ -178,6 +186,7 @@ export function getStoragePaths(userRoot) {
         snapshotPath,
         statePath,
         interpretiveGovernanceLedgerPath,
+        dnmPublicationLedgerPath,
         generationsRoot,
         promotionsRoot,
         promotionAuthorizationsRoot,

@@ -228,6 +228,7 @@ test('route surface exposes candidate lifecycle routes and separate promotion ro
     assert.equal(router.routes.post.has('/rebuild/promotion/execute'), true);
     assert.equal(router.routes.get.has('/interpretive/policies'), true);
     assert.equal(router.routes.get.has('/interpretive/delegation-policies'), true);
+    assert.equal(router.routes.get.has('/interpretive/publication/policies'), true);
     assert.equal(router.routes.get.has('/interpretive/synthesis/policies'), true);
     assert.equal(router.routes.get.has('/interpretive/synthesis/runs/:synthesisRunId'), true);
     assert.equal(router.routes.get.has('/interpretive/candidates/:interpretationRevisionId'), true);
@@ -238,9 +239,12 @@ test('route surface exposes candidate lifecycle routes and separate promotion ro
     assert.equal(router.routes.post.has('/interpretive/candidates'), true);
     assert.equal(router.routes.post.has('/interpretive/delegation-policies'), true);
     assert.equal(router.routes.post.has('/interpretive/delegation-policies/:delegationPolicyId/revoke'), true);
+    assert.equal(router.routes.post.has('/interpretive/publication/policies'), true);
+    assert.equal(router.routes.post.has('/interpretive/publication/policies/:publicationPolicyId/revoke'), true);
     assert.equal(router.routes.post.has('/interpretive/reviews/:reviewRequestId/dispositions'), true);
     assert.equal(router.routes.post.has('/interpretive/candidates/:interpretationRevisionId/subject-disposition'), true);
     assert.equal(router.routes.post.has('/interpretive/candidates/:interpretationRevisionId/revisions'), true);
+    assert.equal(router.routes.post.has('/interpretive/candidates/:interpretationRevisionId/publication-qualifications'), true);
 });
 
 test('capabilities and candidate lifecycle routes report no promotion and support report, pin, and cleanup', async () => {
@@ -266,6 +270,10 @@ test('capabilities and candidate lifecycle routes report no promotion and suppor
     assert.equal(capabilities.payload.capabilities.c0_6_3.boundedSynthesisRunContract, true);
     assert.equal(capabilities.payload.capabilities.c0_6_3.deterministicStubSynthesisAvailable, true);
     assert.equal(capabilities.payload.capabilities.c0_6_3.modelSynthesisAvailable, false);
+    assert.equal(capabilities.payload.capabilities.c0_6_4.publicationPolicyStorage, true);
+    assert.equal(capabilities.payload.capabilities.c0_6_4.publicationQualification, true);
+    assert.equal(capabilities.payload.capabilities.c0_6_4.publicationAuthorizationAvailable, false);
+    assert.equal(capabilities.payload.capabilities.c0_6_4.continuityPublicationAvailable, false);
 
     const initResult = await invoke(
         router.routes.post.get('/rebuild/candidate/init'),
@@ -340,6 +348,87 @@ test('capabilities and candidate lifecycle routes report no promotion and suppor
     assert.equal(cleanupResult.statusCode, 200);
     assert.deepEqual(cleanupResult.payload.removedRunIds, []);
     assert.equal(cleanupResult.payload.promotionAvailable, false);
+});
+
+test('publication policy and qualification routes stay read-only with publication unavailable', async () => {
+    const root = makeTempRoot();
+    const router = createMockRouter();
+    await init(router);
+
+    const createResult = await invoke(
+        router.routes.post.get('/interpretive/candidates'),
+        buildRequest(root, {
+            body: {
+                interpretationId: 'interp_route_publication_case',
+                interpretationRevisionId: 'interprev_route_publication_case_v1',
+                memoryScopeId: 'scope_alpha',
+                memorySubjectId: 'character:jeep.png',
+                type: 'ROLE_EVOLUTION',
+                statement: 'Jeep evolved into the primary continuity authority within a shared architecture.',
+                assertionDomains: ['ROLE', 'AUTHORITY', 'RELATIONSHIP'],
+                sharedRelationshipAsserted: true,
+                personalMeaningAsserted: true,
+                materialParticipantEntityIds: ['character:jeep.png', 'user:Chris'],
+                groundingLinks: [
+                    {
+                        basisType: 'STRUCTURAL_RECORD',
+                        basisRecordId: 'decision:promotion-jurisdiction',
+                        basisRecordVersion: 1,
+                        basisRecordHash: 'sha256:promotion-jurisdiction',
+                        speakerEntityId: 'character:jeep.png',
+                        groundingRole: 'PRIMARY',
+                        groundingAssessment: 'SUPPORTS',
+                    },
+                ],
+                now: Date.parse('2026-06-26T00:14:00.000Z'),
+            },
+        }),
+    );
+    assert.equal(createResult.statusCode, 200);
+
+    const policyResult = await invoke(
+        router.routes.post.get('/interpretive/publication/policies'),
+        buildRequest(root, {
+            body: {
+                publicationPolicyId: 'dnm-publication-v1',
+                policyVersion: 1,
+                continuityTargetType: 'MEMORY_SUBJECT',
+                subjectIdentityMode: 'EXACT_SUBJECT',
+                permittedInterpretationTypes: ['ROLE_EVOLUTION'],
+                requiredFinalSubjectState: 'GRANTED',
+                requiredGroundingOutcome: 'SUPPORTED',
+                participantDisagreementBlocksPublication: true,
+                contestOrDeferBlocksPublication: true,
+                immutableChildRequiredForTypes: [],
+                postGrantHumanPublicationAuthorizationRequired: true,
+                details: {
+                    policyClass: 'dnm-publication-v1',
+                },
+                now: Date.parse('2026-06-26T00:14:05.000Z'),
+            },
+        }),
+    );
+    assert.equal(policyResult.statusCode, 200);
+    assert.equal(policyResult.payload.created, true);
+
+    const qualificationResult = await invoke(
+        router.routes.post.get('/interpretive/candidates/:interpretationRevisionId/publication-qualifications'),
+        buildRequest(root, {
+            params: {
+                interpretationRevisionId: 'interprev_route_publication_case_v1',
+            },
+            body: {
+                publicationPolicyId: 'dnm-publication-v1',
+                continuityTargetId: 'character:jeep.png',
+                now: Date.parse('2026-06-26T00:14:10.000Z'),
+            },
+        }),
+    );
+    assert.equal(qualificationResult.statusCode, 200);
+    assert.equal(qualificationResult.payload.publicationAvailable, false);
+    assert.equal(qualificationResult.payload.continuityActivationAvailable, false);
+    assert.equal(qualificationResult.payload.qualification.eligibilityVerdict, 'INELIGIBLE');
+    assert.equal(qualificationResult.payload.qualification.refusalCodes.includes('SUBJECT_DISPOSITION_STATE_MISMATCH'), true);
 });
 
 test('interpretive routes create pending governed candidates without publication', async () => {

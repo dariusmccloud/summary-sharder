@@ -307,6 +307,42 @@ export function schemaStatements() {
             reason_codes_json TEXT NOT NULL,
             evaluated_at INTEGER NOT NULL
         )`,
+        `CREATE TABLE IF NOT EXISTS interpretation_publication_policies (
+            publication_policy_id TEXT NOT NULL,
+            policy_version INTEGER NOT NULL,
+            policy_hash TEXT NOT NULL,
+            continuity_target_type TEXT NOT NULL,
+            subject_identity_mode TEXT NOT NULL,
+            permitted_interpretation_types_json TEXT NOT NULL,
+            required_final_subject_state TEXT NOT NULL,
+            required_grounding_outcome TEXT NOT NULL,
+            participant_disagreement_blocks_publication INTEGER NOT NULL,
+            contest_or_defer_blocks_publication INTEGER NOT NULL,
+            immutable_child_required_for_types_json TEXT NOT NULL,
+            post_grant_human_publication_authorization_required INTEGER NOT NULL,
+            policy_state TEXT NOT NULL,
+            revocation_reason TEXT,
+            details_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            revoked_at INTEGER,
+            PRIMARY KEY (publication_policy_id, policy_version)
+        )`,
+        `CREATE TABLE IF NOT EXISTS interpretation_publication_qualifications (
+            qualification_id TEXT PRIMARY KEY,
+            interpretation_revision_id TEXT NOT NULL,
+            publication_policy_id TEXT NOT NULL,
+            policy_version INTEGER NOT NULL,
+            policy_hash TEXT NOT NULL,
+            continuity_target_id TEXT NOT NULL,
+            continuity_target_type TEXT NOT NULL,
+            memory_scope_id TEXT NOT NULL,
+            memory_subject_id TEXT NOT NULL,
+            eligibility_verdict TEXT NOT NULL,
+            refusal_codes_json TEXT NOT NULL,
+            binding_json TEXT NOT NULL,
+            evaluated_at INTEGER NOT NULL
+        )`,
     ];
 }
 

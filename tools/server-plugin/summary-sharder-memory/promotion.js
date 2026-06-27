@@ -47,6 +47,8 @@ const KNOWN_NON_PROMOTABLE_TABLES = new Set([
     'interpretation_review_requests',
     'interpretation_review_dispositions',
     'interpretation_subject_dispositions',
+    'interpretation_publication_policies',
+    'interpretation_publication_qualifications',
     'interpretation_synthesis_policies',
     'interpretation_synthesis_runs',
     'reconstruction_runs',

@@ -110,6 +110,34 @@ const ALLOWED_SYNTHESIS_SOURCE_CLASSES = new Set([
     'SOURCE_OCCURRENCE',
 ]);
 
+const ALLOWED_PUBLICATION_POLICY_STATES = new Set([
+    'ACTIVE',
+    'REVOKED',
+]);
+
+const ALLOWED_CONTINUITY_TARGET_TYPES = new Set([
+    'MEMORY_SUBJECT',
+]);
+
+const ALLOWED_SUBJECT_IDENTITY_MODES = new Set([
+    'EXACT_SUBJECT',
+]);
+
+const ALLOWED_PUBLICATION_ELIGIBILITY_VERDICTS = new Set([
+    'ELIGIBLE',
+    'INELIGIBLE',
+]);
+
+const GROUNDING_OUTCOME_ORDER = Object.freeze({
+    UNSUPPORTED: 0,
+    BASIS_INCOMPLETE: 1,
+    PARTIALLY_SUPPORTED: 2,
+    SUPPORTED: 3,
+    STRONGLY_SUPPORTED: 4,
+    CONTRARY_EVIDENCE_PRESENT: 0,
+    INVALIDATED_SOURCE_MUTATION: 0,
+});
+
 const POLICY_DEFINITIONS = Object.freeze([
     Object.freeze({
         validationPolicyId: 'shared-role-memory',
@@ -153,6 +181,23 @@ function computeDelegationPolicyHash(policy) {
     }).hash;
 }
 
+function computePublicationPolicyHash(policy) {
+    return hashCanonical({
+        publicationPolicyId: policy.publicationPolicyId,
+        policyVersion: policy.policyVersion,
+        continuityTargetType: policy.continuityTargetType,
+        subjectIdentityMode: policy.subjectIdentityMode,
+        permittedInterpretationTypes: policy.permittedInterpretationTypes,
+        requiredFinalSubjectState: policy.requiredFinalSubjectState,
+        requiredGroundingOutcome: policy.requiredGroundingOutcome,
+        participantDisagreementBlocksPublication: policy.participantDisagreementBlocksPublication,
+        contestOrDeferBlocksPublication: policy.contestOrDeferBlocksPublication,
+        immutableChildRequiredForTypes: policy.immutableChildRequiredForTypes,
+        postGrantHumanPublicationAuthorizationRequired: policy.postGrantHumanPublicationAuthorizationRequired,
+        details: policy.details,
+    }).hash;
+}
+
 function getPolicyDefinition(validationPolicyId, policyVersion) {
     return POLICY_DEFINITIONS.find((entry) => (
         entry.validationPolicyId === validationPolicyId
@@ -182,6 +227,36 @@ function createDelegationPolicyRevocationEvent(policy, timestamp) {
         interpretationRevisionId: null,
         payload: {
             delegationPolicyId: policy.delegationPolicyId,
+            policyVersion: policy.policyVersion,
+            policyHash: policy.policyHash,
+            revokedAt: timestamp,
+            revocationReason: policy.revocationReason,
+        },
+    };
+}
+
+function createPublicationPolicyEvent(policy) {
+    return {
+        eventId: createId('dnmlevent'),
+        eventType: 'DNM_PUBLICATION_POLICY_REGISTERED',
+        occurredAt: policy.createdAt,
+        memoryScopeId: null,
+        interpretationId: null,
+        interpretationRevisionId: null,
+        payload: cloneJson(policy),
+    };
+}
+
+function createPublicationPolicyRevocationEvent(policy, timestamp) {
+    return {
+        eventId: createId('dnmlevent'),
+        eventType: 'DNM_PUBLICATION_POLICY_REVOKED',
+        occurredAt: timestamp,
+        memoryScopeId: null,
+        interpretationId: null,
+        interpretationRevisionId: null,
+        payload: {
+            publicationPolicyId: policy.publicationPolicyId,
             policyVersion: policy.policyVersion,
             policyHash: policy.policyHash,
             revokedAt: timestamp,
@@ -315,6 +390,18 @@ function normalizeOptionalPlainObject(value, fieldName) {
     return cloneJson(value);
 }
 
+function normalizeEnumValue(value, fieldName, allowedValues, fallback = null) {
+    const normalized = String(value ?? fallback ?? '').trim();
+    if (!allowedValues.has(normalized)) {
+        throw createError(400, `${fieldName} is invalid`, 'ARCH_INVALID_PAYLOAD');
+    }
+    return normalized;
+}
+
+function compareGroundingOutcomeLevel(left, right) {
+    return (GROUNDING_OUTCOME_ORDER[left] ?? -1) - (GROUNDING_OUTCOME_ORDER[right] ?? -1);
+}
+
 function normalizeActorEntityId(payload = {}) {
     return sanitizeIdentifier(
         payload?.submittedByActorId || payload?.actorEntityId,
@@ -395,6 +482,81 @@ function buildInterpretiveDelegationPolicyRecord(payload, timestamp) {
     return {
         ...policy,
         policyHash: computeDelegationPolicyHash(policy),
+    };
+}
+
+function buildInterpretivePublicationPolicyRecord(payload, timestamp) {
+    const publicationPolicyId = sanitizeIdentifier(payload?.publicationPolicyId, 'publicationPolicyId');
+    const policyVersion = normalizePositiveInteger(payload?.policyVersion, 'policyVersion', 1, 1_000_000);
+    const continuityTargetType = normalizeEnumValue(
+        payload?.continuityTargetType,
+        'continuityTargetType',
+        ALLOWED_CONTINUITY_TARGET_TYPES,
+        'MEMORY_SUBJECT',
+    );
+    const subjectIdentityMode = normalizeEnumValue(
+        payload?.subjectIdentityMode,
+        'subjectIdentityMode',
+        ALLOWED_SUBJECT_IDENTITY_MODES,
+        'EXACT_SUBJECT',
+    );
+    const permittedInterpretationTypes = normalizeStringArray(
+        payload?.permittedInterpretationTypes || ['ROLE_EVOLUTION'],
+        'permittedInterpretationTypes',
+        ALLOWED_INTERPRETATION_TYPES,
+    );
+    const requiredFinalSubjectState = normalizeEnumValue(
+        payload?.requiredFinalSubjectState,
+        'requiredFinalSubjectState',
+        ALLOWED_SUBJECT_DISPOSITION_STATES,
+        'GRANTED',
+    );
+    const requiredGroundingOutcome = normalizeEnumValue(
+        payload?.requiredGroundingOutcome,
+        'requiredGroundingOutcome',
+        new Set(Object.keys(GROUNDING_OUTCOME_ORDER)),
+        'SUPPORTED',
+    );
+    const participantDisagreementBlocksPublication = normalizeBoolean(
+        payload?.participantDisagreementBlocksPublication,
+        'participantDisagreementBlocksPublication',
+    );
+    const contestOrDeferBlocksPublication = normalizeBoolean(
+        payload?.contestOrDeferBlocksPublication,
+        'contestOrDeferBlocksPublication',
+    );
+    const immutableChildRequiredForTypes = normalizeStringArrayAllowEmpty(
+        payload?.immutableChildRequiredForTypes || [],
+        'immutableChildRequiredForTypes',
+        ALLOWED_INTERPRETATION_TYPES,
+    );
+    const postGrantHumanPublicationAuthorizationRequired = normalizeBoolean(
+        payload?.postGrantHumanPublicationAuthorizationRequired,
+        'postGrantHumanPublicationAuthorizationRequired',
+    );
+    const details = normalizeOptionalPlainObject(payload?.details, 'details');
+    const policy = {
+        publicationPolicyId,
+        policyVersion,
+        continuityTargetType,
+        subjectIdentityMode,
+        permittedInterpretationTypes,
+        requiredFinalSubjectState,
+        requiredGroundingOutcome,
+        participantDisagreementBlocksPublication,
+        contestOrDeferBlocksPublication,
+        immutableChildRequiredForTypes,
+        postGrantHumanPublicationAuthorizationRequired,
+        policyState: 'ACTIVE',
+        revocationReason: null,
+        details,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        revokedAt: null,
+    };
+    return {
+        ...policy,
+        policyHash: computePublicationPolicyHash(policy),
     };
 }
 
@@ -1378,6 +1540,52 @@ function loadInterpretiveDelegationPolicyProjection(adapter, delegationPolicyId,
     };
 }
 
+function loadInterpretivePublicationPolicyProjection(adapter, publicationPolicyId, policyVersion) {
+    const row = adapter.get(
+        `SELECT * FROM interpretation_publication_policies
+         WHERE publication_policy_id = ? AND policy_version = ?`,
+        [publicationPolicyId, policyVersion],
+    );
+    if (!row) {
+        return null;
+    }
+    return {
+        publicationPolicyId: row.publication_policy_id,
+        policyVersion: Number(row.policy_version),
+        policyHash: row.policy_hash,
+        continuityTargetType: row.continuity_target_type,
+        subjectIdentityMode: row.subject_identity_mode,
+        permittedInterpretationTypes: JSON.parse(row.permitted_interpretation_types_json),
+        requiredFinalSubjectState: row.required_final_subject_state,
+        requiredGroundingOutcome: row.required_grounding_outcome,
+        participantDisagreementBlocksPublication: Number(row.participant_disagreement_blocks_publication) === 1,
+        contestOrDeferBlocksPublication: Number(row.contest_or_defer_blocks_publication) === 1,
+        immutableChildRequiredForTypes: JSON.parse(row.immutable_child_required_for_types_json),
+        postGrantHumanPublicationAuthorizationRequired: Number(row.post_grant_human_publication_authorization_required) === 1,
+        policyState: row.policy_state,
+        revocationReason: row.revocation_reason,
+        details: JSON.parse(row.details_json),
+        createdAt: Number(row.created_at),
+        updatedAt: Number(row.updated_at),
+        revokedAt: row.revoked_at === null ? null : Number(row.revoked_at),
+    };
+}
+
+function loadLatestInterpretivePublicationPolicy(adapter, publicationPolicyId) {
+    const row = adapter.get(
+        `SELECT publication_policy_id, policy_version
+         FROM interpretation_publication_policies
+         WHERE publication_policy_id = ?
+         ORDER BY policy_version DESC
+         LIMIT 1`,
+        [publicationPolicyId],
+    );
+    if (!row) {
+        return null;
+    }
+    return loadInterpretivePublicationPolicyProjection(adapter, row.publication_policy_id, Number(row.policy_version));
+}
+
 function loadActionProvenanceRows(adapter, interpretationRevisionId) {
     return adapter.all(
         `SELECT * FROM interpretation_action_provenance
@@ -1414,6 +1622,39 @@ function persistInterpretiveDelegationPolicyRow(adapter, policy) {
             policy.revocable ? 1 : 0,
             policy.policyState,
             policy.revocationReason,
+            Number(policy.createdAt),
+            Number(policy.updatedAt),
+            policy.revokedAt == null ? null : Number(policy.revokedAt),
+        ],
+    );
+}
+
+function persistInterpretivePublicationPolicyRow(adapter, policy) {
+    adapter.run(
+        `INSERT OR REPLACE INTO interpretation_publication_policies (
+            publication_policy_id, policy_version, policy_hash, continuity_target_type,
+            subject_identity_mode, permitted_interpretation_types_json, required_final_subject_state,
+            required_grounding_outcome, participant_disagreement_blocks_publication,
+            contest_or_defer_blocks_publication, immutable_child_required_for_types_json,
+            post_grant_human_publication_authorization_required, policy_state, revocation_reason,
+            details_json, created_at, updated_at, revoked_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+        [
+            policy.publicationPolicyId,
+            Number(policy.policyVersion),
+            policy.policyHash,
+            policy.continuityTargetType,
+            policy.subjectIdentityMode,
+            stableStringify(policy.permittedInterpretationTypes),
+            policy.requiredFinalSubjectState,
+            policy.requiredGroundingOutcome,
+            policy.participantDisagreementBlocksPublication ? 1 : 0,
+            policy.contestOrDeferBlocksPublication ? 1 : 0,
+            stableStringify(policy.immutableChildRequiredForTypes),
+            policy.postGrantHumanPublicationAuthorizationRequired ? 1 : 0,
+            policy.policyState,
+            policy.revocationReason,
+            stableStringify(policy.details || {}),
             Number(policy.createdAt),
             Number(policy.updatedAt),
             policy.revokedAt == null ? null : Number(policy.revokedAt),
@@ -2223,6 +2464,17 @@ export function readInterpretiveLedgerEvents(ledgerPath) {
         .map((line) => JSON.parse(line));
 }
 
+export function readPublicationLedgerEvents(ledgerPath) {
+    if (!fs.existsSync(ledgerPath)) {
+        return [];
+    }
+    return fs.readFileSync(ledgerPath, 'utf8')
+        .split(/\r?\n/u)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+}
+
 function buildPreparedFromLedgerEvents(events) {
     const proposedEvent = events.find((entry) => entry.eventType === 'INTERPRETATION_PROPOSED');
     const groundingOutcomeEvent = events.find((entry) => entry.eventType === 'GROUNDING_EVALUATED');
@@ -2596,6 +2848,52 @@ function applyDelegationPolicyLedgerEvent(adapter, event) {
     }
 }
 
+function applyPublicationPolicyLedgerEvent(adapter, event) {
+    const payload = event.payload || {};
+    if (event.eventType === 'DNM_PUBLICATION_POLICY_REGISTERED') {
+        persistInterpretivePublicationPolicyRow(adapter, {
+            publicationPolicyId: sanitizeIdentifier(payload.publicationPolicyId, 'publicationPolicyId'),
+            policyVersion: normalizePositiveInteger(payload.policyVersion, 'policyVersion', 1, 1_000_000),
+            policyHash: String(payload.policyHash || '').trim(),
+            continuityTargetType: normalizeEnumValue(payload.continuityTargetType, 'continuityTargetType', ALLOWED_CONTINUITY_TARGET_TYPES),
+            subjectIdentityMode: normalizeEnumValue(payload.subjectIdentityMode, 'subjectIdentityMode', ALLOWED_SUBJECT_IDENTITY_MODES),
+            permittedInterpretationTypes: normalizeStringArray(payload.permittedInterpretationTypes, 'permittedInterpretationTypes', ALLOWED_INTERPRETATION_TYPES),
+            requiredFinalSubjectState: normalizeEnumValue(payload.requiredFinalSubjectState, 'requiredFinalSubjectState', ALLOWED_SUBJECT_DISPOSITION_STATES),
+            requiredGroundingOutcome: normalizeEnumValue(payload.requiredGroundingOutcome, 'requiredGroundingOutcome', new Set(Object.keys(GROUNDING_OUTCOME_ORDER))),
+            participantDisagreementBlocksPublication: payload.participantDisagreementBlocksPublication === true,
+            contestOrDeferBlocksPublication: payload.contestOrDeferBlocksPublication === true,
+            immutableChildRequiredForTypes: normalizeStringArrayAllowEmpty(
+                payload.immutableChildRequiredForTypes || [],
+                'immutableChildRequiredForTypes',
+                ALLOWED_INTERPRETATION_TYPES,
+            ),
+            postGrantHumanPublicationAuthorizationRequired: payload.postGrantHumanPublicationAuthorizationRequired === true,
+            policyState: 'ACTIVE',
+            revocationReason: null,
+            details: normalizeOptionalPlainObject(payload.details, 'details'),
+            createdAt: Number(payload.createdAt || event.occurredAt),
+            updatedAt: Number(payload.updatedAt || payload.createdAt || event.occurredAt),
+            revokedAt: null,
+        });
+        return;
+    }
+    if (event.eventType === 'DNM_PUBLICATION_POLICY_REVOKED') {
+        const publicationPolicyId = sanitizeIdentifier(payload.publicationPolicyId, 'publicationPolicyId');
+        const policyVersion = normalizePositiveInteger(payload.policyVersion, 'policyVersion', 1, 1_000_000);
+        const existing = loadInterpretivePublicationPolicyProjection(adapter, publicationPolicyId, policyVersion);
+        if (!existing) {
+            throw createError(500, `Publication policy ${publicationPolicyId} v${policyVersion} is missing during replay`, 'ARCH_PUBLICATION_LEDGER_INCOMPLETE');
+        }
+        persistInterpretivePublicationPolicyRow(adapter, {
+            ...existing,
+            policyState: 'REVOKED',
+            revocationReason: payload.revocationReason ? String(payload.revocationReason).trim() : null,
+            updatedAt: Number(payload.revokedAt || event.occurredAt),
+            revokedAt: Number(payload.revokedAt || event.occurredAt),
+        });
+    }
+}
+
 export function replayInterpretiveLedger(request, options = {}) {
     const userRoot = getAuthenticatedUserRoot(request);
     const paths = getStoragePaths(userRoot);
@@ -2686,6 +2984,36 @@ export function replayInterpretiveLedger(request, options = {}) {
             replayedInterpretations: rehydrated,
             replayedSynthesisPolicies,
             replayedSynthesisRuns,
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function replayPublicationLedger(request, options = {}) {
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const ledgerEvents = readPublicationLedgerEvents(options.ledgerPath || paths.dnmPublicationLedgerPath);
+    const adapter = openOperationalDatabase(paths, { now: options.now });
+    try {
+        adapter.transaction(() => {
+            adapter.run('DELETE FROM interpretation_publication_policies');
+            for (const event of ledgerEvents) {
+                applyPublicationPolicyLedgerEvent(adapter, event);
+            }
+        });
+        snapshotOperationalDatabase(adapter, paths);
+        const rows = adapter.all(
+            `SELECT publication_policy_id, policy_version
+             FROM interpretation_publication_policies
+             ORDER BY publication_policy_id, policy_version`,
+        );
+        return {
+            ok: true,
+            phase: 'c0.6.4',
+            replayedPublicationPolicies: rows.map((row) => (
+                loadInterpretivePublicationPolicyProjection(adapter, row.publication_policy_id, Number(row.policy_version))
+            )),
         };
     } finally {
         adapter.close();
@@ -3006,6 +3334,214 @@ export function loadInterpretiveCandidateProjection(adapter, interpretationRevis
         } : null,
         revisionCreationProvenance: actionProvenanceByTarget.get(`SUBJECT_REVISION:${candidate.interpretation_revision_id}`) || null,
         childRevisionIds: childRevisions.map((entry) => entry.interpretation_revision_id),
+    };
+}
+
+function resolveInterpretationGroundingEnvelope(adapter, interpretation) {
+    const synthesisProposalRows = adapter.all(
+        `SELECT synthesis_proposal_id
+         FROM interpretation_synthesis_proposals
+         WHERE interpretation_revision_id = ?
+         ORDER BY updated_at DESC, synthesis_proposal_id DESC`,
+        [interpretation.interpretationRevisionId],
+    );
+    for (const row of synthesisProposalRows) {
+        const groundingEvaluation = loadInterpretiveSynthesisGroundingEvaluation(adapter, row.synthesis_proposal_id);
+        if (groundingEvaluation?.groundingEnvelopeHash) {
+            return {
+                groundingBindingMode: 'SYNTHESIS_ENVELOPE',
+                groundingEnvelopeHash: groundingEvaluation.groundingEnvelopeHash,
+                groundingProtocolVersion: groundingEvaluation.evaluationProtocolVersion,
+                groundingSourceSetHash: groundingEvaluation.sourceManifestHash,
+                sourceKind: 'SYNTHESIS_GROUNDING_EVALUATION',
+                sourceManifestHash: groundingEvaluation.sourceManifestHash,
+                aggregateOutcome: groundingEvaluation.aggregateOutcome,
+                evaluationProtocolVersion: groundingEvaluation.evaluationProtocolVersion,
+                evaluatorConfigHash: groundingEvaluation.evaluatorConfigHash,
+            };
+        }
+    }
+    const groundingSourceSetHash = hashCanonical({
+        derivation: 'interpretive-publication-grounding-source-set-v1',
+        interpretationRevisionId: interpretation.interpretationRevisionId,
+        groundingLinks: interpretation.groundingLinks.map((entry) => ({
+            basisType: entry.basisType,
+            basisRecordId: entry.basisRecordId,
+            basisRecordVersion: entry.basisRecordVersion,
+            basisRecordHash: entry.basisRecordHash,
+            chatInstanceId: entry.chatInstanceId,
+            messageId: entry.messageId,
+            messageRevisionHash: entry.messageRevisionHash,
+            speakerEntityId: entry.speakerEntityId,
+            groundingRole: entry.groundingRole,
+            groundingAssessment: entry.groundingAssessment,
+        })),
+    }).hash;
+    return {
+        groundingBindingMode: 'DERIVED_REVISION_GROUNDING',
+        groundingEnvelopeHash: hashCanonical({
+            derivation: 'interpretive-publication-grounding-envelope-v1',
+            interpretationRevisionId: interpretation.interpretationRevisionId,
+            proposalContentHash: interpretation.proposalContentHash,
+            groundingOutcome: interpretation.groundingAggregate?.groundingOutcome || null,
+            groundingLinks: interpretation.groundingLinks.map((entry) => ({
+                groundingLinkId: entry.groundingLinkId,
+                basisType: entry.basisType,
+                basisRecordId: entry.basisRecordId,
+                basisRecordVersion: entry.basisRecordVersion,
+                basisRecordHash: entry.basisRecordHash,
+                chatInstanceId: entry.chatInstanceId,
+                messageId: entry.messageId,
+                messageRevisionHash: entry.messageRevisionHash,
+                speakerEntityId: entry.speakerEntityId,
+                groundingRole: entry.groundingRole,
+                groundingAssessment: entry.groundingAssessment,
+                details: entry.details,
+            })),
+        }).hash,
+        groundingProtocolVersion: 1,
+        groundingSourceSetHash,
+        sourceKind: 'DERIVED_REVISION_STATE',
+        sourceManifestHash: null,
+        aggregateOutcome: interpretation.groundingAggregate?.groundingOutcome || null,
+        evaluationProtocolVersion: 1,
+        evaluatorConfigHash: null,
+    };
+}
+
+function persistInterpretivePublicationQualificationRow(adapter, qualification) {
+    adapter.run(
+        `INSERT INTO interpretation_publication_qualifications (
+            qualification_id, interpretation_revision_id, publication_policy_id, policy_version,
+            policy_hash, continuity_target_id, continuity_target_type, memory_scope_id,
+            memory_subject_id, eligibility_verdict, refusal_codes_json, binding_json, evaluated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+        [
+            qualification.qualificationId,
+            qualification.interpretationRevisionId,
+            qualification.publicationPolicyId,
+            Number(qualification.policyVersion),
+            qualification.policyHash,
+            qualification.continuityTargetId,
+            qualification.continuityTargetType,
+            qualification.memoryScopeId,
+            qualification.memorySubjectId,
+            qualification.eligibilityVerdict,
+            stableStringify(qualification.refusalCodes),
+            stableStringify(qualification.binding),
+            Number(qualification.evaluatedAt),
+        ],
+    );
+}
+
+function evaluateInterpretivePublicationQualification(adapter, interpretation, policy, payload = {}, timestamp = Date.now()) {
+    const continuityTargetId = sanitizeIdentifier(payload?.continuityTargetId, 'continuityTargetId');
+    const refusalCodes = [];
+    const groundingEnvelope = resolveInterpretationGroundingEnvelope(adapter, interpretation);
+    const expectedProposalContentHash = payload?.proposalContentHash ? String(payload.proposalContentHash).trim() : null;
+    const expectedGroundingEnvelopeHash = payload?.groundingEnvelopeHash ? String(payload.groundingEnvelopeHash).trim() : null;
+    const expectedReviewEnvelopeHash = payload?.reviewEnvelopeHash ? String(payload.reviewEnvelopeHash).trim() : null;
+    const expectedSubjectDispositionRecordId = payload?.subjectDispositionRecordId ? sanitizeIdentifier(payload.subjectDispositionRecordId, 'subjectDispositionRecordId') : null;
+
+    if (Array.isArray(interpretation.childRevisionIds) && interpretation.childRevisionIds.length > 0) {
+        refusalCodes.push('INTERPRETATION_REVISION_NOT_LATEST_ELIGIBLE_CHILD');
+    }
+    if (interpretation.reviewState !== 'COMPLETE') {
+        refusalCodes.push('REVIEW_STATE_NOT_COMPLETE');
+    }
+    if (interpretation.subjectDispositionState !== policy.requiredFinalSubjectState) {
+        refusalCodes.push('SUBJECT_DISPOSITION_STATE_MISMATCH');
+    }
+    if (interpretation.publicationState !== 'NOT_PUBLISHED') {
+        refusalCodes.push('PUBLICATION_STATE_NOT_NOT_PUBLISHED');
+    }
+    if (!policy.permittedInterpretationTypes.includes(interpretation.type)) {
+        refusalCodes.push('UNSUPPORTED_INTERPRETATION_TYPE_FOR_TARGET');
+    }
+    if (policy.policyState !== 'ACTIVE') {
+        refusalCodes.push('PUBLICATION_POLICY_REVOKED_OR_INACTIVE');
+    }
+    if (policy.continuityTargetType === 'MEMORY_SUBJECT' && continuityTargetId !== interpretation.memorySubjectId) {
+        refusalCodes.push('CONTINUITY_TARGET_MISMATCH');
+    }
+    if (policy.subjectIdentityMode === 'EXACT_SUBJECT' && continuityTargetId !== interpretation.memorySubjectId) {
+        refusalCodes.push('SUBJECT_IDENTITY_MISMATCH');
+    }
+    if (compareGroundingOutcomeLevel(
+        groundingEnvelope.aggregateOutcome || 'UNSUPPORTED',
+        policy.requiredGroundingOutcome,
+    ) < 0) {
+        refusalCodes.push('GROUNDING_OUTCOME_BELOW_POLICY');
+    }
+    if (policy.contestOrDeferBlocksPublication) {
+        const hasContestOrDefer = interpretation.reviewDispositions.some((entry) => ['CONTEST', 'DEFER'].includes(entry.disposition))
+            || ['CONTESTED', 'DEFERRED'].includes(interpretation.subjectDispositionState)
+            || interpretation.reviewRequests.some((entry) => ['CONTESTED', 'DEFERRED'].includes(entry.status));
+        if (hasContestOrDefer) {
+            refusalCodes.push('CONTEST_OR_DEFER_BLOCKS_PUBLICATION');
+        }
+    }
+    if (policy.participantDisagreementBlocksPublication) {
+        const hasParticipantDisagreement = interpretation.reviewDispositions.some((entry) => ['REJECT', 'CONTEST', 'DEFER'].includes(entry.disposition));
+        if (hasParticipantDisagreement) {
+            refusalCodes.push('PARTICIPANT_DISAGREEMENT_BLOCKS_PUBLICATION');
+        }
+    }
+    if (policy.immutableChildRequiredForTypes.includes(interpretation.type) && !interpretation.parentRevisionId) {
+        refusalCodes.push('IMMUTABLE_CHILD_REVISION_REQUIRED');
+    }
+    if (expectedProposalContentHash && expectedProposalContentHash !== interpretation.proposalContentHash) {
+        refusalCodes.push('PROPOSAL_HASH_MISMATCH');
+    }
+    if (expectedGroundingEnvelopeHash && expectedGroundingEnvelopeHash !== groundingEnvelope.groundingEnvelopeHash) {
+        refusalCodes.push('GROUNDING_ENVELOPE_HASH_MISMATCH');
+    }
+    if (expectedReviewEnvelopeHash && expectedReviewEnvelopeHash !== interpretation.reviewEnvelopeHash) {
+        refusalCodes.push('REVIEW_ENVELOPE_HASH_MISMATCH');
+    }
+    if (expectedSubjectDispositionRecordId && expectedSubjectDispositionRecordId !== interpretation.subjectDisposition?.subjectDispositionId) {
+        refusalCodes.push('SUBJECT_DISPOSITION_RECORD_MISMATCH');
+    }
+
+    const binding = {
+        interpretationRevisionId: interpretation.interpretationRevisionId,
+        interpretationId: interpretation.interpretationId,
+        proposalContentHash: interpretation.proposalContentHash,
+        groundingBindingMode: groundingEnvelope.groundingBindingMode,
+        groundingEnvelopeHash: groundingEnvelope.groundingEnvelopeHash,
+        groundingProtocolVersion: groundingEnvelope.groundingProtocolVersion,
+        groundingSourceSetHash: groundingEnvelope.groundingSourceSetHash,
+        groundingEnvelopeSource: groundingEnvelope.sourceKind,
+        reviewEnvelopeHash: interpretation.reviewEnvelopeHash,
+        reviewState: interpretation.reviewState,
+        subjectDispositionState: interpretation.subjectDispositionState,
+        subjectDispositionRecordId: interpretation.subjectDisposition?.subjectDispositionId || null,
+        memoryScopeId: interpretation.memoryScopeId,
+        memorySubjectId: interpretation.memorySubjectId,
+        continuityTargetId,
+        publicationPolicyId: policy.publicationPolicyId,
+        publicationPolicyVersion: policy.policyVersion,
+        publicationPolicyHash: policy.policyHash,
+        postGrantHumanPublicationAuthorizationRequired: policy.postGrantHumanPublicationAuthorizationRequired,
+    };
+    const eligibilityVerdict = refusalCodes.length === 0 ? 'ELIGIBLE' : 'INELIGIBLE';
+    if (!ALLOWED_PUBLICATION_ELIGIBILITY_VERDICTS.has(eligibilityVerdict)) {
+        throw createError(500, 'Publication eligibility verdict is invalid', 'ARCH_PUBLICATION_QUALIFICATION_INVALID');
+    }
+    return {
+        qualificationId: createId('dnmqual'),
+        interpretationRevisionId: interpretation.interpretationRevisionId,
+        publicationPolicyId: policy.publicationPolicyId,
+        policyVersion: policy.policyVersion,
+        policyHash: policy.policyHash,
+        continuityTargetId,
+        continuityTargetType: policy.continuityTargetType,
+        memoryScopeId: interpretation.memoryScopeId,
+        memorySubjectId: interpretation.memorySubjectId,
+        eligibilityVerdict,
+        refusalCodes: Array.from(new Set(refusalCodes)).sort(),
+        binding,
+        evaluatedAt: timestamp,
     };
 }
 
@@ -4033,6 +4569,175 @@ export function revokeInterpretiveDelegationPolicy(request, delegationPolicyId, 
             ledgerPath: paths.interpretiveGovernanceLedgerPath,
             delegationPolicy: loadInterpretiveDelegationPolicyProjection(adapter, nextPolicy.delegationPolicyId, nextPolicy.policyVersion),
             revoked: true,
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function listInterpretivePublicationPolicies(request, filters = {}) {
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const adapter = openOperationalDatabase(paths);
+    try {
+        const params = [];
+        const where = [];
+        if (filters.publicationPolicyId) {
+            where.push('publication_policy_id = ?');
+            params.push(sanitizeIdentifier(filters.publicationPolicyId, 'publicationPolicyId'));
+        }
+        if (filters.policyState) {
+            where.push('policy_state = ?');
+            params.push(normalizeEnumValue(filters.policyState, 'policyState', ALLOWED_PUBLICATION_POLICY_STATES));
+        }
+        const rows = adapter.all(
+            `SELECT publication_policy_id, policy_version
+             FROM interpretation_publication_policies
+             ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
+             ORDER BY publication_policy_id, policy_version`,
+            params,
+        );
+        return {
+            ok: true,
+            phase: 'c0.6.4',
+            policies: rows.map((row) => (
+                loadInterpretivePublicationPolicyProjection(adapter, row.publication_policy_id, Number(row.policy_version))
+            )),
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function upsertInterpretivePublicationPolicy(request, payload = {}) {
+    const timestamp = nowTimestamp(payload?.now);
+    const policy = buildInterpretivePublicationPolicyRecord(payload, timestamp);
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    fs.mkdirSync(paths.storageRoot, { recursive: true });
+    const adapter = openOperationalDatabase(paths, { now: timestamp });
+    try {
+        const existing = loadInterpretivePublicationPolicyProjection(adapter, policy.publicationPolicyId, policy.policyVersion);
+        if (existing) {
+            if (existing.policyHash !== policy.policyHash) {
+                throw createError(
+                    409,
+                    `Publication policy ${policy.publicationPolicyId} version ${policy.policyVersion} already exists with different content`,
+                    'ARCH_PUBLICATION_POLICY_CONFLICT',
+                );
+            }
+            return {
+                ok: true,
+                phase: 'c0.6.4',
+                ledgerPath: paths.dnmPublicationLedgerPath,
+                publicationPolicy: existing,
+                created: false,
+            };
+        }
+        appendLedgerEvents(paths.dnmPublicationLedgerPath, [createPublicationPolicyEvent(policy)]);
+        adapter.transaction(() => {
+            persistInterpretivePublicationPolicyRow(adapter, policy);
+        });
+        snapshotOperationalDatabase(adapter, paths);
+        return {
+            ok: true,
+            phase: 'c0.6.4',
+            ledgerPath: paths.dnmPublicationLedgerPath,
+            publicationPolicy: loadInterpretivePublicationPolicyProjection(adapter, policy.publicationPolicyId, policy.policyVersion),
+            created: true,
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function revokeInterpretivePublicationPolicy(request, publicationPolicyId, payload = {}) {
+    const timestamp = nowTimestamp(payload?.now);
+    const policyVersion = payload?.policyVersion == null
+        ? null
+        : normalizePositiveInteger(payload.policyVersion, 'policyVersion', 1, 1_000_000);
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const adapter = openOperationalDatabase(paths, { now: timestamp });
+    try {
+        const policy = policyVersion === null
+            ? loadLatestInterpretivePublicationPolicy(adapter, sanitizeIdentifier(publicationPolicyId, 'publicationPolicyId'))
+            : loadInterpretivePublicationPolicyProjection(
+                adapter,
+                sanitizeIdentifier(publicationPolicyId, 'publicationPolicyId'),
+                policyVersion,
+            );
+        if (!policy) {
+            throw createError(404, `Publication policy ${publicationPolicyId}${policyVersion === null ? '' : ` version ${policyVersion}`} was not found`, 'ARCH_PUBLICATION_POLICY_NOT_FOUND');
+        }
+        if (policy.policyState === 'REVOKED') {
+            return {
+                ok: true,
+                phase: 'c0.6.4',
+                ledgerPath: paths.dnmPublicationLedgerPath,
+                publicationPolicy: policy,
+                revoked: false,
+            };
+        }
+        const revocationReason = normalizeOptionalCommentary(payload?.revocationReason, 'revocationReason');
+        const nextPolicy = {
+            ...policy,
+            policyState: 'REVOKED',
+            revocationReason,
+            updatedAt: timestamp,
+            revokedAt: timestamp,
+        };
+        appendLedgerEvents(paths.dnmPublicationLedgerPath, [createPublicationPolicyRevocationEvent(nextPolicy, timestamp)]);
+        adapter.transaction(() => {
+            persistInterpretivePublicationPolicyRow(adapter, nextPolicy);
+        });
+        snapshotOperationalDatabase(adapter, paths);
+        return {
+            ok: true,
+            phase: 'c0.6.4',
+            ledgerPath: paths.dnmPublicationLedgerPath,
+            publicationPolicy: loadInterpretivePublicationPolicyProjection(adapter, nextPolicy.publicationPolicyId, nextPolicy.policyVersion),
+            revoked: true,
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function qualifyInterpretivePublication(request, interpretationRevisionId, payload = {}) {
+    const timestamp = nowTimestamp(payload?.now);
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const adapter = openOperationalDatabase(paths, { now: timestamp });
+    try {
+        const interpretation = loadInterpretiveCandidateProjection(
+            adapter,
+            sanitizeIdentifier(interpretationRevisionId, 'interpretationRevisionId'),
+        );
+        if (!interpretation) {
+            throw createError(404, `Interpretation revision ${interpretationRevisionId} was not found`, 'ARCH_INTERPRETATION_NOT_FOUND');
+        }
+        const publicationPolicyId = sanitizeIdentifier(payload?.publicationPolicyId, 'publicationPolicyId');
+        const policyVersion = payload?.policyVersion == null
+            ? null
+            : normalizePositiveInteger(payload.policyVersion, 'policyVersion', 1, 1_000_000);
+        const policy = policyVersion === null
+            ? loadLatestInterpretivePublicationPolicy(adapter, publicationPolicyId)
+            : loadInterpretivePublicationPolicyProjection(adapter, publicationPolicyId, policyVersion);
+        if (!policy) {
+            throw createError(404, `Publication policy ${publicationPolicyId}${policyVersion == null ? '' : ` version ${policyVersion}`} was not found`, 'ARCH_PUBLICATION_POLICY_NOT_FOUND');
+        }
+        const qualification = evaluateInterpretivePublicationQualification(adapter, interpretation, policy, payload, timestamp);
+        adapter.transaction(() => {
+            persistInterpretivePublicationQualificationRow(adapter, qualification);
+        });
+        snapshotOperationalDatabase(adapter, paths);
+        return {
+            ok: true,
+            phase: 'c0.6.4',
+            publicationAvailable: false,
+            continuityActivationAvailable: false,
+            qualification,
         };
     } finally {
         adapter.close();
