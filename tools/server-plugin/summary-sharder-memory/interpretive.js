@@ -1755,6 +1755,52 @@ function loadInterpretivePublicationAuthorizationProjection(adapter, publication
     };
 }
 
+function loadInterpretivePublicationQualificationsForRevision(adapter, interpretationRevisionId, continuityTargetId = null) {
+    const params = [interpretationRevisionId];
+    let where = 'interpretation_revision_id = ?';
+    if (continuityTargetId) {
+        where += ' AND continuity_target_id = ?';
+        params.push(continuityTargetId);
+    }
+    const rows = adapter.all(
+        `SELECT qualification_id
+         FROM interpretation_publication_qualifications
+         WHERE ${where}
+         ORDER BY evaluated_at DESC, qualification_id DESC`,
+        params,
+    );
+    return rows.map((row) => loadInterpretivePublicationQualificationRow(adapter, row.qualification_id));
+}
+
+function loadInterpretivePublicationAuthorizationsForRevision(adapter, interpretationRevisionId, continuityTargetId = null) {
+    const params = [interpretationRevisionId];
+    let where = 'interpretation_revision_id = ?';
+    if (continuityTargetId) {
+        where += ' AND continuity_target_id = ?';
+        params.push(continuityTargetId);
+    }
+    const rows = adapter.all(
+        `SELECT publication_authorization_id
+         FROM interpretation_publication_authorizations
+         WHERE ${where}
+         ORDER BY authorized_at DESC, publication_authorization_id DESC`,
+        params,
+    );
+    return rows.map((row) => loadInterpretivePublicationAuthorizationProjection(adapter, row.publication_authorization_id));
+}
+
+function loadInterpretivePublicationPoliciesForType(adapter, interpretationType) {
+    const rows = adapter.all(
+        `SELECT publication_policy_id, policy_version
+         FROM interpretation_publication_policies
+         WHERE policy_state = 'ACTIVE'
+         ORDER BY publication_policy_id, policy_version DESC`,
+    );
+    return rows
+        .map((row) => loadInterpretivePublicationPolicyProjection(adapter, row.publication_policy_id, Number(row.policy_version)))
+        .filter((policy) => policy && Array.isArray(policy.permittedInterpretationTypes) && policy.permittedInterpretationTypes.includes(interpretationType));
+}
+
 function loadDnmPublicationRecordProjection(adapter, dnmRecordId) {
     const row = adapter.get(
         `SELECT * FROM dnm_publication_records
@@ -1795,6 +1841,163 @@ function loadDnmPublicationRecordProjection(adapter, dnmRecordId) {
         latestDeltaReviewId: metadata?.latestDeltaReviewId || null,
         lifecycleMetadata: metadata,
         deltaReviews,
+    };
+}
+
+function buildCandidatePublicationOperatorState(adapter, interpretation, continuityTargetId) {
+    const matchingPolicies = loadInterpretivePublicationPoliciesForType(adapter, interpretation.type)
+        .filter((policy) => policy.continuityTargetType === 'MEMORY_SUBJECT');
+    const qualifications = loadInterpretivePublicationQualificationsForRevision(
+        adapter,
+        interpretation.interpretationRevisionId,
+        continuityTargetId,
+    );
+    const authorizations = loadInterpretivePublicationAuthorizationsForRevision(
+        adapter,
+        interpretation.interpretationRevisionId,
+        continuityTargetId,
+    );
+    const latestQualification = qualifications[0] || null;
+    const latestAuthorization = authorizations[0] || null;
+    const publishedRecordsForRevision = listPublishedRecordsForInterpretationRevision(adapter, interpretation.interpretationRevisionId);
+
+    const availableActions = [];
+    const blockedActions = [];
+    const blockingReasons = [];
+    const addBlockedAction = (action, reasons) => {
+        const normalizedReasons = Array.from(new Set((Array.isArray(reasons) ? reasons : [reasons]).filter(Boolean)));
+        if (normalizedReasons.length === 0) {
+            return;
+        }
+        blockedActions.push({ action, blockingReasons: normalizedReasons });
+        blockingReasons.push(...normalizedReasons);
+    };
+
+    const qualificationReasons = [];
+    if (interpretation.publicationState === 'PUBLISHED') {
+        qualificationReasons.push('INTERPRETATION_ALREADY_PUBLISHED');
+    }
+    if (matchingPolicies.length === 0) {
+        qualificationReasons.push('NO_ACTIVE_PUBLICATION_POLICY');
+    }
+    if (interpretation.reviewState !== 'COMPLETE') {
+        qualificationReasons.push('REVIEW_NOT_COMPLETE');
+    }
+    if (interpretation.subjectDispositionState !== 'GRANTED') {
+        qualificationReasons.push('SUBJECT_DISPOSITION_NOT_GRANTED');
+    }
+    if (qualificationReasons.length === 0) {
+        availableActions.push('QUALIFY_PUBLICATION');
+    } else {
+        addBlockedAction('QUALIFY_PUBLICATION', qualificationReasons);
+    }
+
+    const authorizationReasons = [];
+    if (interpretation.publicationState === 'PUBLISHED') {
+        authorizationReasons.push('INTERPRETATION_ALREADY_PUBLISHED');
+    }
+    if (!latestQualification) {
+        authorizationReasons.push('PUBLICATION_QUALIFICATION_REQUIRED');
+    } else if (latestQualification.eligibilityVerdict !== 'ELIGIBLE') {
+        authorizationReasons.push(...latestQualification.refusalCodes);
+    }
+    if (authorizationReasons.length === 0) {
+        availableActions.push('AUTHORIZE_PUBLICATION');
+    } else {
+        addBlockedAction('AUTHORIZE_PUBLICATION', authorizationReasons);
+    }
+
+    const executeReasons = [];
+    if (interpretation.publicationState === 'PUBLISHED') {
+        executeReasons.push('INTERPRETATION_ALREADY_PUBLISHED');
+    }
+    if (!latestAuthorization) {
+        executeReasons.push('PUBLICATION_AUTHORIZATION_REQUIRED');
+    } else if (latestAuthorization.status === 'EXPIRED') {
+        executeReasons.push('PUBLICATION_AUTHORIZATION_EXPIRED');
+    } else if (latestAuthorization.status === 'CONSUMED') {
+        executeReasons.push('PUBLICATION_AUTHORIZATION_CONSUMED');
+    } else if (latestAuthorization.status !== 'AUTHORIZED') {
+        executeReasons.push('PUBLICATION_AUTHORIZATION_REQUIRED');
+    }
+    if (executeReasons.length === 0) {
+        availableActions.push('EXECUTE_PUBLICATION');
+    } else {
+        addBlockedAction('EXECUTE_PUBLICATION', executeReasons);
+    }
+
+    return {
+        continuityTargetId,
+        matchingPolicies,
+        qualifications,
+        latestQualification,
+        authorizations,
+        latestAuthorization,
+        publishedRecordsForRevision,
+        availableActions: Array.from(new Set(availableActions)),
+        blockedActions,
+        blockingReasons: Array.from(new Set(blockingReasons)),
+    };
+}
+
+function buildDnmRecordOperatorState(record, currentActiveRecord) {
+    const availableActions = ['RECORD_DELTA_REVIEW'];
+    const blockedActions = [];
+    const blockingReasons = [];
+    const addBlockedAction = (action, reasons) => {
+        const normalizedReasons = Array.from(new Set((Array.isArray(reasons) ? reasons : [reasons]).filter(Boolean)));
+        if (normalizedReasons.length === 0) {
+            return;
+        }
+        blockedActions.push({ action, blockingReasons: normalizedReasons });
+        blockingReasons.push(...normalizedReasons);
+    };
+
+    if (record.lifecycleState === 'ACTIVE') {
+        availableActions.push('WITHDRAW_DNM');
+    } else {
+        addBlockedAction('WITHDRAW_DNM', ['RECORD_NOT_ACTIVE_FOR_WITHDRAWAL']);
+    }
+
+    if (
+        record.lifecycleState === 'DELTA_PENDING'
+        && currentActiveRecord
+        && currentActiveRecord.dnmRecordId !== record.dnmRecordId
+    ) {
+        availableActions.push('SUPERSEDE_ACTIVE_WITH_RECORD');
+    } else if (record.lifecycleState !== 'DELTA_PENDING') {
+        addBlockedAction('SUPERSEDE_ACTIVE_WITH_RECORD', ['RECORD_NOT_DELTA_PENDING_FOR_SUPERSESSION']);
+    } else if (!currentActiveRecord) {
+        addBlockedAction('SUPERSEDE_ACTIVE_WITH_RECORD', ['NO_CURRENT_ACTIVE_RECORD_TO_SUPERSEDE']);
+    } else if (currentActiveRecord.dnmRecordId === record.dnmRecordId) {
+        addBlockedAction('SUPERSEDE_ACTIVE_WITH_RECORD', ['RECORD_ALREADY_ACTIVE']);
+    }
+
+    return {
+        availableActions: Array.from(new Set(availableActions)),
+        blockedActions,
+        blockingReasons: Array.from(new Set(blockingReasons)),
+    };
+}
+
+function buildInterpretivePublicationOperatorState(adapter, interpretationRevisionId, continuityTargetIdOverride = null) {
+    const interpretation = loadInterpretiveCandidateProjection(adapter, interpretationRevisionId);
+    if (!interpretation) {
+        return null;
+    }
+    const continuityTargetId = continuityTargetIdOverride || interpretation.memorySubjectId;
+    const currentActiveRecord = loadCurrentActiveDnmRecordForTarget(adapter, continuityTargetId);
+    const recordsForTarget = listPublishedRecordsForContinuityTarget(adapter, continuityTargetId)
+        .map((record) => ({
+            ...record,
+            operatorState: buildDnmRecordOperatorState(record, currentActiveRecord),
+        }));
+    return {
+        interpretationRevisionId: interpretation.interpretationRevisionId,
+        continuityTargetId,
+        currentActiveRecord,
+        recordsForTarget,
+        ...buildCandidatePublicationOperatorState(adapter, interpretation, continuityTargetId),
     };
 }
 
@@ -1860,6 +2063,26 @@ function loadCurrentActiveDnmRecordForTarget(adapter, continuityTargetId) {
         throw createError(500, `Multiple active DNM records exist for ${continuityTargetId}`, 'ARCH_DNM_ACTIVE_STATE_CONFLICT');
     }
     return loadDnmPublicationRecordProjection(adapter, rows[0].dnm_record_id);
+}
+
+function listPublishedRecordsForContinuityTarget(adapter, continuityTargetId) {
+    return adapter.all(
+        `SELECT dnm_record_id
+         FROM dnm_publication_records
+         WHERE continuity_target_id = ?
+         ORDER BY published_at DESC, dnm_record_id DESC`,
+        [continuityTargetId],
+    ).map((row) => loadDnmPublicationRecordProjection(adapter, row.dnm_record_id));
+}
+
+function listPublishedRecordsForInterpretationRevision(adapter, interpretationRevisionId) {
+    return adapter.all(
+        `SELECT dnm_record_id
+         FROM dnm_publication_records
+         WHERE source_interpretation_revision_id = ?
+         ORDER BY published_at DESC, dnm_record_id DESC`,
+        [interpretationRevisionId],
+    ).map((row) => loadDnmPublicationRecordProjection(adapter, row.dnm_record_id));
 }
 
 function loadActionProvenanceRows(adapter, interpretationRevisionId) {
@@ -5377,6 +5600,29 @@ export function getCurrentActiveDnmRecord(request, continuityTargetId) {
             phase: 'c0.6.4',
             continuityTargetId: normalizedTargetId,
             currentActiveRecord: loadCurrentActiveDnmRecordForTarget(adapter, normalizedTargetId),
+        };
+    } finally {
+        adapter.close();
+    }
+}
+
+export function getInterpretivePublicationOperatorState(request, interpretationRevisionId, filters = {}) {
+    const userRoot = getAuthenticatedUserRoot(request);
+    const paths = getStoragePaths(userRoot);
+    const adapter = openOperationalDatabase(paths);
+    try {
+        const normalizedRevisionId = sanitizeIdentifier(interpretationRevisionId, 'interpretationRevisionId');
+        const continuityTargetId = filters?.continuityTargetId
+            ? sanitizeIdentifier(filters.continuityTargetId, 'continuityTargetId')
+            : null;
+        const operatorState = buildInterpretivePublicationOperatorState(adapter, normalizedRevisionId, continuityTargetId);
+        if (!operatorState) {
+            throw createError(404, `Interpretation revision ${interpretationRevisionId} was not found`, 'ARCH_INTERPRETATION_NOT_FOUND');
+        }
+        return {
+            ok: true,
+            phase: 'c0.6.4',
+            operatorState,
         };
     } finally {
         adapter.close();

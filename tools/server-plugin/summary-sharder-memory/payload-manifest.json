@@ -83,11 +83,11 @@
     },
     {
       "relativePath": "index.js",
-      "sha256": "cd0d4ad231424b80e2ac63a88628ae1ea9b0c77410d5c171981d5904f78d48e7"
+      "sha256": "2190c20ed608ee43624713029bf5045db15942f01fcbbe14923d42fedc970b14"
     },
     {
       "relativePath": "interpretive.js",
-      "sha256": "76cb3289e7260247c330a2f1fb7119d0c78d16b2589735ab24bf4b3ca94394d7"
+      "sha256": "b0bbf0f06154f598c5974f638648d05a37066e0688319d8263d6050280b8005d"
     },
     {
       "relativePath": "lib/core/chat/archive-policy.js",

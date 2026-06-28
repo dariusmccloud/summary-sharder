@@ -46,8 +46,9 @@ import {
     createInterpretivePublicationAuthorization,
     createInterpretiveRevision,
     getCurrentActiveDnmRecord,
-    getInterpretiveSynthesisRun,
     getInterpretiveCandidate,
+    getInterpretivePublicationOperatorState,
+    getInterpretiveSynthesisRun,
     listInterpretiveDelegationPolicies,
     listDnmPublicationRecords,
     listInterpretivePublicationPolicies,
@@ -620,6 +621,19 @@ export async function init(router) {
     router.get('/interpretive/candidates/:interpretationRevisionId', async (request, response) => {
         try {
             const result = getInterpretiveCandidate(request, request.params.interpretationRevisionId);
+            return response.send(result);
+        } catch (error) {
+            return handleError(response, error);
+        }
+    });
+
+    router.get('/interpretive/candidates/:interpretationRevisionId/publication-operator', async (request, response) => {
+        try {
+            const result = getInterpretivePublicationOperatorState(
+                request,
+                request.params.interpretationRevisionId,
+                request.query || {},
+            );
             return response.send(result);
         } catch (error) {
             return handleError(response, error);

@@ -159,6 +159,10 @@ export async function listInterpretiveDelegationPolicies(filters = {}) {
     return await fetchJson(`/interpretive/delegation-policies${buildQueryString(filters)}`);
 }
 
+export async function listInterpretivePublicationPolicies(filters = {}) {
+    return await fetchJson(`/interpretive/publication/policies${buildQueryString(filters)}`);
+}
+
 export async function listInterpretiveReviews(filters = {}) {
     return await fetchJson(`/interpretive/reviews${buildQueryString(filters)}`);
 }
@@ -169,6 +173,72 @@ export async function getInterpretiveCandidate(interpretationRevisionId) {
         throw new Error('interpretationRevisionId is required');
     }
     return await fetchJson(`/interpretive/candidates/${encodeURIComponent(normalizedId)}`);
+}
+
+export async function getInterpretivePublicationOperatorState(interpretationRevisionId, filters = {}) {
+    const normalizedId = String(interpretationRevisionId || '').trim();
+    if (!normalizedId) {
+        throw new Error('interpretationRevisionId is required');
+    }
+    return await fetchJson(`/interpretive/candidates/${encodeURIComponent(normalizedId)}/publication-operator${buildQueryString(filters)}`);
+}
+
+export async function qualifyInterpretivePublication(interpretationRevisionId, payload) {
+    const normalizedId = String(interpretationRevisionId || '').trim();
+    if (!normalizedId) {
+        throw new Error('interpretationRevisionId is required');
+    }
+    return await fetchJson(`/interpretive/candidates/${encodeURIComponent(normalizedId)}/publication-qualifications`, {
+        method: 'POST',
+        body: payload || {},
+    });
+}
+
+export async function createInterpretivePublicationAuthorization(payload) {
+    return await fetchJson('/interpretive/publication/authorizations', {
+        method: 'POST',
+        body: payload || {},
+    });
+}
+
+export async function executeInterpretivePublicationAuthorization(payload) {
+    return await fetchJson('/interpretive/publication/execute', {
+        method: 'POST',
+        body: payload || {},
+    });
+}
+
+export async function listDnmPublicationRecords(filters = {}) {
+    return await fetchJson(`/interpretive/publication/records${buildQueryString(filters)}`);
+}
+
+export async function getCurrentActiveDnmRecord(continuityTargetId) {
+    const normalizedId = String(continuityTargetId || '').trim();
+    if (!normalizedId) {
+        throw new Error('continuityTargetId is required');
+    }
+    return await fetchJson(`/interpretive/publication/targets/${encodeURIComponent(normalizedId)}/current`);
+}
+
+export async function supersedeDnmPublicationRecord(payload) {
+    return await fetchJson('/interpretive/publication/supersede', {
+        method: 'POST',
+        body: payload || {},
+    });
+}
+
+export async function withdrawDnmPublicationRecord(payload) {
+    return await fetchJson('/interpretive/publication/withdraw', {
+        method: 'POST',
+        body: payload || {},
+    });
+}
+
+export async function recordDnmDeltaReview(payload) {
+    return await fetchJson('/interpretive/publication/delta-reviews', {
+        method: 'POST',
+        body: payload || {},
+    });
 }
 
 export async function submitInterpretiveReviewDisposition(reviewRequestId, payload) {

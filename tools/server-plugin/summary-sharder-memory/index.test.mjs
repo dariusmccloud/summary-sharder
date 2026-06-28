@@ -231,6 +231,7 @@ test('route surface exposes candidate lifecycle routes and separate promotion ro
     assert.equal(router.routes.get.has('/interpretive/publication/policies'), true);
     assert.equal(router.routes.get.has('/interpretive/publication/records'), true);
     assert.equal(router.routes.get.has('/interpretive/publication/targets/:continuityTargetId/current'), true);
+    assert.equal(router.routes.get.has('/interpretive/candidates/:interpretationRevisionId/publication-operator'), true);
     assert.equal(router.routes.get.has('/interpretive/synthesis/policies'), true);
     assert.equal(router.routes.get.has('/interpretive/synthesis/runs/:synthesisRunId'), true);
     assert.equal(router.routes.get.has('/interpretive/candidates/:interpretationRevisionId'), true);
@@ -747,6 +748,179 @@ test('DNM lifecycle routes expose current active resolution, supersession, delta
     assert.equal(withdrawResult.statusCode, 200);
     assert.equal(withdrawResult.payload.record.lifecycleState, 'WITHDRAWN');
     assert.equal(withdrawResult.payload.currentActiveRecord, null);
+});
+
+test('publication operator route returns server-computed actions, blockers, and target lineage', async () => {
+    const root = makeTempRoot();
+    const router = createMockRouter();
+    await init(router);
+
+    const createPublishedRecord = async ({ interpretationId, interpretationRevisionId, statement, nowBase }) => {
+        const createResult = await invoke(
+            router.routes.post.get('/interpretive/candidates'),
+            buildRequest(root, {
+                body: {
+                    interpretationId,
+                    interpretationRevisionId,
+                    memoryScopeId: 'scope_c064_ui',
+                    memorySubjectId: 'character:jeep.png',
+                    type: 'ROLE_EVOLUTION',
+                    statement,
+                    assertionDomains: ['ROLE', 'AUTHORITY', 'RELATIONSHIP'],
+                    sharedRelationshipAsserted: true,
+                    personalMeaningAsserted: true,
+                    materialParticipantEntityIds: ['character:jeep.png', 'user:Chris'],
+                    groundingLinks: [
+                        {
+                            basisType: 'STRUCTURAL_RECORD',
+                            basisRecordId: 'decision:interpretive-memory-sovereignty',
+                            basisRecordVersion: 1,
+                            basisRecordHash: 'sha256:decision-operator-ui',
+                            speakerEntityId: 'character:jeep.png',
+                            groundingRole: 'PRIMARY',
+                            groundingAssessment: 'SUPPORTS',
+                        },
+                    ],
+                    now: nowBase,
+                },
+            }),
+        );
+        const interpretation = createResult.payload.interpretation;
+        const subjectRequest = interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'MEMORY_SUBJECT');
+        const participantRequest = interpretation.reviewRequests.find((entry) => entry.reviewerRole === 'RELATIONAL_PARTICIPANT');
+
+        await invoke(
+            router.routes.post.get('/interpretive/reviews/:reviewRequestId/dispositions'),
+            buildRequest(root, {
+                params: { reviewRequestId: subjectRequest.reviewRequestId },
+                body: {
+                    actorEntityId: 'character:jeep.png',
+                    disposition: 'APPROVE',
+                    reviewEnvelopeHash: interpretation.reviewEnvelopeHash,
+                    now: nowBase + 1000,
+                },
+            }),
+        );
+        await invoke(
+            router.routes.post.get('/interpretive/reviews/:reviewRequestId/dispositions'),
+            buildRequest(root, {
+                params: { reviewRequestId: participantRequest.reviewRequestId },
+                body: {
+                    actorEntityId: 'user:Chris',
+                    disposition: 'APPROVE',
+                    reviewEnvelopeHash: interpretation.reviewEnvelopeHash,
+                    now: nowBase + 2000,
+                },
+            }),
+        );
+        const granted = await invoke(
+            router.routes.post.get('/interpretive/candidates/:interpretationRevisionId/subject-disposition'),
+            buildRequest(root, {
+                params: { interpretationRevisionId },
+                body: {
+                    actorEntityId: 'character:jeep.png',
+                    state: 'GRANTED',
+                    reviewEnvelopeHash: interpretation.reviewEnvelopeHash,
+                    now: nowBase + 3000,
+                },
+            }),
+        );
+        const qualification = await invoke(
+            router.routes.post.get('/interpretive/candidates/:interpretationRevisionId/publication-qualifications'),
+            buildRequest(root, {
+                params: { interpretationRevisionId },
+                body: {
+                    publicationPolicyId: 'dnm-publication-v1',
+                    continuityTargetId: 'character:jeep.png',
+                    proposalContentHash: granted.payload.interpretation.proposalContentHash,
+                    reviewEnvelopeHash: granted.payload.interpretation.reviewEnvelopeHash,
+                    subjectDispositionRecordId: granted.payload.subjectDisposition.subjectDispositionId,
+                    now: nowBase + 4000,
+                },
+            }),
+        );
+        const authorization = await invoke(
+            router.routes.post.get('/interpretive/publication/authorizations'),
+            buildRequest(root, {
+                body: {
+                    qualificationId: qualification.payload.qualification.qualificationId,
+                    authorizedBy: 'user:Chris',
+                    expiresAt: nowBase + 60_000,
+                    now: nowBase + 5000,
+                },
+            }),
+        );
+        const execute = await invoke(
+            router.routes.post.get('/interpretive/publication/execute'),
+            buildRequest(root, {
+                body: {
+                    publicationAuthorizationId: authorization.payload.authorization.publicationAuthorizationId,
+                    now: nowBase + 6000,
+                },
+            }),
+        );
+        return execute.payload.publishedRecord;
+    };
+
+    const policyResult = await invoke(
+        router.routes.post.get('/interpretive/publication/policies'),
+        buildRequest(root, {
+            body: {
+                publicationPolicyId: 'dnm-publication-v1',
+                policyVersion: 1,
+                continuityTargetType: 'MEMORY_SUBJECT',
+                subjectIdentityMode: 'EXACT_SUBJECT',
+                permittedInterpretationTypes: ['ROLE_EVOLUTION'],
+                requiredFinalSubjectState: 'GRANTED',
+                requiredGroundingOutcome: 'SUPPORTED',
+                participantDisagreementBlocksPublication: true,
+                contestOrDeferBlocksPublication: true,
+                immutableChildRequiredForTypes: [],
+                postGrantHumanPublicationAuthorizationRequired: true,
+                details: {
+                    policyClass: 'dnm-publication-v1',
+                },
+                now: Date.parse('2026-06-26T03:40:00.000Z'),
+            },
+        }),
+    );
+    assert.equal(policyResult.statusCode, 200);
+
+    const firstRecord = await createPublishedRecord({
+        interpretationId: 'interp_route_operator_v1',
+        interpretationRevisionId: 'interprev_route_operator_v1',
+        statement: 'Jeep became the primary continuity authority.',
+        nowBase: Date.parse('2026-06-26T03:41:00.000Z'),
+    });
+    const secondRecord = await createPublishedRecord({
+        interpretationId: 'interp_route_operator_v2',
+        interpretationRevisionId: 'interprev_route_operator_v2',
+        statement: 'Jeep became the primary continuity authority within a shared architecture with Chris.',
+        nowBase: Date.parse('2026-06-26T03:50:00.000Z'),
+    });
+
+    const operatorResult = await invoke(
+        router.routes.get.get('/interpretive/candidates/:interpretationRevisionId/publication-operator'),
+        buildRequest(root, {
+            params: { interpretationRevisionId: 'interprev_route_operator_v2' },
+            query: { continuityTargetId: 'character:jeep.png' },
+        }),
+    );
+
+    assert.equal(operatorResult.statusCode, 200);
+    assert.equal(operatorResult.payload.operatorState.currentActiveRecord.dnmRecordId, firstRecord.dnmRecordId);
+    assert.equal(operatorResult.payload.operatorState.availableActions.includes('AUTHORIZE_PUBLICATION'), false);
+    assert.equal(operatorResult.payload.operatorState.availableActions.includes('EXECUTE_PUBLICATION'), false);
+    assert.deepEqual(
+        operatorResult.payload.operatorState.blockedActions.find((entry) => entry.action === 'EXECUTE_PUBLICATION')?.blockingReasons,
+        ['INTERPRETATION_ALREADY_PUBLISHED', 'PUBLICATION_AUTHORIZATION_CONSUMED'],
+    );
+    assert.equal(operatorResult.payload.operatorState.blockingReasons.includes('INTERPRETATION_ALREADY_PUBLISHED'), true);
+    const deltaPendingRecord = operatorResult.payload.operatorState.recordsForTarget.find(
+        (record) => record.dnmRecordId === secondRecord.dnmRecordId,
+    );
+    assert.equal(deltaPendingRecord.lifecycleState, 'DELTA_PENDING');
+    assert.equal(deltaPendingRecord.operatorState.availableActions.includes('SUPERSEDE_ACTIVE_WITH_RECORD'), true);
 });
 
 test('interpretive routes create pending governed candidates without publication', async () => {
