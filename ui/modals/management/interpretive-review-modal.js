@@ -46,6 +46,11 @@ const INTERPRETIVE_REASON_CODE_LABELS = new Map(
         group.codes.map((entry) => [entry.value, entry.label])),
 );
 
+const INTERPRETIVE_REASON_CODE_DESCRIPTIONS = new Map(
+    INTERPRETIVE_REASON_CODE_GROUPS.flatMap((group) =>
+        group.codes.map((entry) => [entry.value, entry.description])),
+);
+
 function formatTimestamp(value) {
     if (value === null || value === undefined || Number.isNaN(Number(value))) {
         return 'n/a';
@@ -147,15 +152,27 @@ function hasMeaningfulGroundingDetails(details) {
         && Object.keys(details).length > 0;
 }
 
-function renderReasonCodes(reasonCodes) {
+function renderReasonCodes(reasonCodes, options = {}) {
     if (!Array.isArray(reasonCodes) || reasonCodes.length === 0) {
         return '<span class="ss-hint">No reason codes.</span>';
     }
-    return `<div class="ss-interpretive-review-inline-meta">${reasonCodes.map((code) => {
+    const label = String(options.label || '').trim();
+    const badges = reasonCodes.map((code) => {
         const normalizedCode = String(code || '').trim();
-        const label = INTERPRETIVE_REASON_CODE_LABELS.get(normalizedCode) || normalizedCode;
-        return renderBadge(label, { fallback: normalizedCode || 'n/a' });
-    }).join('')}</div>`;
+        const badgeLabel = INTERPRETIVE_REASON_CODE_LABELS.get(normalizedCode) || normalizedCode;
+        const badge = renderBadge(badgeLabel, { fallback: normalizedCode || 'n/a' });
+        const description = INTERPRETIVE_REASON_CODE_DESCRIPTIONS.get(normalizedCode);
+        if (!description) {
+            return badge;
+        }
+        return badge.replace('<span ', `<span title="${escapeHtml(description)}" `);
+    }).join('');
+    return `
+        <div class="ss-interpretive-review-history-block">
+            ${label ? `<div class="ss-interpretive-review-history-block-label">${escapeHtml(label)}</div>` : ''}
+            <div class="ss-interpretive-review-inline-meta">${badges}</div>
+        </div>
+    `;
 }
 
 function renderServerReasonList(items, emptyLabel = 'None') {
@@ -235,7 +252,7 @@ function renderTechnicalDetailsSection(rows, options = {}) {
         options.title || 'Technical details',
         options.description || 'Shows the exact identifiers and audit fields without crowding the main view.',
         renderKeyValueGrid(filteredRows),
-        { extraClass: 'ss-interpretive-review-subsection' },
+        { extraClass: `ss-interpretive-review-subsection ${String(options.extraClass || '').trim()}`.trim() },
     );
 }
 
@@ -304,6 +321,14 @@ function buildCompactProvenanceText(provenance) {
     return `Submitted directly by ${recordedBy}.`;
 }
 
+function buildHistoryContextLabel(provenance) {
+    const text = buildCompactProvenanceText(provenance);
+    if (!text) {
+        return '';
+    }
+    return `Recorded context: ${text}`;
+}
+
 function normalizeHistoryCommentary(commentary, dispositionLabel) {
     const text = String(commentary || '').trim();
     if (!text) {
@@ -330,6 +355,7 @@ function renderHistoryActionCard({
     bodyHtml = '',
 }) {
     const compactProvenance = buildCompactProvenanceText(provenance);
+    const historyContextLabel = buildHistoryContextLabel(provenance);
     const normalizedCommentary = normalizeHistoryCommentary(commentary, dispositionLabel);
     const filteredExtraLines = Array.isArray(extraLines)
         ? extraLines.filter((line) => String(line || '').trim())
@@ -341,13 +367,23 @@ function renderHistoryActionCard({
                 ${timestamp ? `<div class="ss-hint">${escapeHtml(formatTimestamp(timestamp))}</div>` : ''}
             </div>
             <div class="ss-interpretive-review-inline-meta${compact ? ' ss-interpretive-review-inline-meta--compact' : ''}">
-                ${renderBadge(dispositionLabel || 'Submitted')}
+                ${compact ? renderBadge(dispositionLabel || 'Submitted') : ''}
                 ${roleLabel ? renderBadge(roleLabel) : ''}
             </div>
-            ${compactProvenance ? `<div class="ss-interpretive-review-summary-note">${escapeHtml(compactProvenance)}</div>` : ''}
-            ${Array.isArray(reasonCodes) && reasonCodes.length > 0 ? renderReasonCodes(reasonCodes) : ''}
+            ${historyContextLabel ? `
+                <div class="ss-interpretive-review-history-block">
+                    <div class="ss-interpretive-review-history-block-label">Recorded context</div>
+                    <div class="ss-interpretive-review-summary-note">${escapeHtml(compactProvenance)}</div>
+                </div>
+            ` : ''}
+            ${Array.isArray(reasonCodes) && reasonCodes.length > 0 ? renderReasonCodes(reasonCodes, { label: 'Selected concerns' }) : ''}
             ${normalizedCommentary
-                ? `<div class="ss-interpretive-review-statement">${escapeHtml(normalizedCommentary)}</div>`
+                ? `
+                    <div class="ss-interpretive-review-history-block">
+                        <div class="ss-interpretive-review-history-block-label">Review comment</div>
+                        <div class="ss-interpretive-review-statement">${escapeHtml(normalizedCommentary)}</div>
+                    </div>
+                `
                 : ''
             }
             ${filteredExtraLines.length > 0 ? `
@@ -413,9 +449,30 @@ function renderHistorySubmissionDetails(provenance, policiesById) {
             }]
             : []),
     ], {
-        title: 'Submission details',
-        description: 'Shows the exact recorded provenance for this action.',
+        title: 'Recorded provenance',
+        description: '',
+        extraClass: 'ss-interpretive-review-history-subdetails',
     });
+}
+
+function hasRecordedSubjectDisposition(subjectDisposition) {
+    if (!subjectDisposition || typeof subjectDisposition !== 'object') {
+        return false;
+    }
+    const state = String(subjectDisposition.state || '').trim().toUpperCase();
+    if (!state || state === 'PENDING') {
+        return false;
+    }
+    const hasTimestamp = Number.isFinite(Number(subjectDisposition.recordedAt));
+    const hasCommentary = String(subjectDisposition.commentary || '').trim().length > 0;
+    const hasReasons = Array.isArray(subjectDisposition.reasonCodes) && subjectDisposition.reasonCodes.length > 0;
+    const hasProvenance = !!subjectDisposition.provenance
+        && (
+            String(subjectDisposition.provenance.submissionMode || '').trim().length > 0
+            || String(subjectDisposition.provenance.submittedByActorId || '').trim().length > 0
+            || String(subjectDisposition.provenance.dispositionOwnerId || '').trim().length > 0
+        );
+    return hasTimestamp || hasCommentary || hasReasons || hasProvenance;
 }
 
 function collectReferencedPolicyIds(interpretation) {
@@ -1583,17 +1640,29 @@ function buildNoActionSummary(interpretation, operatorState) {
 
 function renderHumanEvidenceSection(interpretation) {
     const groundingLinks = Array.isArray(interpretation?.groundingLinks) ? interpretation.groundingLinks : [];
+    const boundCount = groundingLinks.length;
+    const boundLabel = boundCount === 1 ? '1 bound source' : `${boundCount} bound sources`;
     return `
         <div class="ss-interpretive-review-section ss-review-section ss-review-section--static">
             <div class="ss-review-section__header">
                 <div class="ss-review-section__title">Evidence</div>
             </div>
             <div class="ss-review-section__body ss-interpretive-review-evidence-body">
-                <div class="ss-interpretive-review-card ss-interpretive-review-status-card">
+                <div class="ss-interpretive-review-card ss-interpretive-review-status-card ss-interpretive-review-evidence-note">
+                    <div class="ss-interpretive-review-inline-meta">
+                        ${boundCount > 0
+                            ? renderBadge(boundLabel, { fallback: boundLabel })
+                            : ''}
+                    </div>
                     <div class="ss-interpretive-review-summary-note">
-                        ${groundingLinks.length > 0
-                            ? 'Readable evidence findings are not available yet. See Technical Details for the bound source records.'
-                            : 'No bound evidence is available yet. See Technical Details for source information.'}
+                        ${boundCount > 0
+                            ? `${boundLabel.charAt(0).toUpperCase()}${boundLabel.slice(1)} are bound, but no human-readable evidence summary is available yet.`
+                            : 'No bound evidence is available yet.'}
+                    </div>
+                    <div class="ss-hint">
+                        ${boundCount > 0
+                            ? 'See Technical Details to inspect the bound source records.'
+                            : 'See Technical Details for source information.'}
                     </div>
                 </div>
             </div>
@@ -1692,7 +1761,9 @@ function renderReviewResponseSummary(interpretation) {
 
 function renderSubmittedActionsHistory(interpretation, policiesById = new Map()) {
     const reviewDispositions = Array.isArray(interpretation.reviewDispositions) ? interpretation.reviewDispositions : [];
-    const subjectDisposition = interpretation.subjectDisposition || null;
+    const subjectDisposition = hasRecordedSubjectDisposition(interpretation.subjectDisposition)
+        ? interpretation.subjectDisposition
+        : null;
     if (reviewDispositions.length === 0 && !subjectDisposition) {
         return '<div class="ss-hint">No actions recorded yet.</div>';
     }
@@ -1707,10 +1778,6 @@ function renderSubmittedActionsHistory(interpretation, policiesById = new Map())
             ${reviewDispositions.map((disposition) => {
                 const request = requestMap.get(disposition.reviewRequestId) || null;
                 const reviewerName = formatHumanEntityLabel(request?.reviewerEntityId || disposition?.provenance?.dispositionOwnerId || '');
-                const extraLines = [];
-                if (Array.isArray(disposition?.provenance?.subjectEvidenceRefs) && disposition.provenance.subjectEvidenceRefs.length > 0) {
-                    extraLines.push(`Evidence refs: ${disposition.provenance.subjectEvidenceRefs.join(', ')}`);
-                }
                 return renderHistoryActionCard({
                     title: `${reviewerName} review`,
                     dispositionLabel: formatHumanStateLabel(disposition.disposition),
@@ -1718,7 +1785,6 @@ function renderSubmittedActionsHistory(interpretation, policiesById = new Map())
                     commentary: disposition.commentary,
                     provenance: disposition.provenance,
                     timestamp: disposition.submittedAt,
-                    extraLines,
                     bodyHtml: renderHistorySubmissionDetails(disposition.provenance, policiesById),
                 });
             }).join('')}
@@ -1729,9 +1795,6 @@ function renderSubmittedActionsHistory(interpretation, policiesById = new Map())
                 commentary: subjectDisposition.commentary,
                 provenance: subjectDisposition.provenance,
                 timestamp: subjectDisposition.recordedAt,
-                extraLines: Array.isArray(subjectDisposition?.provenance?.subjectEvidenceRefs) && subjectDisposition.provenance.subjectEvidenceRefs.length > 0
-                    ? [`Evidence refs: ${subjectDisposition.provenance.subjectEvidenceRefs.join(', ')}`]
-                    : [],
                 bodyHtml: renderHistorySubmissionDetails(subjectDisposition.provenance, policiesById),
             }) : ''}
         </div>

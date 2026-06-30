@@ -635,7 +635,17 @@ export const INTERPRETIVE_REVIEW_CSS = `
 .ss-interpretive-review-evidence-body {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
+}
+
+.ss-interpretive-review-evidence-note {
+    display: grid;
+    gap: 6px;
+    padding: 12px;
+}
+
+.ss-interpretive-review-evidence-note .ss-interpretive-review-inline-meta {
+    min-height: 0;
 }
 
 .ss-interpretive-review-card strong,
@@ -678,6 +688,23 @@ export const INTERPRETIVE_REVIEW_CSS = `
     margin-top: -2px;
 }
 
+.ss-interpretive-review-history-block {
+    display: grid;
+    gap: 4px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--ss-border) 75%, transparent);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--ss-bg-primary) 95%, white 5%);
+}
+
+.ss-interpretive-review-history-block-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: color-mix(in srgb, var(--ss-text-primary) 70%, transparent);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
 .ss-interpretive-review-history-meta {
     display: grid;
     gap: 4px;
@@ -686,6 +713,33 @@ export const INTERPRETIVE_REVIEW_CSS = `
     color: color-mix(in srgb, var(--ss-text-primary) 80%, transparent);
     font-size: 12px;
     line-height: 1.45;
+}
+
+.ss-interpretive-review-history-subdetails {
+    --ss-review-section-title-size: 12px;
+    --ss-review-section-title-weight: 600;
+    --ss-review-section-description-size: 0;
+    --ss-review-section-surface-mix: 97%;
+    --ss-review-section-header-mix: 94%;
+    margin-top: 4px;
+    margin-inline-start: 0;
+    border-style: solid;
+    background: color-mix(in srgb, var(--ss-bg-primary) 97%, white 3%);
+}
+
+.ss-interpretive-review-history-subdetails .ss-interpretive-review-disclosure-summary,
+.ss-interpretive-review-history-subdetails .ss-review-section__header {
+    padding: 8px 10px;
+}
+
+.ss-interpretive-review-history-subdetails .ss-interpretive-review-disclosure-body,
+.ss-interpretive-review-history-subdetails .ss-review-section__body {
+    padding: 10px;
+}
+
+.ss-interpretive-review-history-subdetails .ss-review-section__title,
+.ss-interpretive-review-history-subdetails .ss-interpretive-review-disclosure-title {
+    padding-right: 18px;
 }
 
 .ss-interpretive-review-form-grid {
